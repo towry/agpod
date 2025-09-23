@@ -14,10 +14,10 @@ fn main() {
 fn process_git_diff() -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
-    
+
     let minimized_diff = minimize_diff(&input);
     print!("{}", minimized_diff);
-    
+
     Ok(())
 }
 
@@ -42,7 +42,7 @@ impl ChangeType {
     fn as_str(&self) -> &str {
         match self {
             ChangeType::Added => "added",
-            ChangeType::Deleted => "deleted", 
+            ChangeType::Deleted => "deleted",
             ChangeType::Modified => "modified",
             ChangeType::Renamed => "renamed",
         }
@@ -52,7 +52,7 @@ impl ChangeType {
 fn minimize_diff(diff_content: &str) -> String {
     let mut result = String::new();
     let file_changes = parse_git_diff(diff_content);
-    
+
     for file_change in file_changes {
         match file_change.change_type {
             ChangeType::Deleted => {
@@ -79,7 +79,7 @@ fn minimize_diff(diff_content: &str) -> String {
         }
         result.push('\n');
     }
-    
+
     result
 }
 
@@ -87,7 +87,7 @@ fn parse_git_diff(diff_content: &str) -> Vec<FileChange> {
     let mut file_changes = Vec::new();
     let lines: Vec<&str> = diff_content.lines().collect();
     let mut i = 0;
-    
+
     while i < lines.len() {
         if let Some(file_change) = parse_file_change(&lines, &mut i) {
             file_changes.push(file_change);
@@ -95,34 +95,34 @@ fn parse_git_diff(diff_content: &str) -> Vec<FileChange> {
             i += 1;
         }
     }
-    
+
     file_changes
 }
 
 fn parse_file_change(lines: &[&str], index: &mut usize) -> Option<FileChange> {
     let diff_header_re = Regex::new(r"^diff --git a/(.*?) b/(.*?)$").unwrap();
-    
+
     if *index >= lines.len() {
         return None;
     }
-    
+
     // Look for diff header
     let line = lines[*index];
     if let Some(captures) = diff_header_re.captures(line) {
         let old_path = captures.get(1).map(|m| m.as_str().to_string());
         let new_path = captures.get(2).map(|m| m.as_str().to_string());
-        
+
         *index += 1;
-        
+
         // Parse file metadata and determine change type
         let mut change_type = ChangeType::Modified;
         let mut content_lines = Vec::new();
         let mut total_changes = 0;
-        
+
         // Collect all lines until next diff or end
         while *index < lines.len() && !lines[*index].starts_with("diff --git") {
             let line = lines[*index];
-            
+
             // Determine change type from file mode lines
             if line.starts_with("new file mode") {
                 change_type = ChangeType::Added;
@@ -131,20 +131,21 @@ fn parse_file_change(lines: &[&str], index: &mut usize) -> Option<FileChange> {
             } else if line.starts_with("rename from") || line.starts_with("rename to") {
                 change_type = ChangeType::Renamed;
             }
-            
+
             // Count actual content changes
-            if (line.starts_with('+') && !line.starts_with("+++")) ||
-               (line.starts_with('-') && !line.starts_with("---")) {
+            if (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+            {
                 total_changes += 1;
             }
-            
+
             content_lines.push(line.to_string());
             *index += 1;
         }
-        
+
         // Determine if file is "large" (heuristic: more than 100 changes or 500 total lines)
         let is_large = total_changes > 100 || content_lines.len() > 500;
-        
+
         return Some(FileChange {
             old_path,
             new_path,
@@ -153,60 +154,74 @@ fn parse_file_change(lines: &[&str], index: &mut usize) -> Option<FileChange> {
             is_large,
         });
     }
-    
+
     None
 }
 
 fn format_large_file_summary(file_change: &FileChange) -> String {
     let unknown_path = "unknown".to_string();
-    let path = file_change.new_path.as_ref()
+    let path = file_change
+        .new_path
+        .as_ref()
         .or(file_change.old_path.as_ref())
         .unwrap_or(&unknown_path);
-    
+
     let mut summary = format!("Large file change: {}\n", path);
-    summary.push_str(&format!("Change type: {}\n", file_change.change_type.as_str()));
-    summary.push_str(&format!("Content lines: {}\n", file_change.content_lines.len()));
-    
+    summary.push_str(&format!(
+        "Change type: {}\n",
+        file_change.change_type.as_str()
+    ));
+    summary.push_str(&format!(
+        "Content lines: {}\n",
+        file_change.content_lines.len()
+    ));
+
     summary
 }
 
 fn format_deleted_file_summary(file_change: &FileChange) -> String {
     let unknown_path = "unknown".to_string();
-    let path = file_change.old_path.as_ref()
+    let path = file_change
+        .old_path
+        .as_ref()
         .or(file_change.new_path.as_ref())
         .unwrap_or(&unknown_path);
-    
+
     format!("Deleted file: {}\n", path)
 }
 
 fn format_regular_file_diff(file_change: &FileChange) -> String {
     let unknown_path = "unknown".to_string();
-    let path = file_change.new_path.as_ref()
+    let path = file_change
+        .new_path
+        .as_ref()
         .or(file_change.old_path.as_ref())
         .unwrap_or(&unknown_path);
-    
-    let mut result = format!("diff --git a/{} b/{}\n", 
-        file_change.old_path.as_ref().unwrap_or(path), 
-        file_change.new_path.as_ref().unwrap_or(path));
-    
+
+    let mut result = format!(
+        "diff --git a/{} b/{}\n",
+        file_change.old_path.as_ref().unwrap_or(path),
+        file_change.new_path.as_ref().unwrap_or(path)
+    );
+
     // Remove excessive empty lines while preserving structure
     let cleaned_content = remove_excessive_empty_lines(&file_change.content_lines);
-    
+
     for line in cleaned_content {
         result.push_str(&line);
         result.push('\n');
     }
-    
+
     result
 }
 
 fn remove_excessive_empty_lines(lines: &[String]) -> Vec<String> {
     let mut result = Vec::new();
     let mut consecutive_empty = 0;
-    
+
     for line in lines {
         let is_empty = line.trim().is_empty();
-        
+
         if is_empty {
             consecutive_empty += 1;
             // Keep at most 2 consecutive empty lines
@@ -218,7 +233,7 @@ fn remove_excessive_empty_lines(lines: &[String]) -> Vec<String> {
             result.push(line.clone());
         }
     }
-    
+
     result
 }
 
@@ -243,7 +258,7 @@ index 1234567..0000000
 -Line 1
 -Line 2
 -Line 3"#;
-        
+
         let result = minimize_diff(diff);
         assert!(result.contains("Deleted file: test.txt"));
         assert!(!result.contains("Line 1"));
@@ -260,7 +275,7 @@ index 0000000..abcdefg
 +New line 1
 +New line 2
 +New line 3"#;
-        
+
         let result = minimize_diff(diff);
         assert!(result.contains("diff --git a/new.txt b/new.txt"));
         assert!(result.contains("+New line 1"));
@@ -272,29 +287,31 @@ index 0000000..abcdefg
     fn test_large_added_file() {
         // Read the actual large JSON file
         let json_content = include_str!("../test_data/large_config.json");
-        
+
         // Create a git diff for adding this large JSON file
-        let mut diff = String::from(r#"diff --git a/config/enterprise.json b/config/enterprise.json
+        let mut diff = String::from(
+            r#"diff --git a/config/enterprise.json b/config/enterprise.json
 new file mode 100644
 index 0000000..1234567
 --- /dev/null
 +++ b/config/enterprise.json
-"#);
-        
+"#,
+        );
+
         // Add the JSON content as additions (with + prefix)
         let lines: Vec<&str> = json_content.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             diff.push_str(&format!("@@ -{},0 +{},1 @@\n", i + 1, i + 1));
             diff.push_str(&format!("+{}\n", line));
         }
-        
+
         let result = minimize_diff(&diff);
-        
+
         // Should show large file summary, not content
         assert!(result.contains("Large file change: config/enterprise.json"));
         assert!(result.contains("Change type: added"));
         assert!(result.contains("Content lines:"));
-        
+
         // Should NOT contain actual JSON content
         assert!(!result.contains("enterprise-api-service"));
         assert!(!result.contains("postgresql"));
@@ -307,39 +324,47 @@ index 0000000..1234567
         // Test with a realistic large JSON configuration file
         let json_content = include_str!("../test_data/large_config.json");
         let lines: Vec<&str> = json_content.lines().collect();
-        
+
         // Verify our test file is actually large enough
         assert!(lines.len() > 400, "Test JSON file should have >400 lines");
-        
+
         // Create a proper git diff format
-        let diff = format!(r#"diff --git a/config/production.json b/config/production.json
+        let diff = format!(
+            r#"diff --git a/config/production.json b/config/production.json
 new file mode 100644
 index 0000000..abcdef123456
 --- /dev/null
 +++ b/config/production.json
 @@ -0,0 +1,{} @@
-{}"#, 
+{}"#,
             lines.len(),
-            lines.iter().map(|line| format!("+{}", line)).collect::<Vec<_>>().join("\n")
+            lines
+                .iter()
+                .map(|line| format!("+{}", line))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
-        
+
         let result = minimize_diff(&diff);
-        
+
         // Verify it's treated as a large file
         assert!(result.contains("Large file change: config/production.json"));
         assert!(result.contains("Change type: added"));
-        
+
         // Verify content is not shown (token efficiency)
         assert!(!result.contains("\"application\""));
         assert!(!result.contains("\"database\""));
         assert!(!result.contains("\"authentication\""));
         assert!(!result.contains("\"monitoring\""));
-        
+
         // Verify the content line count is reasonable
         assert!(result.contains("Content lines:"));
-        
+
         // Should be much shorter than original
-        assert!(result.len() < diff.len() / 10, "Minimized output should be much smaller");
+        assert!(
+            result.len() < diff.len() / 10,
+            "Minimized output should be much smaller"
+        );
     }
 
     #[test]
@@ -354,7 +379,7 @@ index xyz123..abc456 100644
 +Modified line 2
  Existing line 3
 +Added line 4"#;
-        
+
         let result = minimize_diff(diff);
         assert!(result.contains("diff --git a/modified.txt b/modified.txt"));
         assert!(result.contains("-Old line 2"));
@@ -372,7 +397,7 @@ index xyz123..abc456 100644
             "".to_string(),
             "Line 2".to_string(),
         ];
-        
+
         let result = remove_excessive_empty_lines(&lines);
         let empty_count = result.iter().filter(|line| line.trim().is_empty()).count();
         assert_eq!(empty_count, 2); // Should have at most 2 empty lines
@@ -394,7 +419,7 @@ index xyz123..abc456 100644
 similarity index 100%
 rename from old_name.txt
 rename to new_name.txt"#;
-        
+
         let result = minimize_diff(diff);
         assert!(result.contains("diff --git a/old_name.txt b/new_name.txt"));
     }
@@ -418,7 +443,7 @@ index 0000000..abcdefg
 @@ -0,0 +1,2 @@
 +New line 1
 +New line 2"#;
-        
+
         let result = minimize_diff(diff);
         assert!(result.contains("Deleted file: deleted.txt"));
         assert!(result.contains("diff --git a/added.txt b/added.txt"));
