@@ -112,13 +112,8 @@ jobs:
       id: changelog
       if: steps.check_tag.outputs.tag_exists == 'false'
       run: |
-        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-        if [ -z "$LAST_TAG" ]; then
-          # Get recent commits if no tags exist, using a safer approach
-          COMMITS=$(git log --oneline --pretty=format:"- %s" -n 10)
-        else
-          COMMITS=$(git log --oneline --pretty=format:"- %s" ${LAST_TAG}..HEAD)
-        fi
+        # Get recent commits for changelog - use only safe git commands
+        COMMITS=$(git log --oneline --pretty=format:"- %s" -n 10)
         
         # Get binary size
         BINARY_SIZE=$(ls -lh artifacts/minimize-git-diff-llm | awk '{print $5}')
