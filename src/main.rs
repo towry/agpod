@@ -118,9 +118,8 @@ fn parse_file_change(lines: &[&str], index: &mut usize) -> Option<FileChange> {
             }
             
             // Count actual content changes
-            if line.starts_with('+') && !line.starts_with("+++") {
-                total_changes += 1;
-            } else if line.starts_with('-') && !line.starts_with("---") {
+            if (line.starts_with('+') && !line.starts_with("+++")) ||
+               (line.starts_with('-') && !line.starts_with("---")) {
                 total_changes += 1;
             }
             
@@ -168,8 +167,8 @@ fn format_regular_file_diff(file_change: &FileChange) -> String {
         .unwrap_or(&unknown_path);
     
     let mut result = format!("diff --git a/{} b/{}\n", 
-        file_change.old_path.as_ref().unwrap_or(&path), 
-        file_change.new_path.as_ref().unwrap_or(&path));
+        file_change.old_path.as_ref().unwrap_or(path), 
+        file_change.new_path.as_ref().unwrap_or(path));
     
     // Remove excessive empty lines while preserving structure
     let cleaned_content = remove_excessive_empty_lines(&file_change.content_lines);
