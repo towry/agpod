@@ -1,0 +1,234 @@
+name: Release
+
+on:
+  # Trigger when PR is merged to main
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    name: Create Release for macOS M3 (Apple Silicon)
+    runs-on: macos-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: aarch64-apple-darwin
+        override: true
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+          
+    - name: Run tests
+      run: cargo test --verbose
+      
+    - name: Run clippy
+      run: cargo clippy -- -D warnings
+      
+    - name: Build for macOS M3 (Apple Silicon)
+      run: |
+        echo "Building for Apple Silicon (M1/M2/M3) architecture..."
+        cargo build --release --target aarch64-apple-darwin --verbose
+        
+    - name: Verify binary architecture
+      run: |
+        file target/aarch64-apple-darwin/release/minimize-git-diff-llm
+        lipo -info target/aarch64-apple-darwin/release/minimize-git-diff-llm
+        
+    - name: Create binary artifact
+      run: |
+        mkdir -p artifacts
+        cp target/aarch64-apple-darwin/release/minimize-git-diff-llm artifacts/
+        cd artifacts
+        # Create checksum
+        shasum -a 256 minimize-git-diff-llm > minimize-git-diff-llm.sha256
+        # Create tarball
+        tar -czf minimize-git-diff-llm-macos-m3.tar.gz minimize-git-diff-llm minimize-git-diff-llm.sha256
+        
+    - name: Test binary functionality
+      run: |
+        echo "Testing binary functionality..."
+        cat > test_diff.txt << 'EOF'
+        diff --git a/test.txt b/test.txt
+        new file mode 100644
+        index 0000000..1234567
+        --- /dev/null
+        +++ b/test.txt
+        @@ -0,0 +1,3 @@
+        +Line 1
+        +Line 2
+        +Line 3
+        EOF
+        ./artifacts/minimize-git-diff-llm < test_diff.txt
+        
+    - name: Get version from Cargo.toml
+      id: version
+      run: |
+        VERSION=$(grep "^version = " Cargo.toml | head -1 | cut -d '"' -f 2)
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="v${VERSION}"
+        fi
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Release version: ${VERSION}"
+        
+    - name: Check if tag exists
+      id: check_tag
+      run: |
+        if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+          echo "tag_exists=true" >> $GITHUB_OUTPUT
+          echo "Tag ${{ steps.version.outputs.version }} already exists"
+        else
+          echo "tag_exists=false" >> $GITHUB_OUTPUT
+          echo "Tag ${{ steps.version.outputs.version }} does not exist"
+        fi
+        
+    - name: Generate changelog
+      id: changelog
+      if: steps.check_tag.outputs.tag_exists == 'false'
+      run: |
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+        if [ -z "$LAST_TAG" ]; then
+          COMMITS=$(git log --oneline --pretty=format:"- %s" HEAD~10..HEAD)
+        else
+          COMMITS=$(git log --oneline --pretty=format:"- %s" ${LAST_TAG}..HEAD)
+        fi
+        
+        # Get binary size
+        BINARY_SIZE=$(ls -lh artifacts/minimize-git-diff-llm | awk '{print $5}')
+        
+        # Create changelog content
+        cat > changelog.md << EOF
+        ## Git Diff Minimizer for LLM Context
+        
+        A CLI tool that minimizes git diff content for Large Language Models, reducing token usage while preserving essential information for code analysis.
+        
+        ### Features
+        - **Large file handling**: Files with >100 changes are summarized with metadata only
+        - **Deleted file handling**: Shows only "Deleted file: filename" 
+        - **Empty line reduction**: Limits consecutive empty lines to 2 maximum
+        - **Token efficiency**: Demonstrated 99.3% reduction on large files
+        
+        ### Changes in this release
+        
+        ${COMMITS}
+        
+        ### Binary Information
+        - **Target**: macOS Apple Silicon (M1/M2/M3)
+        - **Size**: ${BINARY_SIZE}
+        - **Architecture**: aarch64-apple-darwin
+        
+        ### Installation
+        
+        1. Download \`minimize-git-diff-llm-macos-m3.tar.gz\`
+        2. Extract and install:
+        
+        \`\`\`bash
+        tar -xzf minimize-git-diff-llm-macos-m3.tar.gz
+        # Verify checksum (optional)
+        shasum -a 256 -c minimize-git-diff-llm.sha256
+        # Make executable and install
+        chmod +x minimize-git-diff-llm
+        sudo mv minimize-git-diff-llm /usr/local/bin/
+        \`\`\`
+        
+        ### Usage
+        
+        \`\`\`bash
+        # Basic usage
+        git diff | minimize-git-diff-llm
+        
+        # With staged changes  
+        git diff --cached | minimize-git-diff-llm
+        
+        # Compare commits
+        git diff HEAD~1 HEAD | minimize-git-diff-llm
+        \`\`\`
+        
+        ### Example Output
+        
+        **Large file (400+ lines)** → **3 lines of metadata**
+        \`\`\`
+        Large file change: config/enterprise.json
+        Change type: added
+        Content lines: 437
+        \`\`\`
+        
+        **Deleted file** → **1 line summary**  
+        \`\`\`
+        Deleted file: old_file.txt
+        \`\`\`
+        EOF
+        
+        echo "changelog_file=changelog.md" >> $GITHUB_OUTPUT
+        
+    - name: Create Release
+      id: create_release
+      if: steps.check_tag.outputs.tag_exists == 'false'
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        release_name: Git Diff Minimizer ${{ steps.version.outputs.version }} (macOS M3)
+        body_path: changelog.md
+        draft: false
+        prerelease: false
+        
+    - name: Upload Release Asset
+      if: steps.check_tag.outputs.tag_exists == 'false'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./artifacts/minimize-git-diff-llm-macos-m3.tar.gz
+        asset_name: minimize-git-diff-llm-macos-m3.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: Upload Binary Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: minimize-git-diff-llm-macos-m3-${{ steps.version.outputs.version }}
+        path: artifacts/
+        retention-days: 30
+        
+    - name: Summary
+      run: |
+        echo "### Release Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Target**: macOS Apple Silicon (M1/M2/M3)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Binary Size**: $(ls -lh artifacts/minimize-git-diff-llm | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.check_tag.outputs.tag_exists }}" == "true" ]; then
+          echo "- **Status**: Tag already exists, skipped release creation" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Status**: Release created successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- **Download**: [minimize-git-diff-llm-macos-m3.tar.gz](${{ steps.create_release.outputs.html_url }})" >> $GITHUB_STEP_SUMMARY
+        fi

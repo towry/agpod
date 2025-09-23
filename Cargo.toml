@@ -1,0 +1,18 @@
+[package]
+name = "minimize-git-diff-llm"
+version = "0.1.0"
+edition = "2021"
+authors = ["Development Team"]
+description = "CLI tool to minimize git diff content for LLM context, reducing token usage while preserving essential information"
+license = "MIT"
+repository = "https://github.com/towry/minimize-git-diff-llm"
+readme = "README.md"
+keywords = ["git", "diff", "llm", "cli", "minimizer"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "minimize-git-diff-llm"
+path = "src/main.rs"
+
+[dependencies]
+regex = "1.0"
