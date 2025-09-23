@@ -11,6 +11,27 @@ CLI tool to minimize git diff content for LLM context, reducing token usage whil
 
 ## Installation
 
+### Quick install (recommended)
+
+Install the latest release directly to `/usr/local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/main/install.sh | bash
+```
+
+Or download and run the install script manually:
+
+```bash
+wget https://raw.githubusercontent.com/towry/minimize-git-diff-llm/main/install.sh
+chmod +x install.sh
+./install.sh
+```
+
+**Requirements:**
+- macOS with Apple Silicon (M1/M2/M3)
+- `curl` or `wget`
+- `sudo` access (for installing to `/usr/local/bin`)
+
 ### From source
 
 ```bash
