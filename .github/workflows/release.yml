@@ -15,11 +15,14 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: write
+  
 jobs:
   release:
     name: Create Release for macOS M3 (Apple Silicon)
     runs-on: macos-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, '-beta'))
     
     steps:
     - name: Checkout code
@@ -28,14 +31,12 @@ jobs:
         fetch-depth: 0
         
     - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: stable
-        target: aarch64-apple-darwin
-        override: true
+        targets: aarch64-apple-darwin
         
     - name: Cache cargo registry
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -114,12 +115,8 @@ jobs:
       id: changelog
       if: steps.check_tag.outputs.tag_exists == 'false'
       run: |
-        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-        if [ -z "$LAST_TAG" ]; then
-          COMMITS=$(git log --oneline --pretty=format:"- %s" HEAD~10..HEAD)
-        else
-          COMMITS=$(git log --oneline --pretty=format:"- %s" ${LAST_TAG}..HEAD)
-        fi
+        # Get recent commits for changelog - use only safe git commands
+        COMMITS=$(git log --oneline --pretty=format:"- %s" -n 10)
         
         # Get binary size
         BINARY_SIZE=$(ls -lh artifacts/minimize-git-diff-llm | awk '{print $5}')
@@ -190,31 +187,18 @@ jobs:
         echo "changelog_file=changelog.md" >> $GITHUB_OUTPUT
         
     - name: Create Release
-      id: create_release
       if: steps.check_tag.outputs.tag_exists == 'false'
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.version.outputs.version }}
-        release_name: Git Diff Minimizer ${{ steps.version.outputs.version }} (macOS M3)
+        name: Git Diff Minimizer ${{ steps.version.outputs.version }} (macOS M3)
         body_path: changelog.md
         draft: false
         prerelease: false
-        
-    - name: Upload Release Asset
-      if: steps.check_tag.outputs.tag_exists == 'false'
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./artifacts/minimize-git-diff-llm-macos-m3.tar.gz
-        asset_name: minimize-git-diff-llm-macos-m3.tar.gz
-        asset_content_type: application/gzip
+        files: ./artifacts/minimize-git-diff-llm-macos-m3.tar.gz
         
     - name: Upload Binary Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: minimize-git-diff-llm-macos-m3-${{ steps.version.outputs.version }}
         path: artifacts/
