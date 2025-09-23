@@ -24,3 +24,8 @@ target
 # Added by cargo
 
 /target
+
+# Test files (temporary)
+test_diff.txt
+deleted_test.txt
+large_test_diff.txt
