@@ -19,7 +19,7 @@ jobs:
   release:
     name: Create Release for macOS M3 (Apple Silicon)
     runs-on: macos-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.version, '-beta'))
     
     steps:
     - name: Checkout code
