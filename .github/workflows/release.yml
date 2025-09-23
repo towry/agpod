@@ -114,14 +114,8 @@ jobs:
       run: |
         LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
         if [ -z "$LAST_TAG" ]; then
-          # Get commits since the beginning if no tags exist, limited to available commits
-          COMMIT_COUNT=$(git rev-list --count HEAD)
-          if [ "$COMMIT_COUNT" -gt 10 ]; then
-            COMMITS=$(git log --oneline --pretty=format:"- %s" HEAD~10..HEAD)
-          else
-            # If we have fewer than 10 commits, show all of them
-            COMMITS=$(git log --oneline --pretty=format:"- %s")
-          fi
+          # Get recent commits if no tags exist, using a safer approach
+          COMMITS=$(git log --oneline --pretty=format:"- %s" -n 10)
         else
           COMMITS=$(git log --oneline --pretty=format:"- %s" ${LAST_TAG}..HEAD)
         fi
