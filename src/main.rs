@@ -1,5 +1,4 @@
 use regex::Regex;
-use std::collections::HashSet;
 use std::io::{self, Read};
 
 fn main() {
@@ -55,12 +54,28 @@ fn minimize_diff(diff_content: &str) -> String {
     let file_changes = parse_git_diff(diff_content);
     
     for file_change in file_changes {
-        if file_change.is_large {
-            // Strategy 1: For large files, only show metadata
-            result.push_str(&format_large_file_summary(&file_change));
-        } else {
-            // For smaller files, show the diff but remove excessive empty lines
-            result.push_str(&format_regular_file_diff(&file_change));
+        match file_change.change_type {
+            ChangeType::Deleted => {
+                // For deleted files, only show metadata
+                result.push_str(&format_deleted_file_summary(&file_change));
+            }
+            ChangeType::Added => {
+                if file_change.is_large {
+                    // Strategy 1: For large added files, only show metadata
+                    result.push_str(&format_large_file_summary(&file_change));
+                } else {
+                    // For smaller added files, show the diff but remove excessive empty lines
+                    result.push_str(&format_regular_file_diff(&file_change));
+                }
+            }
+            _ => {
+                // For modified and renamed files, apply the original logic
+                if file_change.is_large {
+                    result.push_str(&format_large_file_summary(&file_change));
+                } else {
+                    result.push_str(&format_regular_file_diff(&file_change));
+                }
+            }
         }
         result.push('\n');
     }
@@ -152,12 +167,16 @@ fn format_large_file_summary(file_change: &FileChange) -> String {
     summary.push_str(&format!("Change type: {}\n", file_change.change_type.as_str()));
     summary.push_str(&format!("Content lines: {}\n", file_change.content_lines.len()));
     
-    // Extract keywords for readable files
-    if let Some(keywords) = extract_keywords(path, &file_change.content_lines) {
-        summary.push_str(&format!("Keywords: {}\n", keywords.join(", ")));
-    }
-    
     summary
+}
+
+fn format_deleted_file_summary(file_change: &FileChange) -> String {
+    let unknown_path = "unknown".to_string();
+    let path = file_change.old_path.as_ref()
+        .or(file_change.new_path.as_ref())
+        .unwrap_or(&unknown_path);
+    
+    format!("Deleted file: {}\n", path)
 }
 
 fn format_regular_file_diff(file_change: &FileChange) -> String {
@@ -181,89 +200,6 @@ fn format_regular_file_diff(file_change: &FileChange) -> String {
     result
 }
 
-fn extract_keywords(file_path: &str, content_lines: &[String]) -> Option<Vec<String>> {
-    let mut keywords = HashSet::new();
-    
-    // Only extract keywords from text-based files
-    if !is_text_file(file_path) {
-        return None;
-    }
-    
-    // For JSON files, extract top-level keys
-    if file_path.ends_with(".json") {
-        extract_json_keywords(&mut keywords, content_lines);
-    }
-    
-    // For other text files, extract common programming keywords
-    if file_path.ends_with(".rs") || file_path.ends_with(".py") || 
-       file_path.ends_with(".js") || file_path.ends_with(".ts") ||
-       file_path.ends_with(".java") || file_path.ends_with(".cpp") {
-        extract_code_keywords(&mut keywords, content_lines);
-    }
-    
-    if keywords.is_empty() {
-        None
-    } else {
-        let mut sorted_keywords: Vec<String> = keywords.into_iter().collect();
-        sorted_keywords.sort();
-        sorted_keywords.truncate(10); // Limit to 10 keywords
-        Some(sorted_keywords)
-    }
-}
-
-fn is_text_file(file_path: &str) -> bool {
-    let text_extensions = [
-        ".txt", ".md", ".json", ".yaml", ".yml", ".toml", ".xml", ".html", ".css",
-        ".js", ".ts", ".py", ".rs", ".java", ".cpp", ".c", ".h", ".hpp", ".go",
-        ".php", ".rb", ".sh", ".sql", ".csv", ".log"
-    ];
-    
-    text_extensions.iter().any(|ext| file_path.ends_with(ext))
-}
-
-fn extract_json_keywords(keywords: &mut HashSet<String>, content_lines: &[String]) {
-    let key_pattern = Regex::new(r#""([^"]+)"\s*:"#).unwrap();
-    
-    for line in content_lines {
-        if line.starts_with('+') || line.starts_with('-') {
-            let content = &line[1..]; // Remove +/- prefix
-            for capture in key_pattern.captures_iter(content) {
-                if let Some(key) = capture.get(1) {
-                    keywords.insert(key.as_str().to_string());
-                }
-            }
-        }
-    }
-}
-
-fn extract_code_keywords(keywords: &mut HashSet<String>, content_lines: &[String]) {
-    // Common programming patterns
-    let patterns = [
-        r"\bfn\s+(\w+)", // Rust functions
-        r"\bclass\s+(\w+)", // Classes
-        r"\bstruct\s+(\w+)", // Structs
-        r"\binterface\s+(\w+)", // Interfaces
-        r"\bdef\s+(\w+)", // Python functions
-        r"\bfunction\s+(\w+)", // JavaScript functions
-    ];
-    
-    let combined_pattern = patterns.join("|");
-    if let Ok(re) = Regex::new(&combined_pattern) {
-        for line in content_lines {
-            if line.starts_with('+') || line.starts_with('-') {
-                let content = &line[1..]; // Remove +/- prefix
-                for capture in re.captures_iter(content) {
-                    for i in 1..capture.len() {
-                        if let Some(keyword) = capture.get(i) {
-                            keywords.insert(keyword.as_str().to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn remove_excessive_empty_lines(lines: &[String]) -> Vec<String> {
     let mut result = Vec::new();
     let mut consecutive_empty = 0;
@@ -284,4 +220,155 @@ fn remove_excessive_empty_lines(lines: &[String]) -> Vec<String> {
     }
     
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_input() {
+        let result = minimize_diff("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_deleted_file() {
+        let diff = r#"diff --git a/test.txt b/test.txt
+deleted file mode 100644
+index 1234567..0000000
+--- a/test.txt
++++ /dev/null
+@@ -1,3 +0,0 @@
+-Line 1
+-Line 2
+-Line 3"#;
+        
+        let result = minimize_diff(diff);
+        assert!(result.contains("Deleted file: test.txt"));
+        assert!(!result.contains("Line 1"));
+    }
+
+    #[test]
+    fn test_small_added_file() {
+        let diff = r#"diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000..abcdefg
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,3 @@
++New line 1
++New line 2
++New line 3"#;
+        
+        let result = minimize_diff(diff);
+        assert!(result.contains("diff --git a/new.txt b/new.txt"));
+        assert!(result.contains("+New line 1"));
+        assert!(result.contains("+New line 2"));
+        assert!(result.contains("+New line 3"));
+    }
+
+    #[test]
+    fn test_large_added_file() {
+        let mut diff = String::from(r#"diff --git a/large.txt b/large.txt
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/large.txt
+"#);
+        
+        // Add many lines to make it a "large" file (>100 changes)
+        for i in 1..=110 {
+            diff.push_str(&format!("@@ -{},0 +{},1 @@\n", i, i));
+            diff.push_str(&format!("+Line {}\n", i));
+        }
+        
+        let result = minimize_diff(&diff);
+        assert!(result.contains("Large file change: large.txt"));
+        assert!(result.contains("Change type: added"));
+        assert!(!result.contains("+Line 50")); // Content should not be shown
+    }
+
+    #[test]
+    fn test_modified_file() {
+        let diff = r#"diff --git a/modified.txt b/modified.txt
+index xyz123..abc456 100644
+--- a/modified.txt
++++ b/modified.txt
+@@ -1,3 +1,4 @@
+ Existing line 1
+-Old line 2
++Modified line 2
+ Existing line 3
++Added line 4"#;
+        
+        let result = minimize_diff(diff);
+        assert!(result.contains("diff --git a/modified.txt b/modified.txt"));
+        assert!(result.contains("-Old line 2"));
+        assert!(result.contains("+Modified line 2"));
+        assert!(result.contains("+Added line 4"));
+    }
+
+    #[test]
+    fn test_remove_excessive_empty_lines() {
+        let lines = vec![
+            "Line 1".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "Line 2".to_string(),
+        ];
+        
+        let result = remove_excessive_empty_lines(&lines);
+        let empty_count = result.iter().filter(|line| line.trim().is_empty()).count();
+        assert_eq!(empty_count, 2); // Should have at most 2 empty lines
+        assert_eq!(result[0], "Line 1");
+        assert_eq!(result[result.len() - 1], "Line 2");
+    }
+
+    #[test]
+    fn test_change_type_strings() {
+        assert_eq!(ChangeType::Added.as_str(), "added");
+        assert_eq!(ChangeType::Deleted.as_str(), "deleted");
+        assert_eq!(ChangeType::Modified.as_str(), "modified");
+        assert_eq!(ChangeType::Renamed.as_str(), "renamed");
+    }
+
+    #[test]
+    fn test_renamed_file() {
+        let diff = r#"diff --git a/old_name.txt b/new_name.txt
+similarity index 100%
+rename from old_name.txt
+rename to new_name.txt"#;
+        
+        let result = minimize_diff(diff);
+        assert!(result.contains("diff --git a/old_name.txt b/new_name.txt"));
+    }
+
+    #[test]
+    fn test_multiple_files() {
+        let diff = r#"diff --git a/deleted.txt b/deleted.txt
+deleted file mode 100644
+index 1234567..0000000
+--- a/deleted.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-Line 1
+-Line 2
+
+diff --git a/added.txt b/added.txt
+new file mode 100644
+index 0000000..abcdefg
+--- /dev/null
++++ b/added.txt
+@@ -0,0 +1,2 @@
++New line 1
++New line 2"#;
+        
+        let result = minimize_diff(diff);
+        assert!(result.contains("Deleted file: deleted.txt"));
+        assert!(result.contains("diff --git a/added.txt b/added.txt"));
+        assert!(result.contains("+New line 1"));
+    }
 }
