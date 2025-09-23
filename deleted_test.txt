@@ -1,0 +1,11 @@
+diff --git a/oldfile.txt b/oldfile.txt
+deleted file mode 100644
+index 1234567..0000000
+--- a/oldfile.txt
++++ /dev/null
+@@ -1,5 +0,0 @@
+-Line 1
+-Line 2
+-Line 3
+-Line 4
+-Line 5
