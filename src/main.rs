@@ -270,23 +270,76 @@ index 0000000..abcdefg
 
     #[test]
     fn test_large_added_file() {
-        let mut diff = String::from(r#"diff --git a/large.txt b/large.txt
+        // Read the actual large JSON file
+        let json_content = include_str!("../test_data/large_config.json");
+        
+        // Create a git diff for adding this large JSON file
+        let mut diff = String::from(r#"diff --git a/config/enterprise.json b/config/enterprise.json
 new file mode 100644
 index 0000000..1234567
 --- /dev/null
-+++ b/large.txt
++++ b/config/enterprise.json
 "#);
         
-        // Add many lines to make it a "large" file (>100 changes)
-        for i in 1..=110 {
-            diff.push_str(&format!("@@ -{},0 +{},1 @@\n", i, i));
-            diff.push_str(&format!("+Line {}\n", i));
+        // Add the JSON content as additions (with + prefix)
+        let lines: Vec<&str> = json_content.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            diff.push_str(&format!("@@ -{},0 +{},1 @@\n", i + 1, i + 1));
+            diff.push_str(&format!("+{}\n", line));
         }
         
         let result = minimize_diff(&diff);
-        assert!(result.contains("Large file change: large.txt"));
+        
+        // Should show large file summary, not content
+        assert!(result.contains("Large file change: config/enterprise.json"));
         assert!(result.contains("Change type: added"));
-        assert!(!result.contains("+Line 50")); // Content should not be shown
+        assert!(result.contains("Content lines:"));
+        
+        // Should NOT contain actual JSON content
+        assert!(!result.contains("enterprise-api-service"));
+        assert!(!result.contains("postgresql"));
+        assert!(!result.contains("prometheus"));
+        assert!(!result.contains("authentication"));
+    }
+
+    #[test]
+    fn test_large_json_file_realistic() {
+        // Test with a realistic large JSON configuration file
+        let json_content = include_str!("../test_data/large_config.json");
+        let lines: Vec<&str> = json_content.lines().collect();
+        
+        // Verify our test file is actually large enough
+        assert!(lines.len() > 400, "Test JSON file should have >400 lines");
+        
+        // Create a proper git diff format
+        let diff = format!(r#"diff --git a/config/production.json b/config/production.json
+new file mode 100644
+index 0000000..abcdef123456
+--- /dev/null
++++ b/config/production.json
+@@ -0,0 +1,{} @@
+{}"#, 
+            lines.len(),
+            lines.iter().map(|line| format!("+{}", line)).collect::<Vec<_>>().join("\n")
+        );
+        
+        let result = minimize_diff(&diff);
+        
+        // Verify it's treated as a large file
+        assert!(result.contains("Large file change: config/production.json"));
+        assert!(result.contains("Change type: added"));
+        
+        // Verify content is not shown (token efficiency)
+        assert!(!result.contains("\"application\""));
+        assert!(!result.contains("\"database\""));
+        assert!(!result.contains("\"authentication\""));
+        assert!(!result.contains("\"monitoring\""));
+        
+        // Verify the content line count is reasonable
+        assert!(result.contains("Content lines:"));
+        
+        // Should be much shorter than original
+        assert!(result.len() < diff.len() / 10, "Minimized output should be much smaller");
     }
 
     #[test]

@@ -1,0 +1,432 @@
+{
+  "application": {
+    "name": "enterprise-api-service",
+    "version": "2.1.4",
+    "description": "Comprehensive enterprise API service with microservices architecture",
+    "author": "Development Team",
+    "license": "MIT"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "ssl": {
+      "enabled": true,
+      "certificate": "/etc/ssl/certs/server.crt",
+      "private_key": "/etc/ssl/private/server.key",
+      "protocols": ["TLSv1.2", "TLSv1.3"]
+    },
+    "compression": {
+      "enabled": true,
+      "algorithms": ["gzip", "deflate", "br"],
+      "level": 6
+    },
+    "cors": {
+      "enabled": true,
+      "origins": ["https://app.example.com", "https://admin.example.com"],
+      "methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+      "headers": ["Content-Type", "Authorization", "X-Requested-With"],
+      "credentials": true,
+      "max_age": 86400
+    }
+  },
+  "database": {
+    "primary": {
+      "type": "postgresql",
+      "host": "db-primary.internal",
+      "port": 5432,
+      "database": "enterprise_db",
+      "username": "${DB_USERNAME}",
+      "password": "${DB_PASSWORD}",
+      "ssl_mode": "require",
+      "pool": {
+        "min_connections": 5,
+        "max_connections": 100,
+        "connection_timeout": 30000,
+        "idle_timeout": 600000
+      },
+      "migrations": {
+        "auto_migrate": false,
+        "migration_path": "./migrations",
+        "schema_version_table": "schema_migrations"
+      }
+    },
+    "replica": {
+      "type": "postgresql",
+      "host": "db-replica.internal",
+      "port": 5432,
+      "database": "enterprise_db",
+      "username": "${DB_REPLICA_USERNAME}",
+      "password": "${DB_REPLICA_PASSWORD}",
+      "ssl_mode": "require",
+      "pool": {
+        "min_connections": 2,
+        "max_connections": 50,
+        "connection_timeout": 30000,
+        "idle_timeout": 600000
+      }
+    },
+    "cache": {
+      "type": "redis",
+      "cluster": {
+        "nodes": [
+          "redis-1.internal:6379",
+          "redis-2.internal:6379",
+          "redis-3.internal:6379"
+        ],
+        "password": "${REDIS_PASSWORD}",
+        "ssl": true
+      },
+      "pool": {
+        "max_connections": 20,
+        "connection_timeout": 5000,
+        "idle_timeout": 300000
+      },
+      "ttl": {
+        "default": 3600,
+        "user_sessions": 86400,
+        "api_responses": 1800,
+        "static_data": 604800
+      }
+    }
+  },
+  "authentication": {
+    "jwt": {
+      "secret": "${JWT_SECRET}",
+      "algorithm": "HS256",
+      "expires_in": "24h",
+      "refresh_expires_in": "7d",
+      "issuer": "enterprise-api",
+      "audience": "enterprise-clients"
+    },
+    "oauth2": {
+      "providers": {
+        "google": {
+          "client_id": "${GOOGLE_CLIENT_ID}",
+          "client_secret": "${GOOGLE_CLIENT_SECRET}",
+          "redirect_uri": "https://api.example.com/auth/google/callback",
+          "scopes": ["openid", "email", "profile"]
+        },
+        "microsoft": {
+          "client_id": "${MICROSOFT_CLIENT_ID}",
+          "client_secret": "${MICROSOFT_CLIENT_SECRET}",
+          "redirect_uri": "https://api.example.com/auth/microsoft/callback",
+          "scopes": ["openid", "email", "profile"]
+        }
+      }
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "strategies": {
+        "default": {
+          "window": "15m",
+          "max_requests": 1000
+        },
+        "authenticated": {
+          "window": "15m",
+          "max_requests": 5000
+        },
+        "premium": {
+          "window": "15m",
+          "max_requests": 10000
+        }
+      }
+    }
+  },
+  "api": {
+    "base_path": "/api/v2",
+    "documentation": {
+      "swagger_ui": {
+        "enabled": true,
+        "path": "/docs",
+        "title": "Enterprise API Documentation"
+      },
+      "openapi": {
+        "version": "3.0.3",
+        "info": {
+          "title": "Enterprise API",
+          "version": "2.1.4",
+          "description": "Comprehensive enterprise API service"
+        }
+      }
+    },
+    "endpoints": {
+      "users": {
+        "base_path": "/users",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "middleware": ["auth", "rate_limit", "validation"],
+        "permissions": {
+          "GET": ["user:read", "admin:read"],
+          "POST": ["admin:write"],
+          "PUT": ["user:write", "admin:write"],
+          "DELETE": ["admin:write"]
+        }
+      },
+      "organizations": {
+        "base_path": "/organizations",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "middleware": ["auth", "rate_limit", "validation", "audit"],
+        "permissions": {
+          "GET": ["org:read", "admin:read"],
+          "POST": ["org:admin", "super:admin"],
+          "PUT": ["org:admin", "super:admin"],
+          "DELETE": ["super:admin"]
+        }
+      },
+      "projects": {
+        "base_path": "/projects",
+        "methods": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+        "middleware": ["auth", "rate_limit", "validation", "audit"],
+        "permissions": {
+          "GET": ["project:read", "org:read", "admin:read"],
+          "POST": ["project:create", "org:admin"],
+          "PUT": ["project:write", "org:admin"],
+          "PATCH": ["project:write"],
+          "DELETE": ["project:admin", "org:admin"]
+        }
+      },
+      "analytics": {
+        "base_path": "/analytics",
+        "methods": ["GET", "POST"],
+        "middleware": ["auth", "rate_limit", "analytics_validation"],
+        "permissions": {
+          "GET": ["analytics:read", "admin:read"],
+          "POST": ["analytics:write", "admin:write"]
+        },
+        "cache": {
+          "enabled": true,
+          "ttl": 300,
+          "vary_by": ["user_id", "org_id", "date_range"]
+        }
+      }
+    }
+  },
+  "messaging": {
+    "email": {
+      "provider": "sendgrid",
+      "api_key": "${SENDGRID_API_KEY}",
+      "from_address": "noreply@example.com",
+      "from_name": "Enterprise Service",
+      "templates": {
+        "welcome": "d-1234567890abcdef",
+        "password_reset": "d-abcdef1234567890",
+        "invoice": "d-567890abcdef1234",
+        "notification": "d-def1234567890abc"
+      }
+    },
+    "sms": {
+      "provider": "twilio",
+      "account_sid": "${TWILIO_ACCOUNT_SID}",
+      "auth_token": "${TWILIO_AUTH_TOKEN}",
+      "from_number": "+1234567890",
+      "templates": {
+        "verification": "Your verification code is: {{code}}",
+        "alert": "Alert: {{message}}"
+      }
+    },
+    "push_notifications": {
+      "provider": "firebase",
+      "server_key": "${FCM_SERVER_KEY}",
+      "project_id": "${FCM_PROJECT_ID}",
+      "topics": {
+        "general": "general-notifications",
+        "urgent": "urgent-notifications",
+        "maintenance": "maintenance-notifications"
+      }
+    }
+  },
+  "monitoring": {
+    "metrics": {
+      "provider": "prometheus",
+      "endpoint": "/metrics",
+      "interval": 15,
+      "custom_metrics": {
+        "api_requests_total": {
+          "type": "counter",
+          "labels": ["method", "endpoint", "status_code"]
+        },
+        "api_request_duration": {
+          "type": "histogram",
+          "labels": ["method", "endpoint"],
+          "buckets": [0.1, 0.5, 1, 2, 5, 10]
+        },
+        "active_connections": {
+          "type": "gauge",
+          "labels": ["protocol"]
+        }
+      }
+    },
+    "logging": {
+      "level": "info",
+      "format": "json",
+      "output": {
+        "console": {
+          "enabled": true,
+          "level": "debug"
+        },
+        "file": {
+          "enabled": true,
+          "path": "/var/log/enterprise-api.log",
+          "level": "info",
+          "rotation": {
+            "max_size": "100MB",
+            "max_files": 10,
+            "compress": true
+          }
+        },
+        "elasticsearch": {
+          "enabled": true,
+          "hosts": ["es-1.internal:9200", "es-2.internal:9200"],
+          "index": "enterprise-api-logs",
+          "level": "warn",
+          "username": "${ES_USERNAME}",
+          "password": "${ES_PASSWORD}"
+        }
+      }
+    },
+    "tracing": {
+      "provider": "jaeger",
+      "endpoint": "http://jaeger-collector.internal:14268/api/traces",
+      "service_name": "enterprise-api",
+      "sampling": {
+        "type": "probabilistic",
+        "param": 0.1
+      }
+    },
+    "health_checks": {
+      "endpoint": "/health",
+      "checks": {
+        "database": {
+          "type": "sql",
+          "query": "SELECT 1",
+          "timeout": 5000
+        },
+        "redis": {
+          "type": "ping",
+          "timeout": 2000
+        },
+        "external_api": {
+          "type": "http",
+          "url": "https://external-service.example.com/health",
+          "timeout": 3000
+        }
+      }
+    }
+  },
+  "security": {
+    "encryption": {
+      "algorithm": "AES-256-GCM",
+      "key_rotation": {
+        "enabled": true,
+        "interval": "30d",
+        "retention": "90d"
+      }
+    },
+    "headers": {
+      "x_frame_options": "DENY",
+      "x_content_type_options": "nosniff",
+      "x_xss_protection": "1; mode=block",
+      "strict_transport_security": "max-age=31536000; includeSubDomains",
+      "content_security_policy": "default-src 'self'; script-src 'self' 'unsafe-inline'"
+    },
+    "audit": {
+      "enabled": true,
+      "events": [
+        "user_login",
+        "user_logout",
+        "password_change",
+        "data_access",
+        "data_modification",
+        "admin_action"
+      ],
+      "storage": {
+        "type": "database",
+        "table": "audit_logs",
+        "retention": "2y"
+      }
+    }
+  },
+  "features": {
+    "flags": {
+      "new_dashboard": {
+        "enabled": true,
+        "rollout_percentage": 50,
+        "target_groups": ["beta_users", "internal_users"]
+      },
+      "advanced_analytics": {
+        "enabled": false,
+        "rollout_percentage": 0,
+        "target_groups": []
+      },
+      "real_time_notifications": {
+        "enabled": true,
+        "rollout_percentage": 100,
+        "target_groups": ["all_users"]
+      }
+    }
+  },
+  "integrations": {
+    "third_party_apis": {
+      "payment_processor": {
+        "provider": "stripe",
+        "public_key": "${STRIPE_PUBLIC_KEY}",
+        "secret_key": "${STRIPE_SECRET_KEY}",
+        "webhook_secret": "${STRIPE_WEBHOOK_SECRET}",
+        "supported_currencies": ["USD", "EUR", "GBP", "CAD"],
+        "features": ["payments", "subscriptions", "refunds"]
+      },
+      "analytics_service": {
+        "provider": "google_analytics",
+        "tracking_id": "${GA_TRACKING_ID}",
+        "measurement_id": "${GA_MEASUREMENT_ID}",
+        "api_secret": "${GA_API_SECRET}"
+      },
+      "cdn": {
+        "provider": "cloudflare",
+        "zone_id": "${CLOUDFLARE_ZONE_ID}",
+        "api_token": "${CLOUDFLARE_API_TOKEN}",
+        "caching_rules": {
+          "static_assets": "1y",
+          "api_responses": "5m",
+          "images": "30d"
+        }
+      }
+    }
+  },
+  "deployment": {
+    "environment": "production",
+    "region": "us-east-1",
+    "kubernetes": {
+      "namespace": "enterprise-api",
+      "deployment": {
+        "replicas": 3,
+        "strategy": "RollingUpdate",
+        "max_unavailable": 1,
+        "max_surge": 1
+      },
+      "resources": {
+        "requests": {
+          "cpu": "500m",
+          "memory": "1Gi"
+        },
+        "limits": {
+          "cpu": "2",
+          "memory": "4Gi"
+        }
+      },
+      "probes": {
+        "liveness": {
+          "path": "/health",
+          "port": 8080,
+          "initial_delay": 30,
+          "period": 10
+        },
+        "readiness": {
+          "path": "/ready",
+          "port": 8080,
+          "initial_delay": 5,
+          "period": 5
+        }
+      }
+    }
+  }
+}
