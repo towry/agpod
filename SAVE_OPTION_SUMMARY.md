@@ -7,6 +7,9 @@ This document summarizes the implementation of the `--save` option for the minim
 ### 1. Command-line argument parsing
 - Added support for the `--save` flag using `std::env::args()`
 - When `--save` is provided, the tool switches to "save mode" instead of minimizing output
+- Added optional `--save-path <path>` argument to specify a custom output directory
+  - If not provided, defaults to `llm/diff`
+  - Path is relative to the current working directory
 
 ### 2. Chunk suffix generation
 - Implemented `generate_chunk_suffix()` function that generates suffixes in the pattern:
@@ -15,9 +18,10 @@ This document summarizes the implementation of the `--save` option for the minim
 - This provides support for up to 10,676 files (676 + 10,000)
 
 ### 3. Directory management
-- Creates `llm/diff` directory for output chunks
+- Creates output directory for chunks (default: `llm/diff`, or custom path via `--save-path`)
 - If the directory already exists, it is completely removed and recreated
 - This ensures clean output on each run
+- Path is relative to the current working directory
 
 ### 4. Diff chunk splitting
 - Each file change in the git diff is saved as a separate chunk file
@@ -29,12 +33,15 @@ This document summarizes the implementation of the `--save` option for the minim
 
 ### 5. Testing
 - Added `test_generate_chunk_suffix()` to verify suffix generation logic
-- Added `test_save_diff_chunks()` to verify the complete save functionality
-- All 12 tests pass (10 original + 2 new tests)
+- Added `test_save_diff_chunks()` to verify the complete save functionality with default path
+- Added `test_save_diff_chunks_custom_path()` to verify custom path functionality
+- Added `test_parse_save_path()` to verify argument parsing
+- All 14 tests pass (10 original + 4 new tests)
 - Tested with edge cases:
   - 3 files (aa, ab, ac)
   - 30 files (up to bd)
   - 680 files (testing zz → 0000 transition)
+  - Custom output paths (relative and nested directories)
 
 ### 6. Demo script
 - Created `demo_save_option.sh` for easy demonstration
@@ -44,9 +51,14 @@ This document summarizes the implementation of the `--save` option for the minim
 
 ## Usage
 
-### Basic usage
+### Basic usage (default path)
 ```bash
 git diff | minimize-git-diff-llm --save
+```
+
+### With custom path
+```bash
+git diff | minimize-git-diff-llm --save --save-path my/custom/output
 ```
 
 ### With staged changes
@@ -56,8 +68,16 @@ git diff --cached | minimize-git-diff-llm --save
 
 ### Compare specific commits
 ```bash
-git diff HEAD~1 HEAD | minimize-git-diff-llm --save
+git diff HEAD~1 HEAD | minimize-git-diff-llm --save --save-path diffs/comparison
 ```
+
+## Command-line options
+
+- `--save`: Enable save mode (splits diff into chunks)
+- `--save-path <path>`: Specify custom output directory (optional, defaults to `llm/diff`)
+  - Path is relative to current working directory
+  - Parent directories are created automatically
+  - Existing directory is removed and recreated for clean output
 
 ## Output structure
 

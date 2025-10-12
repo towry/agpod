@@ -110,11 +110,30 @@ echo "-----------------------------------"
 cat llm/diff/chunk_ac.diff
 echo ""
 
+# Test custom path option
+echo "10. Testing custom path: --save-path custom/diffs"
+echo "-----------------------------------"
+if command -v minimize-git-diff-llm &> /dev/null; then
+    git diff --cached | minimize-git-diff-llm --save --save-path custom/diffs
+elif [ -f "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" ]; then
+    git diff --cached | "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" --save --save-path custom/diffs
+fi
+
+echo ""
+echo "11. Created chunks in custom/diffs/:"
+echo "-----------------------------------"
+ls -lh custom/diffs/
+echo ""
+
 echo "==================================="
 echo "Demo completed successfully!"
 echo "==================================="
 echo ""
 echo "The demo repository is at: $DEMO_DIR"
-echo "You can explore the llm/diff/ folder to see the chunks."
+echo "You can explore the llm/diff/ and custom/diffs/ folders to see the chunks."
+echo ""
+echo "Usage examples:"
+echo "  Default path:  git diff | minimize-git-diff-llm --save"
+echo "  Custom path:   git diff | minimize-git-diff-llm --save --save-path my/output"
 echo ""
 echo "To clean up, run: rm -rf $DEMO_DIR"

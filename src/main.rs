@@ -8,7 +8,10 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let save_mode = args.contains(&"--save".to_string());
 
-    match process_git_diff(save_mode) {
+    // Parse optional --save-path argument
+    let save_path = parse_save_path(&args);
+
+    match process_git_diff(save_mode, save_path) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -17,12 +20,22 @@ fn main() {
     }
 }
 
-fn process_git_diff(save_mode: bool) -> io::Result<()> {
+fn parse_save_path(args: &[String]) -> Option<String> {
+    for i in 0..args.len() {
+        if args[i] == "--save-path" && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+    }
+    None
+}
+
+fn process_git_diff(save_mode: bool, save_path: Option<String>) -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
 
     if save_mode {
-        save_diff_chunks(&input)?;
+        let path = save_path.as_deref().unwrap_or("llm/diff");
+        save_diff_chunks(&input, path)?;
     } else {
         let minimized_diff = minimize_diff(&input);
         print!("{}", minimized_diff);
@@ -180,9 +193,7 @@ fn generate_chunk_suffix(index: usize) -> String {
     }
 }
 
-fn save_diff_chunks(diff_content: &str) -> io::Result<()> {
-    let output_dir = "llm/diff";
-
+fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
     // Remove the directory if it exists, then create it
     if Path::new(output_dir).exists() {
         fs::remove_dir_all(output_dir)?;
@@ -548,8 +559,8 @@ index 0000000..xyz123
         // Clean up before test
         let _ = fs::remove_dir_all("llm/diff");
 
-        // Test save
-        save_diff_chunks(diff).unwrap();
+        // Test save with default path
+        save_diff_chunks(diff, "llm/diff").unwrap();
 
         // Verify directory exists
         assert!(Path::new("llm/diff").exists());
@@ -569,5 +580,61 @@ index 0000000..xyz123
 
         // Clean up after test
         let _ = fs::remove_dir_all("llm/diff");
+    }
+
+    #[test]
+    fn test_save_diff_chunks_custom_path() {
+        use std::fs;
+        use std::path::Path;
+
+        let diff = r#"diff --git a/test.txt b/test.txt
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/test.txt
+@@ -0,0 +1,1 @@
++Test content"#;
+
+        let custom_path = "custom/output";
+
+        // Clean up before test
+        let _ = fs::remove_dir_all(custom_path);
+
+        // Test save with custom path
+        save_diff_chunks(diff, custom_path).unwrap();
+
+        // Verify directory exists
+        assert!(Path::new(custom_path).exists());
+
+        // Verify chunk file exists
+        assert!(Path::new(&format!("{}/chunk_aa.diff", custom_path)).exists());
+
+        // Verify content
+        let chunk_aa = fs::read_to_string(format!("{}/chunk_aa.diff", custom_path)).unwrap();
+        assert!(chunk_aa.contains("diff --git a/test.txt b/test.txt"));
+        assert!(chunk_aa.contains("+Test content"));
+
+        // Clean up after test
+        let _ = fs::remove_dir_all(custom_path);
+    }
+
+    #[test]
+    fn test_parse_save_path() {
+        // Test with --save-path argument
+        let args = vec![
+            "program".to_string(),
+            "--save".to_string(),
+            "--save-path".to_string(),
+            "my/custom/path".to_string(),
+        ];
+        assert_eq!(parse_save_path(&args), Some("my/custom/path".to_string()));
+
+        // Test without --save-path argument
+        let args = vec!["program".to_string(), "--save".to_string()];
+        assert_eq!(parse_save_path(&args), None);
+
+        // Test with --save-path but no value
+        let args = vec!["program".to_string(), "--save-path".to_string()];
+        assert_eq!(parse_save_path(&args), None);
     }
 }
