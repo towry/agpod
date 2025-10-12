@@ -211,13 +211,7 @@ main() {
     
     # Check if already installed
     if command -v "$BINARY_NAME" >/dev/null 2>&1; then
-        print_warning "$BINARY_NAME is already installed."
-        read -p "Do you want to update to the latest version? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Installation cancelled."
-            exit 0
-        fi
+        print_info "$BINARY_NAME is already installed. Upgrading to the latest version..."
     fi
     
     # Detect platform
