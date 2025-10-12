@@ -29,3 +29,6 @@ target
 test_diff.txt
 deleted_test.txt
 large_test_diff.txt
+
+# Output directory for --save option
+llm/
