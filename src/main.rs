@@ -1,8 +1,17 @@
 use regex::Regex;
-use std::io::{self, Read};
+use std::env;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::Path;
 
 fn main() {
-    match process_git_diff() {
+    let args: Vec<String> = env::args().collect();
+    let save_mode = args.contains(&"--save".to_string());
+
+    // Parse optional --save-path argument
+    let save_path = parse_save_path(&args);
+
+    match process_git_diff(save_mode, save_path) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -11,12 +20,26 @@ fn main() {
     }
 }
 
-fn process_git_diff() -> io::Result<()> {
+fn parse_save_path(args: &[String]) -> Option<String> {
+    for i in 0..args.len() {
+        if args[i] == "--save-path" && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+    }
+    None
+}
+
+fn process_git_diff(save_mode: bool, save_path: Option<String>) -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
 
-    let minimized_diff = minimize_diff(&input);
-    print!("{}", minimized_diff);
+    if save_mode {
+        let path = save_path.as_deref().unwrap_or("llm/diff");
+        save_diff_chunks(&input, path)?;
+    } else {
+        let minimized_diff = minimize_diff(&input);
+        print!("{}", minimized_diff);
+    }
 
     Ok(())
 }
@@ -156,6 +179,56 @@ fn parse_file_change(lines: &[&str], index: &mut usize) -> Option<FileChange> {
     }
 
     None
+}
+
+fn generate_chunk_suffix(index: usize) -> String {
+    // First use aa-zz (26*26 = 676 combinations)
+    if index < 676 {
+        let first = (index / 26) as u8;
+        let second = (index % 26) as u8;
+        format!("{}{}", (b'a' + first) as char, (b'a' + second) as char)
+    } else {
+        // After zz, use numbers
+        format!("{:04}", index - 676)
+    }
+}
+
+fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
+    // Remove the directory if it exists, then create it
+    if Path::new(output_dir).exists() {
+        fs::remove_dir_all(output_dir)?;
+    }
+    fs::create_dir_all(output_dir)?;
+
+    let file_changes = parse_git_diff(diff_content);
+
+    for (index, file_change) in file_changes.iter().enumerate() {
+        let suffix = generate_chunk_suffix(index);
+        let filename = format!("{}/chunk_{}.diff", output_dir, suffix);
+
+        let unknown_path = "unknown".to_string();
+        let path = file_change
+            .new_path
+            .as_ref()
+            .or(file_change.old_path.as_ref())
+            .unwrap_or(&unknown_path);
+
+        let mut chunk_content = format!(
+            "diff --git a/{} b/{}\n",
+            file_change.old_path.as_ref().unwrap_or(path),
+            file_change.new_path.as_ref().unwrap_or(path)
+        );
+
+        for line in &file_change.content_lines {
+            chunk_content.push_str(line);
+            chunk_content.push('\n');
+        }
+
+        let mut file = fs::File::create(&filename)?;
+        file.write_all(chunk_content.as_bytes())?;
+    }
+
+    Ok(())
 }
 
 fn format_large_file_summary(file_change: &FileChange) -> String {
@@ -448,5 +521,120 @@ index 0000000..abcdefg
         assert!(result.contains("Deleted file: deleted.txt"));
         assert!(result.contains("diff --git a/added.txt b/added.txt"));
         assert!(result.contains("+New line 1"));
+    }
+
+    #[test]
+    fn test_generate_chunk_suffix() {
+        assert_eq!(generate_chunk_suffix(0), "aa");
+        assert_eq!(generate_chunk_suffix(1), "ab");
+        assert_eq!(generate_chunk_suffix(25), "az");
+        assert_eq!(generate_chunk_suffix(26), "ba");
+        assert_eq!(generate_chunk_suffix(675), "zz");
+        assert_eq!(generate_chunk_suffix(676), "0000");
+        assert_eq!(generate_chunk_suffix(677), "0001");
+    }
+
+    #[test]
+    fn test_save_diff_chunks() {
+        use std::fs;
+        use std::path::Path;
+
+        let diff = r#"diff --git a/file1.txt b/file1.txt
+new file mode 100644
+index 0000000..abcdefg
+--- /dev/null
++++ b/file1.txt
+@@ -0,0 +1,2 @@
++Line 1
++Line 2
+
+diff --git a/file2.txt b/file2.txt
+new file mode 100644
+index 0000000..xyz123
+--- /dev/null
++++ b/file2.txt
+@@ -0,0 +1,1 @@
++Content"#;
+
+        // Clean up before test
+        let _ = fs::remove_dir_all("llm/diff");
+
+        // Test save with default path
+        save_diff_chunks(diff, "llm/diff").unwrap();
+
+        // Verify directory exists
+        assert!(Path::new("llm/diff").exists());
+
+        // Verify chunk files exist
+        assert!(Path::new("llm/diff/chunk_aa.diff").exists());
+        assert!(Path::new("llm/diff/chunk_ab.diff").exists());
+
+        // Verify content
+        let chunk_aa = fs::read_to_string("llm/diff/chunk_aa.diff").unwrap();
+        assert!(chunk_aa.contains("diff --git a/file1.txt b/file1.txt"));
+        assert!(chunk_aa.contains("+Line 1"));
+
+        let chunk_ab = fs::read_to_string("llm/diff/chunk_ab.diff").unwrap();
+        assert!(chunk_ab.contains("diff --git a/file2.txt b/file2.txt"));
+        assert!(chunk_ab.contains("+Content"));
+
+        // Clean up after test
+        let _ = fs::remove_dir_all("llm/diff");
+    }
+
+    #[test]
+    fn test_save_diff_chunks_custom_path() {
+        use std::fs;
+        use std::path::Path;
+
+        let diff = r#"diff --git a/test.txt b/test.txt
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/test.txt
+@@ -0,0 +1,1 @@
++Test content"#;
+
+        let custom_path = "custom/output";
+
+        // Clean up before test
+        let _ = fs::remove_dir_all(custom_path);
+
+        // Test save with custom path
+        save_diff_chunks(diff, custom_path).unwrap();
+
+        // Verify directory exists
+        assert!(Path::new(custom_path).exists());
+
+        // Verify chunk file exists
+        assert!(Path::new(&format!("{}/chunk_aa.diff", custom_path)).exists());
+
+        // Verify content
+        let chunk_aa = fs::read_to_string(format!("{}/chunk_aa.diff", custom_path)).unwrap();
+        assert!(chunk_aa.contains("diff --git a/test.txt b/test.txt"));
+        assert!(chunk_aa.contains("+Test content"));
+
+        // Clean up after test
+        let _ = fs::remove_dir_all(custom_path);
+    }
+
+    #[test]
+    fn test_parse_save_path() {
+        // Test with --save-path argument
+        let args = vec![
+            "program".to_string(),
+            "--save".to_string(),
+            "--save-path".to_string(),
+            "my/custom/path".to_string(),
+        ];
+        assert_eq!(parse_save_path(&args), Some("my/custom/path".to_string()));
+
+        // Test without --save-path argument
+        let args = vec!["program".to_string(), "--save".to_string()];
+        assert_eq!(parse_save_path(&args), None);
+
+        // Test with --save-path but no value
+        let args = vec!["program".to_string(), "--save-path".to_string()];
+        assert_eq!(parse_save_path(&args), None);
     }
 }
