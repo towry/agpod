@@ -4,6 +4,10 @@ CLI tool to minimize git diff content for LLM context, reducing token usage whil
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
+## git commit
+
+Follow git conventional commits, use message format `type(scope): message`
+
 ## Working Effectively
 
 - Bootstrap, build, and test the repository:
