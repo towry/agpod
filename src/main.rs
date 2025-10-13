@@ -78,10 +78,37 @@ fn print_help() {
 fn parse_save_path(args: &[String]) -> Option<String> {
     for i in 0..args.len() {
         if args[i] == "--save-path" && i + 1 < args.len() {
-            return Some(args[i + 1].clone());
+            return Some(expand_path(&args[i + 1]));
         }
     }
     None
+}
+
+/// Expand environment variables and tilde in path
+fn expand_path(path: &str) -> String {
+    let mut expanded = path.to_string();
+
+    // Expand tilde (~) to home directory
+    if expanded.starts_with("~/") {
+        if let Ok(home) = env::var("HOME") {
+            expanded = expanded.replacen("~/", &format!("{}/", home), 1);
+        }
+    } else if expanded == "~" {
+        if let Ok(home) = env::var("HOME") {
+            expanded = home;
+        }
+    }
+
+    // Expand environment variables like $HOME, $VAR, etc.
+    let re = Regex::new(r"\$([A-Z_][A-Z0-9_]*)").unwrap();
+    expanded = re
+        .replace_all(&expanded, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            env::var(var_name).unwrap_or_else(|_| format!("${}", var_name))
+        })
+        .to_string();
+
+    expanded
 }
 
 /// Get the git repository name or current directory name as project identifier
@@ -750,6 +777,59 @@ index xyz123..abc456 100644
         assert_eq!(ChangeType::Deleted.as_str(), "deleted");
         assert_eq!(ChangeType::Modified.as_str(), "modified");
         assert_eq!(ChangeType::Renamed.as_str(), "renamed");
+    }
+
+    #[test]
+    fn test_expand_path_tilde() {
+        // Test tilde expansion
+        if let Ok(home) = env::var("HOME") {
+            assert_eq!(expand_path("~/test"), format!("{}/test", home));
+            assert_eq!(expand_path("~"), home);
+        }
+
+        // Test path without tilde (should remain unchanged)
+        assert_eq!(expand_path("/tmp/test"), "/tmp/test");
+        assert_eq!(expand_path("relative/path"), "relative/path");
+    }
+
+    #[test]
+    fn test_expand_path_env_vars() {
+        // Set a test environment variable
+        env::set_var("TEST_VAR", "/test/path");
+
+        // Test environment variable expansion
+        assert_eq!(expand_path("$TEST_VAR/subdir"), "/test/path/subdir");
+        assert_eq!(
+            expand_path("prefix/$TEST_VAR/suffix"),
+            "prefix//test/path/suffix"
+        );
+
+        // Test with HOME variable (should exist)
+        if let Ok(home) = env::var("HOME") {
+            assert_eq!(expand_path("$HOME/work"), format!("{}/work", home));
+        }
+
+        // Test non-existent variable (should keep as-is)
+        assert_eq!(
+            expand_path("$NONEXISTENT_VAR/path"),
+            "$NONEXISTENT_VAR/path"
+        );
+
+        // Clean up
+        env::remove_var("TEST_VAR");
+    }
+
+    #[test]
+    fn test_expand_path_combined() {
+        // Test combination of tilde and env var
+        if let Ok(home) = env::var("HOME") {
+            env::set_var("TEST_DIR", "mydir");
+            assert_eq!(
+                expand_path("~/work/$TEST_DIR"),
+                format!("{}/work/mydir", home)
+            );
+            env::remove_var("TEST_DIR");
+        }
     }
 
     #[test]
