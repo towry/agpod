@@ -8,6 +8,9 @@ CLI tool to minimize git diff content for LLM context, reducing token usage whil
 - **Keyword extraction**: Extracts relevant keywords from JSON, code files, and other text formats
 - **Empty line reduction**: Removes excessive consecutive empty lines while preserving structure
 - **Comprehensive diff support**: Handles added, deleted, modified, and renamed files
+- **Save mode**: Split diffs into separate chunk files for review workflows
+- **Review tracking**: Automatic REVIEW.md generation with file hashes and status tracking
+- **Project isolation**: Project-specific folders prevent conflicts in concurrent workflows
 
 ## Installation
 
@@ -61,6 +64,30 @@ git diff --cached | minimize-git-diff-llm
 ```bash
 git diff HEAD~1 HEAD | minimize-git-diff-llm
 ```
+
+### Save mode for review workflows
+
+Split diff into separate chunk files with review tracking:
+
+```bash
+# Save chunks to default location (llm/diff/<project-name>/)
+git diff | minimize-git-diff-llm --save
+
+# Save chunks to custom location
+git diff | minimize-git-diff-llm --save --save-path custom/path
+```
+
+This creates:
+- Individual diff chunk files in `<path>/<project-name>/chunk_*.diff`
+- A `REVIEW.md` file in the current directory for tracking review progress
+
+The `REVIEW.md` file includes:
+- File hashes for change tracking
+- Chunk file references
+- Review status fields (pending, reviewed@date, outdated)
+- Placeholders for review comments
+
+See [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) for detailed documentation.
 
 ### Integration with other tools
 
