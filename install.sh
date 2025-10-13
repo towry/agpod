@@ -33,17 +33,15 @@ print_error() {
 # Function to detect OS and architecture
 detect_platform() {
     local os arch
-    
+
     case "$(uname -s)" in
         Darwin)
-            os="macos"
             case "$(uname -m)" in
                 arm64|aarch64)
-                    arch="m3"  # Apple Silicon
+                    arch="aarch64-apple-darwin"  # Apple Silicon
                     ;;
                 x86_64)
-                    print_error "Intel Mac (x86_64) is not supported. This tool is built for Apple Silicon (M1/M2/M3) only."
-                    exit 1
+                    arch="x86_64-apple-darwin"  # Intel Mac
                     ;;
                 *)
                     print_error "Unsupported Mac architecture: $(uname -m)"
@@ -51,14 +49,25 @@ detect_platform() {
                     ;;
             esac
             ;;
+        Linux)
+            case "$(uname -m)" in
+                x86_64|amd64)
+                    arch="x86_64-unknown-linux-gnu"  # Linux x86_64
+                    ;;
+                *)
+                    print_error "Unsupported Linux architecture: $(uname -m)"
+                    exit 1
+                    ;;
+            esac
+            ;;
         *)
             print_error "Unsupported operating system: $(uname -s)"
-            print_info "This tool currently supports macOS Apple Silicon (M1/M2/M3) only."
+            print_info "This tool supports macOS (Apple Silicon & Intel) and Linux (x86_64)."
             exit 1
             ;;
     esac
-    
-    echo "${os}-${arch}"
+
+    echo "$arch"
 }
 
 # Function to get latest release info
@@ -253,12 +262,12 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
     echo "  -h, --help    Show this help message"
     echo
     echo "This script downloads and installs the latest release of minimize-git-diff-llm"
-    echo "to $INSTALL_DIR for macOS Apple Silicon (M1/M2/M3)."
+    echo "to $INSTALL_DIR for multiple platforms."
     echo
     echo "Requirements:"
-    echo "  - macOS with Apple Silicon (ARM64)"
+    echo "  - macOS (Apple Silicon or Intel) or Linux (x86_64)"
     echo "  - curl or wget"
-    echo "  - tar or unzip"
+    echo "  - tar"
     echo "  - sudo access (if $INSTALL_DIR is not writable)"
     echo
     exit 0

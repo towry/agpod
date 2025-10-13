@@ -1,0 +1,100 @@
+name: 'Build Rust Binary'
+description: 'Build and package Rust binary for a specific target'
+
+inputs:
+  target:
+    description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+  toolchain:
+    description: 'Rust toolchain version'
+    required: false
+    default: 'stable'
+  bin_name:
+    description: 'Binary name (must match Cargo.toml package name)'
+    required: true
+  version:
+    description: 'Version string for artifact naming'
+    required: true
+
+outputs:
+  asset_path:
+    description: 'Path to the packaged tarball'
+    value: ${{ steps.package.outputs.asset_path }}
+  asset_name:
+    description: 'Name of the packaged tarball'
+    value: ${{ steps.package.outputs.asset_name }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        target: ${{ inputs.target }}
+
+    - name: Cache cargo artifacts
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: "v1-${{ inputs.target }}"
+
+    - name: Build
+      shell: bash
+      run: cargo build --release --target ${{ inputs.target }} --verbose
+
+    - name: Test binary functionality
+      shell: bash
+      run: |
+        # Create a test diff to verify binary works
+        cat > test_diff.txt << 'EOF'
+        diff --git a/test.txt b/test.txt
+        new file mode 100644
+        index 0000000..1234567
+        --- /dev/null
+        +++ b/test.txt
+        @@ -0,0 +1,3 @@
+        +Line 1
+        +Line 2
+        +Line 3
+        EOF
+
+        # Test the binary
+        target/${{ inputs.target }}/release/${{ inputs.bin_name }} < test_diff.txt
+        echo "✅ Binary functionality test passed"
+
+    - name: Package
+      id: package
+      shell: bash
+      run: |
+        version="${{ inputs.version }}"
+        version="${version#v}" # strip leading v if present
+        staging="${{ inputs.bin_name }}-${version}-${{ inputs.target }}"
+        mkdir -p "$staging"
+
+        # Copy binary and README
+        cp README.md "$staging/"
+        cp target/${{ inputs.target }}/release/${{ inputs.bin_name }} "$staging/${{ inputs.bin_name }}"
+
+        # Add LICENSE if it exists
+        if [ -f "LICENSE" ]; then
+          cp LICENSE "$staging/"
+        fi
+
+        # Create tarball
+        tar czf "$staging.tar.gz" "$staging"
+
+        # Generate checksum
+        if command -v sha256sum >/dev/null 2>&1; then
+          # Linux/macOS with GNU coreutils
+          sha256sum "$staging.tar.gz" > "$staging.tar.gz.sha256"
+        elif command -v shasum >/dev/null 2>&1; then
+          # macOS native
+          shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
+        fi
+
+        echo "asset_path=$staging.tar.gz" >> $GITHUB_OUTPUT
+        echo "asset_name=$staging.tar.gz" >> $GITHUB_OUTPUT
+
+        echo "✅ Created package: $staging.tar.gz"
+        echo "📦 Package contents:"
+        tar -tzf "$staging.tar.gz" | head -10

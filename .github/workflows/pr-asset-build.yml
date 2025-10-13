@@ -1,0 +1,316 @@
+name: "PR Asset Build"
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: pr-asset-build-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  check_trigger:
+    name: Check Asset Build Trigger
+    runs-on: ubuntu-latest
+    if: github.event.issue.pull_request && github.event.comment.body == '!asset'
+    outputs:
+      should_build: ${{ steps.check_contributor.outputs.is_contributor }}
+      pr_number: ${{ github.event.issue.number }}
+      pr_head_sha: ${{ steps.get_pr_info.outputs.head_sha }}
+      pr_head_ref: ${{ steps.get_pr_info.outputs.head_ref }}
+      comment_id: ${{ steps.create_comment.outputs.comment_id }}
+    steps:
+      - name: Get PR information
+        id: get_pr_info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            const fs = require('fs');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `head_sha=${pr.head.sha}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `head_ref=${pr.head.ref}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `base_ref=${pr.base.ref}\n`);
+
+      - name: Check if commenter is contributor
+        id: check_contributor
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              // Check if user has write access to the repository
+              const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.actor
+              });
+
+              const hasWriteAccess = ['admin', 'maintain', 'write'].includes(permission.permission);
+
+              const fs = require('fs');
+              if (hasWriteAccess) {
+                console.log(`User ${context.actor} has ${permission.permission} access - allowing build`);
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, `is_contributor=true\n`);
+              } else {
+                console.log(`User ${context.actor} has ${permission.permission} access - denying build`);
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, `is_contributor=false\n`);
+              }
+            } catch (error) {
+              console.log(`Error checking permissions for ${context.actor}: ${error.message}`);
+              const fs = require('fs');
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `is_contributor=false\n`);
+            }
+
+      - name: Create initial status comment
+        id: create_comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: comment } = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🔄 Building assets for PR #${context.issue.number} (commit: \`${{ steps.get_pr_info.outputs.head_sha }}\`)...
+
+              **Platforms**: Linux (x86_64), macOS (ARM64 & Intel)
+              **Retention**: 1 day
+              **Trigger**: ${context.actor}`
+            });
+            const fs = require('fs');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `comment_id=${comment.id}\n`);
+
+  build_assets:
+    name: Build PR Assets
+    needs: check_trigger
+    if: needs.check_trigger.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        build: [linux, macos-arm, macos-intel]
+        include:
+          - build: linux
+            os: ubuntu-latest
+            rust: stable
+            target: x86_64-unknown-linux-gnu
+          - build: macos-arm
+            os: macos-latest
+            rust: stable
+            target: aarch64-apple-darwin
+          - build: macos-intel
+            os: macos-latest
+            rust: stable
+            target: x86_64-apple-darwin
+    env:
+      BIN_NAME: minimize-git-diff-llm
+      PR_NUMBER: ${{ needs.check_trigger.outputs.pr_number }}
+      PR_HEAD_SHA: ${{ needs.check_trigger.outputs.pr_head_sha }}
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check_trigger.outputs.pr_head_sha }}
+          fetch-depth: 0
+
+      - name: Generate version string
+        id: version
+        shell: bash
+        run: |
+          short_sha=$(echo "${{ env.PR_HEAD_SHA }}" | cut -c1-7)
+          echo "version=pr${{ env.PR_NUMBER }}-${short_sha}" >> $GITHUB_OUTPUT
+
+      - name: Build and package
+        id: build
+        uses: ./.github/actions/build-rust
+        with:
+          target: ${{ matrix.target }}
+          toolchain: ${{ matrix.rust }}
+          bin_name: ${{ env.BIN_NAME }}
+          version: ${{ steps.version.outputs.version }}
+
+      - name: Test with real git diff scenarios
+        shell: bash
+        run: |
+          echo "🧪 Testing PR build with realistic scenarios..."
+
+          # Test 1: Large file diff
+          cat > large_diff.txt << 'EOF'
+          diff --git a/src/large_file.rs b/src/large_file.rs
+          new file mode 100644
+          index 0000000..1234567
+          --- /dev/null
+          +++ b/src/large_file.rs
+          @@ -0,0 +1,200 @@
+          +use std::collections::HashMap;
+          +
+          +// This is a large file with many functions
+          +pub fn function_one() -> String {
+          +    "function_one".to_string()
+          +}
+          +
+          +pub fn function_two() -> String {
+          +    "function_two".to_string()
+          +}
+          +
+          +// ... many more functions that would make this a large diff
+          +pub fn function_hundred() -> String {
+          +    "function_hundred".to_string()
+          +}
+          +
+          +pub struct LargeStruct {
+          +    field1: String,
+          +    field2: i32,
+          +    field3: HashMap<String, String>,
+          +}
+          +
+          +impl LargeStruct {
+          +    pub fn new() -> Self {
+          +        Self {
+          +            field1: String::new(),
+          +            field2: 0,
+          +            field3: HashMap::new(),
+          +        }
+          +    }
+          +}
+          EOF
+
+          # Test 2: JSON config diff
+          cat > config_diff.txt << 'EOF'
+          diff --git a/config.json b/config.json
+          new file mode 100644
+          index 0000000..abcdefg
+          --- /dev/null
+          +++ b/config.json
+          @@ -0,0 +1,50 @@
+          +{
+          +  "database": {
+          +    "host": "localhost",
+          +    "port": 5432,
+          +    "name": "myapp",
+          +    "ssl": true
+          +  },
+          +  "api": {
+          +    "endpoints": {
+          +      "users": "/api/users",
+          +      "auth": "/api/auth",
+          +      "data": "/api/data"
+          +    },
+          +    "rate_limit": {
+          +      "requests_per_minute": 100,
+          +      "burst_size": 200
+          +    }
+          +  },
+          +  "logging": {
+          +    "level": "info",
+          +    "format": "json",
+          +    "outputs": ["console", "file"]
+          +  },
+          +  "features": {
+          +    "feature_flags": {
+          +      "new_ui": true,
+          +      "beta_api": false,
+          +      "debug_mode": false
+          +    }
+          +  }
+          +}
+          EOF
+
+          # Test both scenarios
+          echo "Testing large file handling..."
+          target/${{ matrix.target }}/release/${{ env.BIN_NAME }} < large_diff.txt
+
+          echo "Testing JSON config handling..."
+          target/${{ matrix.target }}/release/${{ env.BIN_NAME }} < config_diff.txt
+
+          echo "✅ All PR build tests passed for ${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-pr${{ env.PR_NUMBER }}-${{ matrix.build }}
+          path: ${{ steps.build.outputs.asset_path }}
+          retention-days: 1
+          compression-level: 6
+
+  comment_results:
+    name: Comment Build Results
+    needs: [check_trigger, build_assets]
+    if: always() && needs.check_trigger.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update comment with results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ needs.check_trigger.outputs.pr_number }};
+            const headSha = '${{ needs.check_trigger.outputs.pr_head_sha }}';
+            const shortSha = headSha.substring(0, 7);
+            const commentId = ${{ needs.check_trigger.outputs.comment_id }};
+
+            // Check if build jobs succeeded
+            const buildResult = '${{ needs.build_assets.result }}';
+
+            let commentBody;
+
+            if (buildResult === 'success') {
+              commentBody = `✅ **PR asset build completed successfully!**
+
+              **PR**: #${prNumber}
+              **Commit**: \`${shortSha}\`
+              **Trigger**: ${{ github.actor }}
+              **Retention**: 1 day
+
+              📦 **Download artifacts:**
+              - [Linux (x86_64)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`minimize-git-diff-llm-pr${prNumber}-linux\`
+              - [macOS (ARM64)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`minimize-git-diff-llm-pr${prNumber}-macos-arm\`
+              - [macOS (Intel)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`minimize-git-diff-llm-pr${prNumber}-macos-intel\`
+
+              > 💡 Click the links above, then scroll down to the "Artifacts" section to download.
+              >
+              > 🧪 All builds have been tested with realistic git diff scenarios.
+              >
+              > ⚠️ **Note**: Artifacts will be automatically deleted after 1 day.
+
+              ---
+
+              **Quick test after download:**
+              \`\`\`bash
+              # Test with sample diff
+              echo "diff --git a/test.txt b/test.txt
+              new file mode 100644
+              index 0000000..1234567
+              --- /dev/null
+              +++ b/test.txt
+              @@ -0,0 +1,3 @@
+              +Line 1
+              +Line 2
+              +Line 3" | ./minimize-git-diff-llm
+              \`\`\``;
+            } else {
+              commentBody = `❌ **PR asset build failed**
+
+              **PR**: #${prNumber}
+              **Commit**: \`${shortSha}\`
+              **Trigger**: ${{ github.actor }}
+
+              Please check the [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
+
+              Common issues:
+              - Compilation errors in the PR
+              - Missing dependencies
+              - Platform-specific build failures`;
+            }
+
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: commentBody
+            });
