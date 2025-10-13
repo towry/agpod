@@ -19,7 +19,7 @@ CLI tool to minimize git diff content for LLM context, reducing token usage whil
 Install the latest release directly to `/usr/local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/v0.3.0/install.sh | bash
 ```
 
 Or download and run the install script manually:
@@ -159,3 +159,19 @@ Keywords: database, api_endpoints, cache, logging, security
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
+
+## 🚀 Latest Release
+
+**Version**: v0.3.0
+
+### Quick Install
+```bash
+curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/v0.3.0/install.sh | bash
+```
+
+### Manual Download
+Download from [GitHub Releases](https://github.com/towry/minimize-git-diff-llm/releases/latest):
+- Linux (x86_64)
+- macOS (Apple Silicon)
+- macOS (Intel)
+
