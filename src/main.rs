@@ -1,8 +1,11 @@
 use regex::Regex;
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -27,6 +30,45 @@ fn parse_save_path(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Get the git repository name or current directory name as project identifier
+fn get_project_identifier() -> String {
+    // Try to get git repository name
+    if let Ok(output) = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(path) = String::from_utf8(output.stdout) {
+                let path = path.trim();
+                if let Some(name) = Path::new(path).file_name() {
+                    if let Some(name_str) = name.to_str() {
+                        return name_str.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to current directory name
+    if let Ok(current_dir) = env::current_dir() {
+        if let Some(name) = current_dir.file_name() {
+            if let Some(name_str) = name.to_str() {
+                return name_str.to_string();
+            }
+        }
+    }
+
+    // Ultimate fallback
+    "default-project".to_string()
+}
+
+/// Compute a simple hash of file content
+fn compute_file_hash(content: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }
 
 fn process_git_diff(save_mode: bool, save_path: Option<String>) -> io::Result<()> {
@@ -194,20 +236,36 @@ fn generate_chunk_suffix(index: usize) -> String {
 }
 
 fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
+    // Get project identifier to create project-specific folder
+    let project_id = get_project_identifier();
+    let project_output_dir = format!("{}/{}", output_dir, project_id);
+
     // Remove the directory if it exists, then create it
-    if Path::new(output_dir).exists() {
-        fs::remove_dir_all(output_dir)?;
+    if Path::new(&project_output_dir).exists() {
+        fs::remove_dir_all(&project_output_dir)?;
     }
-    fs::create_dir_all(output_dir)?;
+    fs::create_dir_all(&project_output_dir)?;
 
     let file_changes = parse_git_diff(diff_content);
 
+    // Prepare REVIEW.md content
+    let mut review_content = String::from(
+        "# Code Review Tracking\n\n\
+        This file tracks the review status of code changes.\n\n\
+        ## Guidelines\n\
+        - Update `meta:status` after reviewing each file\n\
+        - Status values: `pending`, `reviewed@YYYY-MM-DD`, `outdated`\n\
+        - Add review comments in the placeholder section below each file\n\n\
+        ---\n\n",
+    );
+
     for (index, file_change) in file_changes.iter().enumerate() {
         let suffix = generate_chunk_suffix(index);
-        let filename = format!("{}/chunk_{}.diff", output_dir, suffix);
+        let chunk_filename = format!("chunk_{}.diff", suffix);
+        let chunk_path = format!("{}/{}", project_output_dir, chunk_filename);
 
         let unknown_path = "unknown".to_string();
-        let path = file_change
+        let filepath = file_change
             .new_path
             .as_ref()
             .or(file_change.old_path.as_ref())
@@ -215,8 +273,8 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
 
         let mut chunk_content = format!(
             "diff --git a/{} b/{}\n",
-            file_change.old_path.as_ref().unwrap_or(path),
-            file_change.new_path.as_ref().unwrap_or(path)
+            file_change.old_path.as_ref().unwrap_or(filepath),
+            file_change.new_path.as_ref().unwrap_or(filepath)
         );
 
         for line in &file_change.content_lines {
@@ -224,9 +282,33 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
             chunk_content.push('\n');
         }
 
-        let mut file = fs::File::create(&filename)?;
+        // Compute hash of the chunk content
+        let file_hash = compute_file_hash(&chunk_content);
+
+        // Write chunk file
+        let mut file = fs::File::create(&chunk_path)?;
         file.write_all(chunk_content.as_bytes())?;
+
+        // Add entry to REVIEW.md
+        review_content.push_str(&format!("## {}\n", filepath));
+        review_content.push_str(&format!("- meta:hash: {}\n", file_hash));
+        review_content.push_str(&format!("- meta:diff_chunk: {}\n", chunk_filename));
+        review_content.push_str("- meta:status: pending\n\n");
+        review_content.push_str("<!-- Review comments go here -->\n\n");
+        review_content.push_str("---\n\n");
     }
+
+    // Write REVIEW.md to current working directory
+    let review_path = "REVIEW.md";
+    let mut review_file = fs::File::create(review_path)?;
+    review_file.write_all(review_content.as_bytes())?;
+
+    eprintln!(
+        "✓ Saved {} chunk(s) to {}/",
+        file_changes.len(),
+        project_output_dir
+    );
+    eprintln!("✓ Created REVIEW.md in current directory");
 
     Ok(())
 }
@@ -558,28 +640,45 @@ index 0000000..xyz123
 
         // Clean up before test
         let _ = fs::remove_dir_all("llm/diff");
+        let _ = fs::remove_file("REVIEW.md");
 
         // Test save with default path
         save_diff_chunks(diff, "llm/diff").unwrap();
 
-        // Verify directory exists
-        assert!(Path::new("llm/diff").exists());
+        // Get project identifier to verify project-specific folder
+        let project_id = get_project_identifier();
+        let project_dir = format!("llm/diff/{}", project_id);
 
-        // Verify chunk files exist
-        assert!(Path::new("llm/diff/chunk_aa.diff").exists());
-        assert!(Path::new("llm/diff/chunk_ab.diff").exists());
+        // Verify project directory exists
+        assert!(Path::new(&project_dir).exists());
+
+        // Verify chunk files exist in project-specific folder
+        assert!(Path::new(&format!("{}/chunk_aa.diff", project_dir)).exists());
+        assert!(Path::new(&format!("{}/chunk_ab.diff", project_dir)).exists());
 
         // Verify content
-        let chunk_aa = fs::read_to_string("llm/diff/chunk_aa.diff").unwrap();
+        let chunk_aa = fs::read_to_string(format!("{}/chunk_aa.diff", project_dir)).unwrap();
         assert!(chunk_aa.contains("diff --git a/file1.txt b/file1.txt"));
         assert!(chunk_aa.contains("+Line 1"));
 
-        let chunk_ab = fs::read_to_string("llm/diff/chunk_ab.diff").unwrap();
+        let chunk_ab = fs::read_to_string(format!("{}/chunk_ab.diff", project_dir)).unwrap();
         assert!(chunk_ab.contains("diff --git a/file2.txt b/file2.txt"));
         assert!(chunk_ab.contains("+Content"));
 
+        // Verify REVIEW.md exists and has correct format
+        assert!(Path::new("REVIEW.md").exists());
+        let review = fs::read_to_string("REVIEW.md").unwrap();
+        assert!(review.contains("# Code Review Tracking"));
+        assert!(review.contains("## file1.txt"));
+        assert!(review.contains("## file2.txt"));
+        assert!(review.contains("meta:hash:"));
+        assert!(review.contains("meta:diff_chunk: chunk_aa.diff"));
+        assert!(review.contains("meta:diff_chunk: chunk_ab.diff"));
+        assert!(review.contains("meta:status: pending"));
+
         // Clean up after test
         let _ = fs::remove_dir_all("llm/diff");
+        let _ = fs::remove_file("REVIEW.md");
     }
 
     #[test]
@@ -599,23 +698,35 @@ index 0000000..abc123
 
         // Clean up before test
         let _ = fs::remove_dir_all(custom_path);
+        let _ = fs::remove_file("REVIEW.md");
 
         // Test save with custom path
         save_diff_chunks(diff, custom_path).unwrap();
 
-        // Verify directory exists
-        assert!(Path::new(custom_path).exists());
+        // Get project identifier to verify project-specific folder
+        let project_id = get_project_identifier();
+        let project_dir = format!("{}/{}", custom_path, project_id);
+
+        // Verify project directory exists
+        assert!(Path::new(&project_dir).exists());
 
         // Verify chunk file exists
-        assert!(Path::new(&format!("{}/chunk_aa.diff", custom_path)).exists());
+        assert!(Path::new(&format!("{}/chunk_aa.diff", project_dir)).exists());
 
         // Verify content
-        let chunk_aa = fs::read_to_string(format!("{}/chunk_aa.diff", custom_path)).unwrap();
+        let chunk_aa = fs::read_to_string(format!("{}/chunk_aa.diff", project_dir)).unwrap();
         assert!(chunk_aa.contains("diff --git a/test.txt b/test.txt"));
         assert!(chunk_aa.contains("+Test content"));
 
+        // Verify REVIEW.md exists
+        assert!(Path::new("REVIEW.md").exists());
+        let review = fs::read_to_string("REVIEW.md").unwrap();
+        assert!(review.contains("## test.txt"));
+        assert!(review.contains("meta:diff_chunk: chunk_aa.diff"));
+
         // Clean up after test
         let _ = fs::remove_dir_all(custom_path);
+        let _ = fs::remove_file("REVIEW.md");
     }
 
     #[test]
@@ -636,5 +747,70 @@ index 0000000..abc123
         // Test with --save-path but no value
         let args = vec!["program".to_string(), "--save-path".to_string()];
         assert_eq!(parse_save_path(&args), None);
+    }
+
+    #[test]
+    fn test_get_project_identifier() {
+        // Should return a non-empty string
+        let project_id = get_project_identifier();
+        assert!(!project_id.is_empty());
+        // In git repository, should return "minimize-git-diff-llm"
+        // In non-git context, returns current directory name or "default-project"
+    }
+
+    #[test]
+    fn test_compute_file_hash() {
+        let content1 = "Hello, World!";
+        let content2 = "Hello, World!";
+        let content3 = "Different content";
+
+        // Same content should produce same hash
+        assert_eq!(compute_file_hash(content1), compute_file_hash(content2));
+
+        // Different content should produce different hash
+        assert_ne!(compute_file_hash(content1), compute_file_hash(content3));
+    }
+
+    #[test]
+    fn test_review_md_format() {
+        use std::fs;
+        use std::path::Path;
+
+        let diff = r#"diff --git a/example.rs b/example.rs
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/example.rs
+@@ -0,0 +1,3 @@
++fn main() {
++    println!("Hello");
++}"#;
+
+        // Clean up before test
+        let _ = fs::remove_dir_all("test_review");
+        let _ = fs::remove_file("REVIEW.md");
+
+        // Save diff chunks
+        save_diff_chunks(diff, "test_review").unwrap();
+
+        // Verify REVIEW.md format
+        assert!(Path::new("REVIEW.md").exists());
+        let review = fs::read_to_string("REVIEW.md").unwrap();
+
+        // Check for header and guidelines
+        assert!(review.contains("# Code Review Tracking"));
+        assert!(review.contains("## Guidelines"));
+        assert!(review.contains("Update `meta:status` after reviewing"));
+
+        // Check for file entry
+        assert!(review.contains("## example.rs"));
+        assert!(review.contains("- meta:hash:"));
+        assert!(review.contains("- meta:diff_chunk: chunk_aa.diff"));
+        assert!(review.contains("- meta:status: pending"));
+        assert!(review.contains("<!-- Review comments go here -->"));
+
+        // Clean up
+        let _ = fs::remove_dir_all("test_review");
+        let _ = fs::remove_file("REVIEW.md");
     }
 }
