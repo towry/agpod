@@ -404,7 +404,7 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
 
     // Try to read existing REVIEW.md from the output directory BEFORE cleaning up
     let review_path = format!("{}/REVIEW.md", project_output_dir);
-    let existing_review = fs::read_to_string(&review_path).ok();
+    let existing_review = fs::read_to_string(review_path.clone()).ok();
     let existing_entries = if let Some(content) = &existing_review {
         parse_existing_review(content)
     } else {
@@ -949,7 +949,7 @@ index 0000000..xyz123
         // Verify REVIEW.md exists in the chunks directory and has correct format
         let review_path = format!("{}/REVIEW.md", project_dir);
         assert!(Path::new(&review_path).exists());
-        let review = fs::read_to_string(&review_path).unwrap();
+        let review = fs::read_to_string(review_path).unwrap();
         assert!(review.contains("# Code Review Tracking"));
         assert!(review.contains("## file1.txt"));
         assert!(review.contains("## file2.txt"));
@@ -1003,7 +1003,7 @@ index 0000000..abc123
         // Verify REVIEW.md exists in the chunks directory
         let review_path = format!("{}/REVIEW.md", project_dir);
         assert!(Path::new(&review_path).exists());
-        let review = fs::read_to_string(&review_path).unwrap();
+        let review = fs::read_to_string(review_path).unwrap();
         assert!(review.contains("## test.txt"));
         assert!(review.contains("meta:diff_chunk: chunk_aa.diff"));
 
@@ -1079,8 +1079,8 @@ index 0000000..abc123
 
         // Verify REVIEW.md format in the chunks directory
         let review_path = "test_review/REVIEW.md";
-        assert!(Path::new(&review_path).exists());
-        let review = fs::read_to_string(&review_path).unwrap();
+        assert!(Path::new(review_path).exists());
+        let review = fs::read_to_string(review_path).unwrap();
 
         // Check for header and guidelines
         assert!(review.contains("# Code Review Tracking"));
@@ -1134,7 +1134,7 @@ index 0000000..xyz789
         assert!(Path::new(&review_path).exists());
 
         // Modify the REVIEW.md by adding a comment to file1
-        let mut review_content = fs::read_to_string(&review_path).unwrap();
+        let mut review_content = fs::read_to_string(review_path.clone()).unwrap();
         review_content = review_content.replace(
             "<!-- Review comments go here -->",
             "This is a test comment for file1.txt",
@@ -1150,7 +1150,7 @@ index 0000000..xyz789
 
         // Verify REVIEW.md still exists
         assert!(Path::new(&review_path).exists());
-        let final_review = fs::read_to_string(&review_path).unwrap();
+        let final_review = fs::read_to_string(review_path).unwrap();
 
         // file1.txt should NOT be present (removed because not in current diff)
         assert!(!final_review.contains("## file1.txt"));
@@ -1190,7 +1190,7 @@ index 0000000..abc123
         let review_path = format!("{}/REVIEW.md", test_path);
 
         // Modify the REVIEW.md
-        let mut review_content = fs::read_to_string(&review_path).unwrap();
+        let mut review_content = fs::read_to_string(review_path.clone()).unwrap();
         review_content = review_content.replace(
             "<!-- Review comments go here -->",
             "Important review notes\nMultiple lines of comments",
@@ -1205,7 +1205,7 @@ index 0000000..abc123
         save_diff_chunks(diff, test_path).unwrap();
 
         // Verify comments and status are preserved
-        let final_review = fs::read_to_string(&review_path).unwrap();
+        let final_review = fs::read_to_string(review_path).unwrap();
         assert!(final_review.contains("Important review notes"));
         assert!(final_review.contains("Multiple lines of comments"));
         assert!(final_review.contains("- meta:status: reviewed@2025-01-15"));
@@ -1248,7 +1248,7 @@ index 0000000..xyz789
         let review_path = format!("{}/REVIEW.md", test_path);
 
         // Modify the REVIEW.md
-        let mut review_content = fs::read_to_string(&review_path).unwrap();
+        let mut review_content = fs::read_to_string(review_path.clone()).unwrap();
         review_content =
             review_content.replace("<!-- Review comments go here -->", "My review comments");
         review_content = review_content.replace(
@@ -1261,7 +1261,7 @@ index 0000000..xyz789
         save_diff_chunks(diff2, test_path).unwrap();
 
         // Verify status is marked as outdated but comments are preserved
-        let final_review = fs::read_to_string(&review_path).unwrap();
+        let final_review = fs::read_to_string(review_path).unwrap();
         assert!(final_review.contains("My review comments"));
         assert!(final_review.contains("- meta:status: outdated"));
         assert!(!final_review.contains("reviewed@2025-01-20"));
