@@ -303,12 +303,15 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
     let mut review_file = fs::File::create(review_path)?;
     review_file.write_all(review_content.as_bytes())?;
 
-    eprintln!(
-        "✓ Saved {} chunk(s) to {}/",
-        file_changes.len(),
-        project_output_dir
-    );
-    eprintln!("✓ Created REVIEW.md in current directory");
+    // Get absolute path for REVIEW.md
+    let review_absolute_path = env::current_dir()
+        .ok()
+        .and_then(|p| p.join(review_path).to_str().map(String::from))
+        .unwrap_or_else(|| review_path.to_string());
+
+    // Output paths in machine-readable format to stdout
+    println!("generated: {}/", project_output_dir);
+    println!("REVIEW.md: {}", review_absolute_path);
 
     Ok(())
 }

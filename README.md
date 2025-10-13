@@ -77,6 +77,12 @@ git diff | minimize-git-diff-llm --save
 git diff | minimize-git-diff-llm --save --save-path custom/path
 ```
 
+Output format (machine-readable, to stdout):
+```
+generated: llm/diff/<project-name>/
+REVIEW.md: /path/to/working/directory/REVIEW.md
+```
+
 This creates:
 - Individual diff chunk files in `<path>/<project-name>/chunk_*.diff`
 - A `REVIEW.md` file in the current directory for tracking review progress

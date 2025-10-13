@@ -81,6 +81,13 @@ This document summarizes the implementation of the `--save` option for the minim
 ```bash
 git diff | minimize-git-diff-llm --save
 ```
+
+Output (to stdout):
+```
+generated: llm/diff/<project-name>/
+REVIEW.md: /path/to/working/directory/REVIEW.md
+```
+
 Output structure:
 ```
 llm/diff/<project-name>/
@@ -94,6 +101,13 @@ REVIEW.md (in current directory)
 ```bash
 git diff | minimize-git-diff-llm --save --save-path my/custom/output
 ```
+
+Output (to stdout):
+```
+generated: my/custom/output/<project-name>/
+REVIEW.md: /path/to/working/directory/REVIEW.md
+```
+
 Output structure:
 ```
 my/custom/output/<project-name>/
@@ -121,6 +135,29 @@ git diff HEAD~1 HEAD | minimize-git-diff-llm --save --save-path diffs/comparison
   - Project-specific subfolder is automatically added
   - Parent directories are created automatically
   - Existing directory is removed and recreated for clean output
+
+## Machine-readable output
+
+The tool outputs paths in a clean, machine-readable format to stdout for easy parsing by workflows and LLM agents:
+
+```
+generated: <path-to-chunks-directory>/
+REVIEW.md: <absolute-path-to-REVIEW.md>
+```
+
+Example:
+```
+generated: llm/diff/my-project/
+REVIEW.md: /home/user/my-project/REVIEW.md
+```
+
+This format allows workflows to easily capture and use the generated paths:
+```bash
+# Capture output in a script
+OUTPUT=$(git diff | minimize-git-diff-llm --save)
+CHUNKS_DIR=$(echo "$OUTPUT" | grep "^generated:" | cut -d' ' -f2)
+REVIEW_FILE=$(echo "$OUTPUT" | grep "^REVIEW.md:" | cut -d' ' -f2)
+```
 
 ## Output structure
 
