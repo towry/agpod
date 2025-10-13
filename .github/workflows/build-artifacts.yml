@@ -1,0 +1,412 @@
+name: "Build release artifacts"
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Tag name (e.g. v1.2.3)"
+        required: true
+        type: string
+      bin_name:
+        description: "Binary name (must match Cargo.toml package name)"
+        required: false
+        default: ""
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name (e.g. v1.2.3)"
+        required: true
+        type: string
+      bin_name:
+        description: "Binary name (must match Cargo.toml package name)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: minimize-git-diff-llm
+
+jobs:
+  build:
+    name: Build & Upload Binaries
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ inputs.tag_name || github.event.release.tag_name }}
+    strategy:
+      matrix:
+        build: [linux, macos-arm, macos-intel]
+        include:
+          - build: linux
+            os: ubuntu-latest
+            rust: stable
+            target: x86_64-unknown-linux-gnu
+          - build: macos-arm
+            os: macos-latest
+            rust: stable
+            target: aarch64-apple-darwin
+          - build: macos-intel
+            os: macos-latest
+            rust: stable
+            target: x86_64-apple-darwin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set binary name
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.bin_name }}" ]; then
+            echo "BIN_NAME=${{ inputs.bin_name }}" >> $GITHUB_ENV
+            echo "Using input binary name: ${{ inputs.bin_name }}"
+          else
+            echo "BIN_NAME=${{ env.BIN_NAME }}" >> $GITHUB_ENV
+            echo "Using default binary name: ${{ env.BIN_NAME }}"
+          fi
+
+      - name: Validate required inputs
+        shell: bash
+        run: |
+          if [ -z "$BIN_NAME" ]; then
+            echo "Error: BIN_NAME was not set properly in previous step"
+            echo "This should not happen - please check the 'Set binary name' step"
+            exit 1
+          fi
+          echo "Using binary name: $BIN_NAME"
+
+      - name: Build and package
+        id: build
+        uses: ./.github/actions/build-rust
+        with:
+          target: ${{ matrix.target }}
+          toolchain: ${{ matrix.rust }}
+          bin_name: ${{ env.BIN_NAME }}
+          version: ${{ env.VERSION }}
+
+      - name: Upload asset
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ env.VERSION }}
+          artifacts: ${{ steps.build.outputs.asset_path }}
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
+
+      - name: Generate binary info
+        shell: bash
+        run: |
+          echo "### Build Information for ${{ matrix.build }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target**: ${{ matrix.target }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact**: ${{ steps.build.outputs.asset_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: $(du -h ${{ steps.build.outputs.asset_path }} | cut -f1)" >> $GITHUB_STEP_SUMMARY
+
+          # Display checksum
+          if [ -f "${{ steps.build.outputs.asset_path }}.sha256" ]; then
+            echo "- **Checksum**:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat "${{ steps.build.outputs.asset_path }}.sha256" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+  create_install_script:
+    name: Create Install Script
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      VERSION: ${{ inputs.tag_name || github.event.release.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate install script
+        shell: bash
+        run: |
+          version="${{ env.VERSION }}"
+          version="${version#v}" # strip leading v if present
+
+          cat > install.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+
+          # minimize-git-diff-llm install script
+          # Downloads and installs the latest release binary
+
+          set -euo pipefail
+
+          # Colors for output
+          RED='\033[0;31m'
+          GREEN='\033[0;32m'
+          YELLOW='\033[1;33m'
+          NC='\033[0m' # No Color
+
+          # Default settings
+          RELEASE_VERSION="${VERSION:-latest}"
+          INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+          PLATFORM=""
+
+          # Help text
+          show_help() {
+              cat << EOF
+          minimize-git-diff-llm Installer
+
+          Usage: $0 [OPTIONS]
+
+          Options:
+              -v, --version VERSION    Install specific version (default: latest)
+              -d, --dir DIRECTORY      Install directory (default: /usr/local/bin)
+              -h, --help              Show this help message
+
+          Examples:
+              $0                                    # Install latest version
+              $0 --version v1.2.3                  # Install version 1.2.3
+              $0 --dir ~/bin                      # Install to ~/bin
+
+          EOF
+          }
+
+          # Parse command line arguments
+          while [[ $# -gt 0 ]]; do
+              case $1 in
+                  -v|--version)
+                      RELEASE_VERSION="$2"
+                      shift 2
+                      ;;
+                  -d|--dir)
+                      INSTALL_DIR="$2"
+                      shift 2
+                      ;;
+                  -h|--help)
+                      show_help
+                      exit 0
+                      ;;
+                  *)
+                      echo -e "${RED}Unknown option: $1${NC}"
+                      show_help
+                      exit 1
+                      ;;
+              esac
+          done
+
+          # Detect platform
+          detect_platform() {
+              local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+              local arch="$(uname -m)"
+
+              case "$os" in
+                  darwin)
+                      case "$arch" in
+                          arm64|aarch64) PLATFORM="macos-arm" ;;
+                          x86_64|amd64) PLATFORM="macos-intel" ;;
+                          *)
+                              echo -e "${RED}Unsupported macOS architecture: $arch${NC}"
+                              exit 1
+                              ;;
+                      esac
+                      ;;
+                  linux)
+                      case "$arch" in
+                          x86_64|amd64) PLATFORM="linux" ;;
+                          *)
+                              echo -e "${RED}Unsupported Linux architecture: $arch${NC}"
+                              exit 1
+                              ;;
+                      esac
+                      ;;
+                  *)
+                      echo -e "${RED}Unsupported operating system: $os${NC}"
+                      exit 1
+                      ;;
+              esac
+
+              echo -e "${GREEN}Detected platform: $PLATFORM${NC}"
+          }
+
+          # Download and install binary
+          install_binary() {
+              local repo="towry/minimize-git-diff-llm"
+              local binary_name="minimize-git-diff-llm"
+              local download_url=""
+
+              # Determine download URL
+              if [[ "$RELEASE_VERSION" == "latest" ]]; then
+                  # Get latest release info
+                  echo -e "${YELLOW}Fetching latest release information...${NC}"
+                  local api_url="https://api.github.com/repos/$repo/releases/latest"
+                  local release_info=$(curl -s "$api_url")
+
+                  if [[ $? -ne 0 ]]; then
+                      echo -e "${RED}Failed to fetch release information${NC}"
+                      exit 1
+                  fi
+
+                  # Find appropriate asset for platform
+                  case "$PLATFORM" in
+                      linux) asset_pattern=".*linux.*\\.tar\\.gz$" ;;
+                      macos-arm) asset_pattern=".*aarch64-apple-darwin.*\\.tar\\.gz$" ;;
+                      macos-intel) asset_pattern=".*x86_64-apple-darwin.*\\.tar\\.gz$" ;;
+                  esac
+
+                  download_url=$(echo "$release_info" | grep -oE "\"browser_download_url\":\\s*\"(${asset_pattern})\"" | cut -d'"' -f4)
+
+                  if [[ -z "$download_url" ]]; then
+                      echo -e "${RED}Could not find appropriate download for platform: $PLATFORM${NC}"
+                      exit 1
+                  fi
+              else
+                  # Construct URL for specific version
+                  local version="${RELEASE_VERSION#v}" # strip leading v if present
+                  case "$PLATFORM" in
+                      linux)
+                          download_url="https://github.com/$repo/releases/download/v$version/minimize-git-diff-llm-$version-x86_64-unknown-linux-gnu.tar.gz"
+                          ;;
+                      macos-arm)
+                          download_url="https://github.com/$repo/releases/download/v$version/minimize-git-diff-llm-$version-aarch64-apple-darwin.tar.gz"
+                          ;;
+                      macos-intel)
+                          download_url="https://github.com/$repo/releases/download/v$version/minimize-git-diff-llm-$version-x86_64-apple-darwin.tar.gz"
+                          ;;
+                  esac
+              fi
+
+              echo -e "${YELLOW}Downloading from: $download_url${NC}"
+
+              # Create temporary directory
+              local temp_dir=$(mktemp -d)
+              trap "rm -rf $temp_dir" EXIT
+
+              # Download archive
+              local archive_path="$temp_dir/archive.tar.gz"
+              if ! curl -fsSL "$download_url" -o "$archive_path"; then
+                  echo -e "${RED}Failed to download binary${NC}"
+                  exit 1
+              fi
+
+              # Extract archive
+              cd "$temp_dir"
+              if ! tar -xzf "$archive_path"; then
+                  echo -e "${RED}Failed to extract archive${NC}"
+                  exit 1
+              fi
+
+              # Find binary
+              local binary_path=""
+              for file in */minimize-git-diff-llm; do
+                  if [[ -f "$file" ]]; then
+                      binary_path="$file"
+                      break
+                  fi
+              done
+
+              if [[ -z "$binary_path" ]]; then
+                  echo -e "${RED}Could not find binary in archive${NC}"
+                  exit 1
+              fi
+
+              # Verify checksum if available
+              local checksum_file="${archive_path}.sha256"
+              if curl -fsSL "${download_url}.sha256" -o "$checksum_file"; then
+                  echo -e "${YELLOW}Verifying checksum...${NC}"
+                  local expected_hash=$(cat "$checksum_file" | cut -d' ' -f1)
+                  local actual_hash=$(sha256sum "$archive_path" | cut -d' ' -f1)
+
+                  if [[ "$expected_hash" != "$actual_hash" ]]; then
+                      echo -e "${RED}Checksum verification failed${NC}"
+                      echo "Expected: $expected_hash"
+                      echo "Actual: $actual_hash"
+                      exit 1
+                  fi
+                  echo -e "${GREEN}Checksum verified${NC}"
+              else
+                  echo -e "${YELLOW}Checksum file not available, skipping verification${NC}"
+              fi
+
+              # Install binary
+              local install_path="$INSTALL_DIR/$binary_name"
+
+              # Create install directory if needed
+              if [[ ! -d "$INSTALL_DIR" ]]; then
+                  echo -e "${YELLOW}Creating install directory: $INSTALL_DIR${NC}"
+                  mkdir -p "$INSTALL_DIR"
+              fi
+
+              # Check if we have write permissions
+              if [[ ! -w "$INSTALL_DIR" ]]; then
+                  echo -e "${YELLOW}Elevated permissions required for $INSTALL_DIR${NC}"
+                  if ! sudo cp "$binary_path" "$install_path"; then
+                      echo -e "${RED}Failed to install binary${NC}"
+                      exit 1
+                  fi
+                  sudo chmod +x "$install_path"
+              else
+                  cp "$binary_path" "$install_path"
+                  chmod +x "$install_path"
+              fi
+
+              echo -e "${GREEN}✅ Successfully installed $binary_name to $install_path${NC}"
+
+              # Verify installation
+              if command -v "$binary_name" >/dev/null 2>&1; then
+                  local installed_version=$("$install_path" --version 2>/dev/null || echo "unknown")
+                  echo -e "${GREEN}✅ Installation verified! Version: $installed_version${NC}"
+              else
+                  echo -e "${YELLOW}⚠️  Binary installed but not in PATH. Add $INSTALL_DIR to your PATH or use full path: $install_path${NC}"
+              fi
+          }
+
+          # Main execution
+          main() {
+              echo -e "${GREEN}minimize-git-diff-llm Installer${NC}"
+              echo
+
+              detect_platform
+              install_binary
+
+              echo
+              echo -e "${GREEN}Installation complete! 🎉${NC}"
+              echo -e "${YELLOW}Usage examples:${NC}"
+              echo "  git diff | minimize-git-diff-llm"
+              echo "  git diff --cached | minimize-git-diff-llm"
+              echo
+          }
+
+          # Run main function
+          main "$@"
+          SCRIPT_EOF
+
+          chmod +x install.sh
+
+      - name: Upload install script
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ env.VERSION }}
+          artifacts: install.sh
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
+
+      - name: Update README with install instructions
+        shell: bash
+        run: |
+          version="${{ env.VERSION }}"
+          version="${version#v}" # strip leading v if present
+
+          echo "### 📦 Installation Script" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Install the latest version directly:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/v${version}/install.sh | bash" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Or download and run manually:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "wget https://raw.githubusercontent.com/towry/minimize-git-diff-llm/v${version}/install.sh" >> $GITHUB_STEP_SUMMARY
+          echo "chmod +x install.sh" >> $GITHUB_STEP_SUMMARY
+          echo "./install.sh" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
