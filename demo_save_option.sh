@@ -90,28 +90,37 @@ fi
 
 # Show results
 echo ""
-echo "6. Created chunks in llm/diff/:"
+echo "6. Created chunks in llm/diff/<project-name>/:"
 echo "-----------------------------------"
+PROJECT_DIR=$(basename "$DEMO_DIR")
 ls -lh llm/diff/
 echo ""
-
-echo "7. Content of chunk_aa.diff (file1.txt changes):"
-echo "-----------------------------------"
-cat llm/diff/chunk_aa.diff
+echo "Project folder: llm/diff/$PROJECT_DIR/"
+ls -lh "llm/diff/$PROJECT_DIR/"
 echo ""
 
-echo "8. Content of chunk_ab.diff (file2.txt deletion):"
+echo "7. REVIEW.md tracking file:"
 echo "-----------------------------------"
-cat llm/diff/chunk_ab.diff
+cat REVIEW.md
 echo ""
 
-echo "9. Content of chunk_ac.diff (new_file.py addition):"
+echo "8. Content of chunk_aa.diff (file1.txt changes):"
 echo "-----------------------------------"
-cat llm/diff/chunk_ac.diff
+cat "llm/diff/$PROJECT_DIR/chunk_aa.diff"
+echo ""
+
+echo "9. Content of chunk_ab.diff (file2.txt deletion):"
+echo "-----------------------------------"
+cat "llm/diff/$PROJECT_DIR/chunk_ab.diff"
+echo ""
+
+echo "10. Content of chunk_ac.diff (new_file.py addition):"
+echo "-----------------------------------"
+cat "llm/diff/$PROJECT_DIR/chunk_ac.diff"
 echo ""
 
 # Test custom path option
-echo "10. Testing custom path: --save-path custom/diffs"
+echo "11. Testing custom path: --save-path custom/diffs"
 echo "-----------------------------------"
 if command -v minimize-git-diff-llm &> /dev/null; then
     git diff --cached | minimize-git-diff-llm --save --save-path custom/diffs
@@ -120,9 +129,18 @@ elif [ -f "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" ]; then
 fi
 
 echo ""
-echo "11. Created chunks in custom/diffs/:"
+echo "12. Created chunks in custom/diffs/<project-name>/:"
 echo "-----------------------------------"
 ls -lh custom/diffs/
+echo ""
+echo "Project folder: custom/diffs/$PROJECT_DIR/"
+ls -lh "custom/diffs/$PROJECT_DIR/"
+echo ""
+
+echo "13. Updated REVIEW.md:"
+echo "-----------------------------------"
+head -30 REVIEW.md
+echo "... (truncated)"
 echo ""
 
 echo "==================================="
@@ -130,10 +148,21 @@ echo "Demo completed successfully!"
 echo "==================================="
 echo ""
 echo "The demo repository is at: $DEMO_DIR"
-echo "You can explore the llm/diff/ and custom/diffs/ folders to see the chunks."
+echo "You can explore the llm/diff/<project-name>/ and custom/diffs/<project-name>/ folders."
+echo ""
+echo "Key features demonstrated:"
+echo "  ✓ Project-specific folders prevent conflicts"
+echo "  ✓ REVIEW.md file tracks all changes with metadata"
+echo "  ✓ Each file gets its own chunk for easier review"
+echo "  ✓ File hashes help detect outdated chunks"
 echo ""
 echo "Usage examples:"
 echo "  Default path:  git diff | minimize-git-diff-llm --save"
 echo "  Custom path:   git diff | minimize-git-diff-llm --save --save-path my/output"
+echo ""
+echo "Review workflow:"
+echo "  1. Review each chunk file"
+echo "  2. Update meta:status in REVIEW.md (e.g., 'reviewed@2025-10-13')"
+echo "  3. Add comments in the placeholder sections"
 echo ""
 echo "To clean up, run: rm -rf $DEMO_DIR"
