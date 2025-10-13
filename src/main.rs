@@ -398,6 +398,10 @@ fn remove_excessive_empty_lines(lines: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    // Shared lock to prevent parallel execution of tests that write to REVIEW.md
+    static REVIEW_MD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn test_empty_input() {
@@ -623,6 +627,9 @@ index 0000000..abcdefg
     fn test_save_diff_chunks() {
         use std::fs;
         use std::path::Path;
+        
+        // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+        let _guard = REVIEW_MD_LOCK.lock().unwrap();
 
         let diff = r#"diff --git a/file1.txt b/file1.txt
 new file mode 100644
@@ -688,6 +695,9 @@ index 0000000..xyz123
     fn test_save_diff_chunks_custom_path() {
         use std::fs;
         use std::path::Path;
+        
+        // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+        let _guard = REVIEW_MD_LOCK.lock().unwrap();
 
         let diff = r#"diff --git a/test.txt b/test.txt
 new file mode 100644
@@ -778,6 +788,9 @@ index 0000000..abc123
     fn test_review_md_format() {
         use std::fs;
         use std::path::Path;
+        
+        // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+        let _guard = REVIEW_MD_LOCK.lock().unwrap();
 
         let diff = r#"diff --git a/example.rs b/example.rs
 new file mode 100644
