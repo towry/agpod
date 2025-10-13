@@ -123,6 +123,80 @@ fn compute_file_hash(content: &str) -> String {
     format!("{:x}", hasher.finish())
 }
 
+#[derive(Debug)]
+struct ReviewEntry {
+    hash: String,
+    status: String,
+    comments: String,
+}
+
+/// Parse existing REVIEW.md file to extract file entries
+fn parse_existing_review(content: &str) -> std::collections::HashMap<String, ReviewEntry> {
+    let mut entries = std::collections::HashMap::new();
+    let mut current_file: Option<String> = None;
+    let mut current_hash: Option<String> = None;
+    let mut current_status: Option<String> = None;
+    let mut current_comments = String::new();
+    let mut in_comments = false;
+
+    for line in content.lines() {
+        if line.starts_with("## ") && !line.starts_with("## Guidelines") {
+            // Save previous entry if exists
+            if let (Some(file), Some(hash), Some(status)) = (
+                current_file.take(),
+                current_hash.take(),
+                current_status.take(),
+            ) {
+                entries.insert(
+                    file,
+                    ReviewEntry {
+                        hash,
+                        status,
+                        comments: current_comments.trim().to_string(),
+                    },
+                );
+                current_comments.clear();
+                in_comments = false;
+            }
+
+            // Start new entry
+            current_file = Some(line[3..].trim().to_string());
+        } else if current_file.is_some() {
+            if let Some(stripped) = line.strip_prefix("- meta:hash: ") {
+                current_hash = Some(stripped.trim().to_string());
+            } else if let Some(stripped) = line.strip_prefix("- meta:status: ") {
+                current_status = Some(stripped.trim().to_string());
+                in_comments = true; // Comments come after status
+            } else if line == "---" {
+                // End of this file's section
+                in_comments = false;
+            } else if in_comments && !line.is_empty() {
+                // Collect comment lines
+                if !line.starts_with("- meta:") {
+                    if !current_comments.is_empty() {
+                        current_comments.push('\n');
+                    }
+                    current_comments.push_str(line);
+                }
+            }
+        }
+    }
+
+    // Save last entry if exists
+    if let (Some(file), Some(hash), Some(status)) = (current_file, current_hash, current_status) {
+        entries.insert(
+            file,
+            ReviewEntry {
+                hash,
+                status,
+                comments: current_comments.trim().to_string(),
+            },
+        );
+    }
+
+    entries
+}
+
 fn process_git_diff(save_mode: bool, save_path: Option<String>) -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
@@ -288,9 +362,17 @@ fn generate_chunk_suffix(index: usize) -> String {
 }
 
 fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
-    // Get project identifier to create project-specific folder
-    let project_id = get_project_identifier();
-    let project_output_dir = format!("{}/{}", output_dir, project_id);
+    // Determine if we should add project identifier to path
+    // Only add project folder for custom paths or when output_dir is not the default "llm/diff"
+    let is_default_path = output_dir == "llm/diff";
+    let project_output_dir = if is_default_path {
+        // For default path, don't add project subfolder since we're already in the project
+        output_dir.to_string()
+    } else {
+        // For custom paths, add project identifier to prevent conflicts
+        let project_id = get_project_identifier();
+        format!("{}/{}", output_dir, project_id)
+    };
 
     // Remove the directory if it exists, then create it
     if Path::new(&project_output_dir).exists() {
@@ -300,16 +382,34 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
 
     let file_changes = parse_git_diff(diff_content);
 
+    // Try to read existing REVIEW.md to preserve review comments and status
+    let existing_review = fs::read_to_string("REVIEW.md").ok();
+    let existing_entries = if let Some(content) = &existing_review {
+        parse_existing_review(content)
+    } else {
+        std::collections::HashMap::new()
+    };
+
     // Prepare REVIEW.md content
     let mut review_content = String::from(
         "# Code Review Tracking\n\n\
         This file tracks the review status of code changes.\n\n\
         ## Guidelines\n\
+        - Diff chunks are stored in: ",
+    );
+    review_content.push_str(&project_output_dir);
+    review_content.push_str(
+        "/\n\
         - Update `meta:status` after reviewing each file\n\
         - Status values: `pending`, `reviewed@YYYY-MM-DD`, `outdated`\n\
-        - Add review comments in the placeholder section below each file\n\n\
+        - If file hash changes on subsequent runs, status will be automatically set to `outdated`\n\
+        - Add review comments in the placeholder section below each file\n\
+        - On each run, file sections not present in current diff are removed\n\n\
         ---\n\n",
     );
+
+    // Track which files are in the current diff
+    let mut current_files = std::collections::HashSet::new();
 
     for (index, file_change) in file_changes.iter().enumerate() {
         let suffix = generate_chunk_suffix(index);
@@ -322,6 +422,8 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
             .as_ref()
             .or(file_change.old_path.as_ref())
             .unwrap_or(&unknown_path);
+
+        current_files.insert(filepath.clone());
 
         let mut chunk_content = format!(
             "diff --git a/{} b/{}\n",
@@ -341,12 +443,34 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
         let mut file = fs::File::create(&chunk_path)?;
         file.write_all(chunk_content.as_bytes())?;
 
+        // Check if this file existed before
+        let (status, comments) = if let Some(existing) = existing_entries.get(filepath) {
+            // File existed before - check if hash changed
+            if existing.hash == file_hash {
+                // Hash unchanged - preserve status and comments
+                (existing.status.clone(), existing.comments.clone())
+            } else {
+                // Hash changed - mark as outdated
+                ("outdated".to_string(), existing.comments.clone())
+            }
+        } else {
+            // New file - set as pending with no comments
+            ("pending".to_string(), String::new())
+        };
+
         // Add entry to REVIEW.md
         review_content.push_str(&format!("## {}\n", filepath));
         review_content.push_str(&format!("- meta:hash: {}\n", file_hash));
         review_content.push_str(&format!("- meta:diff_chunk: {}\n", chunk_filename));
-        review_content.push_str("- meta:status: pending\n\n");
-        review_content.push_str("<!-- Review comments go here -->\n\n");
+        review_content.push_str(&format!("- meta:status: {}\n\n", status));
+
+        if comments.is_empty() {
+            review_content.push_str("<!-- Review comments go here -->\n\n");
+        } else {
+            review_content.push_str(&comments);
+            review_content.push('\n');
+        }
+
         review_content.push_str("---\n\n");
     }
 
@@ -707,14 +831,13 @@ index 0000000..xyz123
         // Test save with default path
         save_diff_chunks(diff, "llm/diff").unwrap();
 
-        // Get project identifier to verify project-specific folder
-        let project_id = get_project_identifier();
-        let project_dir = format!("llm/diff/{}", project_id);
+        // For default path, no project subfolder is added
+        let project_dir = "llm/diff";
 
-        // Verify project directory exists
+        // Verify directory exists
         assert!(Path::new(&project_dir).exists());
 
-        // Verify chunk files exist in project-specific folder
+        // Verify chunk files exist
         assert!(Path::new(&format!("{}/chunk_aa.diff", project_dir)).exists());
         assert!(Path::new(&format!("{}/chunk_ab.diff", project_dir)).exists());
 
