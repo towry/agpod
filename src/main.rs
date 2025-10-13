@@ -9,6 +9,18 @@ use std::process::Command;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    // Check for help or version flags
+    if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
+        print_help();
+        return;
+    }
+
+    if args.contains(&"--version".to_string()) || args.contains(&"-V".to_string()) {
+        print_version();
+        return;
+    }
+
     let save_mode = args.contains(&"--save".to_string());
 
     // Parse optional --save-path argument
@@ -21,6 +33,46 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn print_version() {
+    println!("minimize-git-diff-llm {}", env!("CARGO_PKG_VERSION"));
+}
+
+fn print_help() {
+    println!("minimize-git-diff-llm {}", env!("CARGO_PKG_VERSION"));
+    println!("{}", env!("CARGO_PKG_DESCRIPTION"));
+    println!();
+    println!("USAGE:");
+    println!("    git diff | minimize-git-diff-llm [OPTIONS]");
+    println!();
+    println!("OPTIONS:");
+    println!("    -h, --help              Print help information");
+    println!("    -V, --version           Print version information");
+    println!("    --save                  Save diff chunks to separate files");
+    println!("    --save-path <PATH>      Specify custom output directory (default: llm/diff)");
+    println!();
+    println!("EXAMPLES:");
+    println!("    # Minimize diff from stdin");
+    println!("    git diff | minimize-git-diff-llm");
+    println!();
+    println!("    # Save diff chunks to files");
+    println!("    git diff | minimize-git-diff-llm --save");
+    println!();
+    println!("    # Save to custom directory");
+    println!("    git diff | minimize-git-diff-llm --save --save-path custom/path");
+    println!();
+    println!("    # With staged changes");
+    println!("    git diff --cached | minimize-git-diff-llm --save");
+    println!();
+    println!("OUTPUT (when using --save):");
+    println!("    generated: <path>/<project-name>/");
+    println!("    REVIEW.md: <absolute-path-to-REVIEW.md>");
+    println!();
+    println!(
+        "For more information, visit: {}",
+        env!("CARGO_PKG_REPOSITORY")
+    );
 }
 
 fn parse_save_path(args: &[String]) -> Option<String> {
