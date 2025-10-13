@@ -80,7 +80,7 @@ jobs:
               issue_number: context.issue.number,
               body: `🔄 Building assets for PR #${context.issue.number} (commit: \`${{ steps.get_pr_info.outputs.head_sha }}\`)...
 
-              **Platforms**: Linux (x86_64), macOS (ARM64 & Intel)
+              **Platforms**: macOS (ARM64 only)
               **Retention**: 1 day
               **Trigger**: ${context.actor}`
             });
@@ -94,27 +94,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build: [linux, macos-arm, macos-intel]
+        build: [macos-arm]
         include:
-          - build: linux
-            os: ubuntu-latest
-            rust: stable
-            target: x86_64-unknown-linux-gnu
           - build: macos-arm
             os: macos-latest
             rust: stable
             target: aarch64-apple-darwin
-          - build: macos-intel
-            os: macos-latest
-            rust: stable
-            target: x86_64-apple-darwin
     env:
       BIN_NAME: minimize-git-diff-llm
       PR_NUMBER: ${{ needs.check_trigger.outputs.pr_number }}
       PR_HEAD_SHA: ${{ needs.check_trigger.outputs.pr_head_sha }}
     steps:
       - name: Checkout PR code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.check_trigger.outputs.pr_head_sha }}
           fetch-depth: 0
@@ -268,9 +260,7 @@ jobs:
               **Retention**: 1 day
 
               📦 **Download artifacts:**
-              - [Linux (x86_64)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`minimize-git-diff-llm-pr${prNumber}-linux\`
               - [macOS (ARM64)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`minimize-git-diff-llm-pr${prNumber}-macos-arm\`
-              - [macOS (Intel)](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`minimize-git-diff-llm-pr${prNumber}-macos-intel\`
 
               > 💡 Click the links above, then scroll down to the "Artifacts" section to download.
               >
