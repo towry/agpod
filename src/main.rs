@@ -197,9 +197,9 @@ fn parse_existing_review(content: &str) -> std::collections::HashMap<String, Rev
             } else if line == "---" {
                 // End of this file's section
                 in_comments = false;
-            } else if in_comments && !line.is_empty() {
-                // Collect comment lines
-                if !line.starts_with("- meta:") {
+            } else if in_comments {
+                // Collect comment lines (including empty lines, but not the placeholder)
+                if !line.starts_with("- meta:") && line != "<!-- Review comments go here -->" {
                     if !current_comments.is_empty() {
                         current_comments.push('\n');
                     }
@@ -402,21 +402,36 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
         format!("{}/{}", output_dir, project_id)
     };
 
-    // Remove the directory if it exists, then create it
-    if Path::new(&project_output_dir).exists() {
-        fs::remove_dir_all(&project_output_dir)?;
-    }
-    fs::create_dir_all(&project_output_dir)?;
-
-    let file_changes = parse_git_diff(diff_content);
-
-    // Try to read existing REVIEW.md to preserve review comments and status
-    let existing_review = fs::read_to_string("REVIEW.md").ok();
+    // Try to read existing REVIEW.md from the output directory BEFORE cleaning up
+    let review_path = format!("{}/REVIEW.md", project_output_dir);
+    let existing_review = fs::read_to_string(&review_path).ok();
     let existing_entries = if let Some(content) = &existing_review {
         parse_existing_review(content)
     } else {
         std::collections::HashMap::new()
     };
+
+    // Remove old chunk files but keep REVIEW.md
+    if Path::new(&project_output_dir).exists() {
+        // Read directory and remove only .diff files
+        if let Ok(entries) = fs::read_dir(&project_output_dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_file() {
+                        if let Some(path_str) = entry.path().to_str() {
+                            if path_str.ends_with(".diff") {
+                                let _ = fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        fs::create_dir_all(&project_output_dir)?;
+    }
+
+    let file_changes = parse_git_diff(diff_content);
 
     // Prepare REVIEW.md content
     let mut review_content = String::from(
@@ -502,16 +517,17 @@ fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
         review_content.push_str("---\n\n");
     }
 
-    // Write REVIEW.md to current working directory
-    let review_path = "REVIEW.md";
-    let mut review_file = fs::File::create(review_path)?;
+    // Write REVIEW.md to the same directory as chunks
+    let mut review_file = fs::File::create(&review_path)?;
     review_file.write_all(review_content.as_bytes())?;
 
     // Get absolute path for REVIEW.md
-    let review_absolute_path = env::current_dir()
+    let review_absolute_path = std::path::PathBuf::from(&project_output_dir)
+        .join("REVIEW.md")
+        .canonicalize()
         .ok()
-        .and_then(|p| p.join(review_path).to_str().map(String::from))
-        .unwrap_or_else(|| review_path.to_string());
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| review_path.clone());
 
     // Output paths in machine-readable format to stdout
     println!("generated: {}/", project_output_dir);
@@ -907,7 +923,6 @@ index 0000000..xyz123
 
         // Clean up before test
         let _ = fs::remove_dir_all("llm/diff");
-        let _ = fs::remove_file("REVIEW.md");
 
         // Test save with default path
         save_diff_chunks(diff, "llm/diff").unwrap();
@@ -931,9 +946,10 @@ index 0000000..xyz123
         assert!(chunk_ab.contains("diff --git a/file2.txt b/file2.txt"));
         assert!(chunk_ab.contains("+Content"));
 
-        // Verify REVIEW.md exists and has correct format
-        assert!(Path::new("REVIEW.md").exists());
-        let review = fs::read_to_string("REVIEW.md").unwrap();
+        // Verify REVIEW.md exists in the chunks directory and has correct format
+        let review_path = format!("{}/REVIEW.md", project_dir);
+        assert!(Path::new(&review_path).exists());
+        let review = fs::read_to_string(&review_path).unwrap();
         assert!(review.contains("# Code Review Tracking"));
         assert!(review.contains("## file1.txt"));
         assert!(review.contains("## file2.txt"));
@@ -944,7 +960,6 @@ index 0000000..xyz123
 
         // Clean up after test
         let _ = fs::remove_dir_all("llm/diff");
-        let _ = fs::remove_file("REVIEW.md");
     }
 
     #[test]
@@ -967,7 +982,6 @@ index 0000000..abc123
 
         // Clean up before test
         let _ = fs::remove_dir_all(custom_path);
-        let _ = fs::remove_file("REVIEW.md");
 
         // Test save with custom path
         save_diff_chunks(diff, custom_path).unwrap();
@@ -986,15 +1000,15 @@ index 0000000..abc123
         assert!(chunk_aa.contains("diff --git a/test.txt b/test.txt"));
         assert!(chunk_aa.contains("+Test content"));
 
-        // Verify REVIEW.md exists
-        assert!(Path::new("REVIEW.md").exists());
-        let review = fs::read_to_string("REVIEW.md").unwrap();
+        // Verify REVIEW.md exists in the chunks directory
+        let review_path = format!("{}/REVIEW.md", project_dir);
+        assert!(Path::new(&review_path).exists());
+        let review = fs::read_to_string(&review_path).unwrap();
         assert!(review.contains("## test.txt"));
         assert!(review.contains("meta:diff_chunk: chunk_aa.diff"));
 
         // Clean up after test
         let _ = fs::remove_dir_all(custom_path);
-        let _ = fs::remove_file("REVIEW.md");
     }
 
     #[test]
@@ -1059,14 +1073,14 @@ index 0000000..abc123
 
         // Clean up before test
         let _ = fs::remove_dir_all("test_review");
-        let _ = fs::remove_file("REVIEW.md");
 
         // Save diff chunks
         save_diff_chunks(diff, "test_review").unwrap();
 
-        // Verify REVIEW.md format
-        assert!(Path::new("REVIEW.md").exists());
-        let review = fs::read_to_string("REVIEW.md").unwrap();
+        // Verify REVIEW.md format in the chunks directory
+        let review_path = "test_review/REVIEW.md";
+        assert!(Path::new(&review_path).exists());
+        let review = fs::read_to_string(&review_path).unwrap();
 
         // Check for header and guidelines
         assert!(review.contains("# Code Review Tracking"));
@@ -1082,6 +1096,177 @@ index 0000000..abc123
 
         // Clean up
         let _ = fs::remove_dir_all("test_review");
-        let _ = fs::remove_file("REVIEW.md");
+    }
+
+    #[test]
+    fn test_review_md_persists_across_runs() {
+        use std::fs;
+        use std::path::Path;
+
+        // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+        let _guard = REVIEW_MD_LOCK.lock().unwrap();
+
+        let diff1 = r#"diff --git a/file1.txt b/file1.txt
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/file1.txt
+@@ -0,0 +1,1 @@
++Content 1"#;
+
+        let diff2 = r#"diff --git a/file2.txt b/file2.txt
+new file mode 100644
+index 0000000..xyz789
+--- /dev/null
++++ b/file2.txt
+@@ -0,0 +1,1 @@
++Content 2"#;
+
+        let test_path = "test_persist";
+
+        // Clean up before test
+        let _ = fs::remove_dir_all(test_path);
+
+        // First run - save file1
+        save_diff_chunks(diff1, test_path).unwrap();
+
+        let review_path = format!("{}/REVIEW.md", test_path);
+        assert!(Path::new(&review_path).exists());
+
+        // Modify the REVIEW.md by adding a comment to file1
+        let mut review_content = fs::read_to_string(&review_path).unwrap();
+        review_content = review_content.replace(
+            "<!-- Review comments go here -->",
+            "This is a test comment for file1.txt",
+        );
+        review_content = review_content.replace(
+            "- meta:status: pending",
+            "- meta:status: reviewed@2025-01-01",
+        );
+        fs::write(&review_path, &review_content).unwrap();
+
+        // Second run - save file2 (different file)
+        save_diff_chunks(diff2, test_path).unwrap();
+
+        // Verify REVIEW.md still exists
+        assert!(Path::new(&review_path).exists());
+        let final_review = fs::read_to_string(&review_path).unwrap();
+
+        // file1.txt should NOT be present (removed because not in current diff)
+        assert!(!final_review.contains("## file1.txt"));
+
+        // file2.txt should be present with pending status (new file)
+        assert!(final_review.contains("## file2.txt"));
+        assert!(final_review.contains("meta:status: pending"));
+        assert!(final_review.contains("meta:diff_chunk: chunk_aa.diff"));
+
+        // Clean up
+        let _ = fs::remove_dir_all(test_path);
+    }
+
+    #[test]
+    fn test_review_md_preserves_comments_on_hash_match() {
+        use std::fs;
+
+        // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+        let _guard = REVIEW_MD_LOCK.lock().unwrap();
+
+        let diff = r#"diff --git a/stable.txt b/stable.txt
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/stable.txt
+@@ -0,0 +1,1 @@
++Stable content"#;
+
+        let test_path = "test_preserve";
+
+        // Clean up before test
+        let _ = fs::remove_dir_all(test_path);
+
+        // First run
+        save_diff_chunks(diff, test_path).unwrap();
+
+        let review_path = format!("{}/REVIEW.md", test_path);
+
+        // Modify the REVIEW.md
+        let mut review_content = fs::read_to_string(&review_path).unwrap();
+        review_content = review_content.replace(
+            "<!-- Review comments go here -->",
+            "Important review notes\nMultiple lines of comments",
+        );
+        review_content = review_content.replace(
+            "- meta:status: pending",
+            "- meta:status: reviewed@2025-01-15",
+        );
+        fs::write(&review_path, &review_content).unwrap();
+
+        // Second run with the same diff (hash should match)
+        save_diff_chunks(diff, test_path).unwrap();
+
+        // Verify comments and status are preserved
+        let final_review = fs::read_to_string(&review_path).unwrap();
+        assert!(final_review.contains("Important review notes"));
+        assert!(final_review.contains("Multiple lines of comments"));
+        assert!(final_review.contains("- meta:status: reviewed@2025-01-15"));
+
+        // Clean up
+        let _ = fs::remove_dir_all(test_path);
+    }
+
+    #[test]
+    fn test_review_md_marks_outdated_on_hash_change() {
+        use std::fs;
+
+        // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+        let _guard = REVIEW_MD_LOCK.lock().unwrap();
+
+        let diff1 = r#"diff --git a/changing.txt b/changing.txt
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/changing.txt
+@@ -0,0 +1,1 @@
++Original content"#;
+
+        let diff2 = r#"diff --git a/changing.txt b/changing.txt
+new file mode 100644
+index 0000000..xyz789
+--- /dev/null
++++ b/changing.txt
+@@ -0,0 +1,1 @@
++Modified content"#;
+
+        let test_path = "test_outdated";
+
+        // Clean up before test
+        let _ = fs::remove_dir_all(test_path);
+
+        // First run
+        save_diff_chunks(diff1, test_path).unwrap();
+
+        let review_path = format!("{}/REVIEW.md", test_path);
+
+        // Modify the REVIEW.md
+        let mut review_content = fs::read_to_string(&review_path).unwrap();
+        review_content =
+            review_content.replace("<!-- Review comments go here -->", "My review comments");
+        review_content = review_content.replace(
+            "- meta:status: pending",
+            "- meta:status: reviewed@2025-01-20",
+        );
+        fs::write(&review_path, &review_content).unwrap();
+
+        // Second run with modified diff (hash will change)
+        save_diff_chunks(diff2, test_path).unwrap();
+
+        // Verify status is marked as outdated but comments are preserved
+        let final_review = fs::read_to_string(&review_path).unwrap();
+        assert!(final_review.contains("My review comments"));
+        assert!(final_review.contains("- meta:status: outdated"));
+        assert!(!final_review.contains("reviewed@2025-01-20"));
+
+        // Clean up
+        let _ = fs::remove_dir_all(test_path);
     }
 }
