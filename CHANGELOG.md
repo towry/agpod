@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/towry/minimize-git-diff-llm/compare/v0.3.0...v0.4.0) (2025-10-13)
+
+
+### Features
+
+* save REVIEW.md in chunks directory alongside diff files ([#15](https://github.com/towry/minimize-git-diff-llm/issues/15)) ([43441a3](https://github.com/towry/minimize-git-diff-llm/commit/43441a3d91b6ab6979c8928f580e0d2989e51751))
+
 ## [0.3.0](https://github.com/towry/minimize-git-diff-llm/compare/v0.2.0...v0.3.0) (2025-10-13)
 
 

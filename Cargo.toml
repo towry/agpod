@@ -1,6 +1,6 @@
 [package]
 name = "minimize-git-diff-llm"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Development Team"]
 description = "CLI tool to minimize git diff content for LLM context, reducing token usage while preserving essential information"
