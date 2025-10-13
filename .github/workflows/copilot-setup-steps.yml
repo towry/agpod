@@ -1,0 +1,81 @@
+name: "Copilot Setup Steps"
+
+# Automatically run the setup steps when they are changed to allow for easy validation, and
+# allow manual testing through the repository's "Actions" tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    # Set the permissions to the lowest permissions possible needed for your steps.
+    # Copilot will be given its own token for its operations.
+    permissions:
+      # If you want to clone the repository as part of your setup steps, for example to install dependencies, you'll need the `contents: read` permission. If you don't clone the repository in your setup steps, Copilot will do this for you automatically after the steps complete.
+      contents: read
+
+    # You can define any steps you want, and they will run before the agent starts.
+    # If you do not check out your code, Copilot will do this for you.
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@v5
+
+      # Cache Rust toolchain to speed up installation
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.rustup/settings.toml
+          key: ${{ runner.os }}-rustup-stable-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-rustup-stable-
+            ${{ runner.os }}-rustup-
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          # Speed up by avoiding redundant installs
+          cache: false
+
+      # Enhanced cargo caching with additional paths
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Cache key differentiation
+          prefix-key: "v1-rust"
+          # Additional paths to cache
+          cache-directories: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          # Cache all cargo artifacts including build dependencies
+          cache-all-crates: true
+          # Save cache even on failure for partial builds
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Pre-compile dependencies to speed up future builds
+      - name: Pre-compile dependencies
+        run: |
+          # Create a minimal build to cache dependencies
+          cargo fetch --verbose
+          # Build dependencies only (no actual project code)
+          # cargo build --release --verbose || true
