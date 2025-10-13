@@ -363,13 +363,14 @@ fn generate_chunk_suffix(index: usize) -> String {
 
 fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
     // Determine if we should add project identifier to path
-    // Only add project folder for custom paths or when output_dir is not the default "llm/diff"
-    let is_default_path = output_dir == "llm/diff";
-    let project_output_dir = if is_default_path {
-        // For default path, don't add project subfolder since we're already in the project
+    // Add project subfolder only for absolute paths (outside the project)
+    // For relative paths, user is saving within their project, so no subfolder needed
+    let is_relative_path = !output_dir.starts_with('/');
+    let project_output_dir = if is_relative_path {
+        // For relative paths, don't add project subfolder since we're already in the project
         output_dir.to_string()
     } else {
-        // For custom paths, add project identifier to prevent conflicts
+        // For absolute paths, add project identifier to prevent conflicts
         let project_id = get_project_identifier();
         format!("{}/{}", output_dir, project_id)
     };
@@ -891,11 +892,10 @@ index 0000000..abc123
         // Test save with custom path
         save_diff_chunks(diff, custom_path).unwrap();
 
-        // Get project identifier to verify project-specific folder
-        let project_id = get_project_identifier();
-        let project_dir = format!("{}/{}", custom_path, project_id);
+        // For relative paths, no project subfolder is added
+        let project_dir = custom_path;
 
-        // Verify project directory exists
+        // Verify directory exists
         assert!(Path::new(&project_dir).exists());
 
         // Verify chunk file exists
