@@ -1,32 +1,32 @@
+use crate::kilo::error::{KiloError, KiloResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use crate::kilo::error::{KiloError, KiloResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_base_dir")]
     pub base_dir: String,
-    
+
     #[serde(default = "default_templates_dir")]
     pub templates_dir: String,
-    
+
     #[serde(default = "default_plugins_dir")]
     pub plugins_dir: String,
-    
+
     #[serde(default = "default_template")]
     pub template: String,
-    
+
     #[serde(default = "default_summary_lines")]
     pub summary_lines: usize,
-    
+
     #[serde(default)]
     pub plugins: PluginConfig,
-    
+
     #[serde(default)]
     pub rendering: RenderingConfig,
-    
+
     #[serde(default)]
     pub templates: HashMap<String, TemplateConfig>,
 }
@@ -41,13 +41,13 @@ pub struct PluginConfig {
 pub struct BranchNamePlugin {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    
+
     #[serde(default = "default_branch_name_command")]
     pub command: String,
-    
+
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
-    
+
     #[serde(default)]
     pub pass_env: Vec<String>,
 }
@@ -72,10 +72,10 @@ impl Default for BranchNamePlugin {
 pub struct RenderingConfig {
     #[serde(default = "default_rendering_files")]
     pub files: Vec<String>,
-    
+
     #[serde(default)]
     pub extra: Vec<String>,
-    
+
     #[serde(default = "default_missing_policy")]
     pub missing_policy: String,
 }
@@ -94,7 +94,7 @@ impl Default for RenderingConfig {
 pub struct TemplateConfig {
     #[serde(default = "default_rendering_files")]
     pub files: Vec<String>,
-    
+
     #[serde(default = "default_missing_policy")]
     pub missing_policy: String,
 }
@@ -105,7 +105,11 @@ fn default_base_dir() -> String {
 
 fn default_templates_dir() -> String {
     if let Some(config_dir) = dirs::config_dir() {
-        config_dir.join("agpod").join("templates").to_string_lossy().to_string()
+        config_dir
+            .join("agpod")
+            .join("templates")
+            .to_string_lossy()
+            .to_string()
     } else {
         "~/.config/agpod/templates".to_string()
     }
@@ -113,7 +117,11 @@ fn default_templates_dir() -> String {
 
 fn default_plugins_dir() -> String {
     if let Some(config_dir) = dirs::config_dir() {
-        config_dir.join("agpod").join("plugins").to_string_lossy().to_string()
+        config_dir
+            .join("agpod")
+            .join("plugins")
+            .to_string_lossy()
+            .to_string()
     } else {
         "~/.config/agpod/plugins".to_string()
     }
@@ -140,10 +148,7 @@ fn default_timeout_secs() -> u64 {
 }
 
 fn default_rendering_files() -> Vec<String> {
-    vec![
-        "DESIGN.md.j2".to_string(),
-        "TASK.md.j2".to_string(),
-    ]
+    vec!["DESIGN.md.j2".to_string(), "TASK.md.j2".to_string()]
 }
 
 fn default_missing_policy() -> String {
@@ -157,9 +162,12 @@ impl Config {
     /// 3. Repo config
     /// 4. Environment variables
     /// 5. CLI arguments
-    pub fn load(cli_config: Option<&str>, cli_overrides: &crate::kilo::cli::KiloArgs) -> KiloResult<Self> {
+    pub fn load(
+        cli_config: Option<&str>,
+        cli_overrides: &crate::kilo::cli::KiloArgs,
+    ) -> KiloResult<Self> {
         let mut config = Self::default();
-        
+
         // Try to load global config
         if let Some(config_dir) = dirs::config_dir() {
             let global_config = config_dir.join("agpod").join("config.toml");
@@ -167,19 +175,19 @@ impl Config {
                 config = config.merge_from_file(&global_config)?;
             }
         }
-        
+
         // Try to load repo config
         let repo_config = Path::new(".agpod.toml");
         if repo_config.exists() {
             config = config.merge_from_file(repo_config)?;
         }
-        
+
         // Try to load custom config if specified
         if let Some(custom_config) = cli_config {
             let custom_path = expand_path(custom_config);
             config = config.merge_from_file(Path::new(&custom_path))?;
         }
-        
+
         // Apply CLI overrides
         if let Some(ref base_dir) = cli_overrides.base_dir {
             config.base_dir = base_dir.clone();
@@ -190,22 +198,32 @@ impl Config {
         if let Some(ref plugins_dir) = cli_overrides.plugins_dir {
             config.plugins_dir = plugins_dir.clone();
         }
-        
+
         // Expand paths
         config.base_dir = expand_path(&config.base_dir);
         config.templates_dir = expand_path(&config.templates_dir);
         config.plugins_dir = expand_path(&config.plugins_dir);
-        
+
         Ok(config)
     }
-    
+
     fn merge_from_file(&self, path: &Path) -> KiloResult<Self> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| KiloError::Config(format!("Failed to read config from {}: {}", path.display(), e)))?;
-        
-        let file_config: Config = toml::from_str(&content)
-            .map_err(|e| KiloError::Config(format!("Failed to parse config from {}: {}", path.display(), e)))?;
-        
+        let content = fs::read_to_string(path).map_err(|e| {
+            KiloError::Config(format!(
+                "Failed to read config from {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        let file_config: Config = toml::from_str(&content).map_err(|e| {
+            KiloError::Config(format!(
+                "Failed to parse config from {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
         Ok(file_config)
     }
 }
@@ -228,7 +246,7 @@ impl Default for Config {
 /// Expand tilde and environment variables in paths
 pub fn expand_path(path: &str) -> String {
     let mut expanded = path.to_string();
-    
+
     // Expand tilde
     if expanded.starts_with("~/") {
         if let Some(home) = dirs::home_dir() {
@@ -239,23 +257,25 @@ pub fn expand_path(path: &str) -> String {
             expanded = home.to_string_lossy().to_string();
         }
     }
-    
+
     // Expand environment variables
     if expanded.contains('$') {
         let re = regex::Regex::new(r"\$([A-Z_][A-Z0-9_]*)").unwrap();
-        expanded = re.replace_all(&expanded, |caps: &regex::Captures| {
-            let var_name = &caps[1];
-            std::env::var(var_name).unwrap_or_else(|_| format!("${}", var_name))
-        }).to_string();
+        expanded = re
+            .replace_all(&expanded, |caps: &regex::Captures| {
+                let var_name = &caps[1];
+                std::env::var(var_name).unwrap_or_else(|_| format!("${}", var_name))
+            })
+            .to_string();
     }
-    
+
     expanded
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_default_config() {
         let config = Config::default();
@@ -263,14 +283,14 @@ mod tests {
         assert_eq!(config.template, "default");
         assert_eq!(config.summary_lines, 3);
     }
-    
+
     #[test]
     fn test_expand_path() {
         std::env::set_var("TEST_VAR", "/test/path");
-        
+
         assert_eq!(expand_path("$TEST_VAR/subdir"), "/test/path/subdir");
         assert_eq!(expand_path("relative/path"), "relative/path");
-        
+
         std::env::remove_var("TEST_VAR");
     }
 }

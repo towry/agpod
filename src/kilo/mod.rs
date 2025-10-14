@@ -1,14 +1,13 @@
 mod cli;
+mod commands;
 mod config;
+mod error;
+mod git;
+mod plugin;
 mod slug;
 mod template;
-mod plugin;
-mod commands;
-mod git;
-mod error;
 
 pub use cli::KiloArgs;
-
 
 use anyhow::Result;
 

@@ -1,10 +1,10 @@
-use minijinja::{Environment, context, Value};
+use crate::kilo::config::Config;
+use crate::kilo::error::{KiloError, KiloResult};
+use chrono::{Local, Utc};
+use minijinja::{context, Environment, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use chrono::{Utc, Local};
-use crate::kilo::error::{KiloError, KiloResult};
-use crate::kilo::config::Config;
 
 pub struct TemplateContext {
     pub branch_name: String,
@@ -36,14 +36,14 @@ impl TemplateRenderer {
                 templates_dir
             )));
         }
-        
+
         let mut env = Environment::new();
-        
+
         // Add custom filters
         env.add_filter("slugify", |value: String| -> String {
             crate::kilo::slug::slugify(&value)
         });
-        
+
         env.add_filter("truncate", |value: String, n: usize| -> String {
             if value.len() > n {
                 format!("{}...", &value[..n.saturating_sub(3)])
@@ -51,13 +51,13 @@ impl TemplateRenderer {
                 value
             }
         });
-        
+
         Ok(Self {
             env,
             templates_dir: templates_path,
         })
     }
-    
+
     pub fn render_template(
         &mut self,
         template_name: &str,
@@ -65,10 +65,8 @@ impl TemplateRenderer {
         context: &TemplateContext,
         config: &Config,
     ) -> KiloResult<String> {
-        let template_path = self.templates_dir
-            .join(template_name)
-            .join(template_file);
-        
+        let template_path = self.templates_dir.join(template_name).join(template_file);
+
         if !template_path.exists() {
             return Err(KiloError::TemplateNotFound(format!(
                 "{} in {}",
@@ -76,19 +74,20 @@ impl TemplateRenderer {
                 template_path.display()
             )));
         }
-        
-        let template_content = fs::read_to_string(&template_path)
-            .map_err(|e| KiloError::Template(format!(
+
+        let template_content = fs::read_to_string(&template_path).map_err(|e| {
+            KiloError::Template(format!(
                 "Failed to read template {}: {}",
                 template_path.display(),
                 e
-            )))?;
-        
+            ))
+        })?;
+
         // Create template context
         let now = Utc::now();
         let date = Local::now();
         let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-        
+
         let mut git_ctx = HashMap::new();
         if let Some(ref git_info) = context.git_info {
             git_ctx.insert("repo_root", Value::from(git_info.repo_root.clone()));
@@ -99,7 +98,7 @@ impl TemplateRenderer {
                 git_ctx.insert("short_sha", Value::from(sha.clone()));
             }
         }
-        
+
         let ctx = context! {
             branch_name => &context.branch_name,
             desc => &context.desc,
@@ -116,17 +115,20 @@ impl TemplateRenderer {
                 Err(_) => Value::from(()),
             },
         };
-        
-        self.env.add_template_owned(template_file.to_string(), template_content)
+
+        self.env
+            .add_template_owned(template_file.to_string(), template_content)
             .map_err(|e| KiloError::Template(format!("Failed to parse template: {}", e)))?;
-        
-        let tmpl = self.env.get_template(template_file)
+
+        let tmpl = self
+            .env
+            .get_template(template_file)
             .map_err(|e| KiloError::Template(format!("Failed to get template: {}", e)))?;
-        
+
         tmpl.render(ctx)
             .map_err(|e| KiloError::Template(format!("Failed to render template: {}", e)))
     }
-    
+
     pub fn render_all(
         &mut self,
         template_name: &str,
@@ -137,7 +139,7 @@ impl TemplateRenderer {
         missing_policy: &str,
     ) -> KiloResult<Vec<PathBuf>> {
         let mut rendered_files = Vec::new();
-        
+
         for file in files {
             match self.render_template(template_name, file, context, config) {
                 Ok(content) => {
@@ -147,12 +149,11 @@ impl TemplateRenderer {
                     } else {
                         file
                     };
-                    
+
                     let output_path = output_dir.join(output_filename);
-                    
-                    fs::write(&output_path, content)
-                        .map_err(|e| KiloError::Io(e))?;
-                    
+
+                    fs::write(&output_path, content).map_err(KiloError::Io)?;
+
                     rendered_files.push(output_path);
                 }
                 Err(e) => {
@@ -164,7 +165,7 @@ impl TemplateRenderer {
                 }
             }
         }
-        
+
         Ok(rendered_files)
     }
 }
@@ -174,7 +175,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    
+
     fn create_test_template(dir: &Path, template_name: &str, content: &str) -> PathBuf {
         let template_dir = dir.join(template_name);
         fs::create_dir_all(&template_dir).unwrap();
@@ -182,15 +183,15 @@ mod tests {
         fs::write(&template_file, content).unwrap();
         template_file
     }
-    
+
     #[test]
     fn test_template_rendering() {
         let temp_dir = TempDir::new().unwrap();
         let template_content = "# {{ branch_name }}\n\nDesc: {{ desc }}\nUser: {{ user }}";
         create_test_template(temp_dir.path(), "default", template_content);
-        
+
         let mut renderer = TemplateRenderer::new(temp_dir.path().to_str().unwrap()).unwrap();
-        
+
         let context = TemplateContext {
             branch_name: "test-branch".to_string(),
             desc: "Test description".to_string(),
@@ -200,22 +201,24 @@ mod tests {
             pr_dir_rel: "test-branch".to_string(),
             git_info: None,
         };
-        
+
         let config = Config::default();
-        let result = renderer.render_template("default", "test.md.j2", &context, &config).unwrap();
-        
+        let result = renderer
+            .render_template("default", "test.md.j2", &context, &config)
+            .unwrap();
+
         assert!(result.contains("# test-branch"));
         assert!(result.contains("Desc: Test description"));
     }
-    
+
     #[test]
     fn test_template_with_filters() {
         let temp_dir = TempDir::new().unwrap();
         let template_content = "{{ desc | slugify }}";
         create_test_template(temp_dir.path(), "default", template_content);
-        
+
         let mut renderer = TemplateRenderer::new(temp_dir.path().to_str().unwrap()).unwrap();
-        
+
         let context = TemplateContext {
             branch_name: "test".to_string(),
             desc: "Hello World Test".to_string(),
@@ -225,10 +228,12 @@ mod tests {
             pr_dir_rel: "test".to_string(),
             git_info: None,
         };
-        
+
         let config = Config::default();
-        let result = renderer.render_template("default", "test.md.j2", &context, &config).unwrap();
-        
+        let result = renderer
+            .render_template("default", "test.md.j2", &context, &config)
+            .unwrap();
+
         assert_eq!(result.trim(), "hello-world-test");
     }
 }

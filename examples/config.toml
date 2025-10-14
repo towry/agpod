@@ -1,0 +1,28 @@
+# Example agpod kilo configuration
+# Place this at ~/.config/agpod/config.toml or .agpod.toml in your project root
+
+base_dir = "llm/kilo"
+templates_dir = "~/.config/agpod/templates"
+plugins_dir = "~/.config/agpod/plugins"
+template = "default"
+summary_lines = 3
+
+[plugins.branch_name]
+enabled = true
+command = "branch_name.sh"
+timeout_secs = 3
+pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
+
+[rendering]
+files = ["DESIGN.md.j2", "TASK.md.j2"]
+extra = []
+missing_policy = "error"
+
+# Template-specific configurations
+[templates.vue]
+files = ["DESIGN.md.j2", "TASK.md.j2", "COMPONENT.md.j2"]
+missing_policy = "skip"
+
+[templates.rust]
+files = ["DESIGN.md.j2", "TASK.md.j2", "IMPL.md.j2"]
+missing_policy = "error"

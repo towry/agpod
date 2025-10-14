@@ -1,3 +1,4 @@
+use clap::{Parser, Subcommand};
 use regex::Regex;
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -6,7 +7,6 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
-use clap::{Parser, Subcommand};
 
 mod kilo;
 
@@ -17,11 +17,11 @@ mod kilo;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-    
+
     /// Save diff chunks to separate files (for legacy mode)
     #[arg(long, conflicts_with = "command")]
     save: bool,
-    
+
     /// Specify custom output directory (for legacy mode)
     #[arg(long, conflicts_with = "command")]
     save_path: Option<String>,
@@ -35,7 +35,7 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    
+
     match cli.command {
         Some(Commands::Kilo(args)) => {
             if let Err(e) = kilo::run(args) {
@@ -983,8 +983,6 @@ index 0000000..abc123
         // Clean up after test
         let _ = fs::remove_dir_all(custom_path);
     }
-
-
 
     #[test]
     fn test_get_project_identifier() {

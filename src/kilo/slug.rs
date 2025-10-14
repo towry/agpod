@@ -9,7 +9,7 @@ use rand::Rng;
 /// - Trims hyphens from start and end
 pub fn slugify(text: &str) -> String {
     let mut result = String::new();
-    
+
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() {
             result.push(ch.to_ascii_lowercase());
@@ -27,12 +27,12 @@ pub fn slugify(text: &str) -> String {
             }
         }
     }
-    
+
     // Remove trailing hyphen
     if result.ends_with('-') {
         result.pop();
     }
-    
+
     // Limit length
     if result.len() > 60 {
         result.truncate(60);
@@ -41,7 +41,7 @@ pub fn slugify(text: &str) -> String {
             result.pop();
         }
     }
-    
+
     result
 }
 
@@ -49,7 +49,7 @@ pub fn slugify(text: &str) -> String {
 pub fn rand_id(length: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::thread_rng();
-    
+
     (0..length)
         .map(|_| {
             let idx = rng.gen_range(0..CHARSET.len());
@@ -68,14 +68,14 @@ pub fn generate_branch_name(desc: &str, prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_slugify_ascii() {
         assert_eq!(slugify("Hello World"), "hello-world");
         assert_eq!(slugify("Test_Feature"), "test-feature");
         assert_eq!(slugify("Fix Bug #123"), "fix-bug-123");
     }
-    
+
     #[test]
     fn test_slugify_chinese() {
         let result = slugify("实现登录功能");
@@ -86,7 +86,7 @@ mod tests {
         assert!(result.contains("gong"));
         assert!(result.contains("neng"));
     }
-    
+
     #[test]
     fn test_slugify_mixed() {
         let result = slugify("Add 用户 Feature");
@@ -95,14 +95,14 @@ mod tests {
         assert!(result.contains("hu"));
         assert!(result.contains("feature"));
     }
-    
+
     #[test]
     fn test_slugify_special_chars() {
         assert_eq!(slugify("hello---world"), "hello-world");
         assert_eq!(slugify("   spaces   "), "spaces");
         assert_eq!(slugify("!!!test!!!"), "test");
     }
-    
+
     #[test]
     fn test_slugify_length_limit() {
         let long_text = "this is a very long description that exceeds the maximum allowed length for branch names";
@@ -110,23 +110,23 @@ mod tests {
         assert!(result.len() <= 60);
         assert!(!result.ends_with('-'));
     }
-    
+
     #[test]
     fn test_rand_id() {
         let id1 = rand_id(6);
         let id2 = rand_id(6);
-        
+
         assert_eq!(id1.len(), 6);
         assert_eq!(id2.len(), 6);
         assert_ne!(id1, id2); // Very unlikely to be equal
-        
+
         // Check all characters are alphanumeric lowercase
         for ch in id1.chars() {
             assert!(ch.is_ascii_alphanumeric());
             assert!(ch.is_ascii_lowercase() || ch.is_ascii_digit());
         }
     }
-    
+
     #[test]
     fn test_generate_branch_name() {
         let name = generate_branch_name("Test Feature", "feature-impl");
