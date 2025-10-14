@@ -1,6 +1,6 @@
 [package]
 name = "agpod"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["Development Team"]
 description = "A powerful agent helper tool with features including git diff minimization for LLM context and token usage optimization"

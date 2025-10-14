@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/towry/agpod/compare/v0.4.0...v0.4.1) (2025-10-14)
+
+
+### Bug Fixes
+
+* **plugin:** rename plugin from "branch_name" to "name" and exclude install.sh from releases ([#38](https://github.com/towry/agpod/issues/38)) ([c6d44d2](https://github.com/towry/agpod/commit/c6d44d297f0cf42da712ec6907de35e2227c0992))
+
 ## [0.4.0](https://github.com/towry/agpod/compare/v0.3.0...v0.4.0) (2025-10-14)
 
 
