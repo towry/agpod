@@ -499,9 +499,9 @@ fn cmd_init(force: bool) -> Result<()> {
     }
 
     // Create example plugin
-    let plugin_file = plugins_dir.join("branch_name.sh");
+    let plugin_file = plugins_dir.join("name.sh");
     if force || !plugin_file.exists() {
-        let content = include_str!("../../examples/plugins/branch_name.sh");
+        let content = include_str!("../../examples/plugins/name.sh");
         fs::write(&plugin_file, content)?;
 
         // Make plugin executable on Unix

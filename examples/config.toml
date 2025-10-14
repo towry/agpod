@@ -7,9 +7,9 @@ plugins_dir = "~/.config/agpod/plugins"
 template = "default"
 summary_lines = 3
 
-[plugins.branch_name]
+[plugins.name]
 enabled = true
-command = "branch_name.sh"
+command = "name.sh"
 timeout_secs = 3
 pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
 

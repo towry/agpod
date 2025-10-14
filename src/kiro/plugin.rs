@@ -14,7 +14,7 @@ impl PluginExecutor {
     }
 
     pub fn generate_branch_name(&self, desc: &str, template: &str) -> KiroResult<String> {
-        let plugin_config = &self.config.plugins.branch_name;
+        let plugin_config = &self.config.plugins.name;
 
         if !plugin_config.enabled {
             return Ok(crate::kiro::slug::generate_branch_name(desc));
