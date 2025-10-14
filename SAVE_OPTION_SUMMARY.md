@@ -1,6 +1,6 @@
 # --save Option Implementation Summary
 
-This document summarizes the implementation of the `--save` option for the minimize-git-diff-llm tool.
+This document summarizes the implementation of the `--save` option for the agpod tool.
 
 ## What was implemented
 
@@ -79,7 +79,7 @@ This document summarizes the implementation of the `--save` option for the minim
 
 ### Basic usage (default path)
 ```bash
-git diff | minimize-git-diff-llm --save
+git diff | agpod --save
 ```
 
 Output (to stdout):
@@ -99,7 +99,7 @@ REVIEW.md (in current directory)
 
 ### With custom path
 ```bash
-git diff | minimize-git-diff-llm --save --save-path my/custom/output
+git diff | agpod --save --save-path my/custom/output
 ```
 
 Output (to stdout):
@@ -119,12 +119,12 @@ REVIEW.md (in current directory)
 
 ### With staged changes
 ```bash
-git diff --cached | minimize-git-diff-llm --save
+git diff --cached | agpod --save
 ```
 
 ### Compare specific commits
 ```bash
-git diff HEAD~1 HEAD | minimize-git-diff-llm --save --save-path diffs/comparison
+git diff HEAD~1 HEAD | agpod --save --save-path diffs/comparison
 ```
 
 ## Command-line options
@@ -154,7 +154,7 @@ REVIEW.md: /home/user/my-project/REVIEW.md
 This format allows workflows to easily capture and use the generated paths:
 ```bash
 # Capture output in a script
-OUTPUT=$(git diff | minimize-git-diff-llm --save)
+OUTPUT=$(git diff | agpod --save)
 CHUNKS_DIR=$(echo "$OUTPUT" | grep "^generated:" | cut -d' ' -f2)
 REVIEW_FILE=$(echo "$OUTPUT" | grep "^REVIEW.md:" | cut -d' ' -f2)
 ```
@@ -208,7 +208,7 @@ This file tracks the review status of code changes.
 ```
 
 ### Review workflow
-1. Run `minimize-git-diff-llm --save` to generate chunks and REVIEW.md
+1. Run `agpod --save` to generate chunks and REVIEW.md
 2. Review each chunk file referenced in REVIEW.md
 3. Update `meta:status` field for each file after review:
    - `pending` → `reviewed@2025-10-13` (after review)
@@ -298,7 +298,7 @@ echo "changed" >> file1.txt
 git add .
 
 # Use --save option
-git diff --cached | /path/to/minimize-git-diff-llm --save
+git diff --cached | /path/to/agpod --save
 
 # Check results
 ls -la llm/diff/test_repo/
