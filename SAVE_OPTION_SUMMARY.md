@@ -79,7 +79,7 @@ This document summarizes the implementation of the `--save` option for the agpod
 
 ### Basic usage (default path)
 ```bash
-git diff | agpod --save
+git diff | agpod diff --save
 ```
 
 Output (to stdout):
@@ -93,13 +93,13 @@ Output structure:
 llm/diff/<project-name>/
   ├── chunk_aa.diff
   ├── chunk_ab.diff
+  ├── REVIEW.md
   └── ...
-REVIEW.md (in current directory)
 ```
 
 ### With custom path
 ```bash
-git diff | agpod --save --save-path my/custom/output
+git diff | agpod diff --save --save-path my/custom/output
 ```
 
 Output (to stdout):
@@ -113,18 +113,18 @@ Output structure:
 my/custom/output/<project-name>/
   ├── chunk_aa.diff
   ├── chunk_ab.diff
+  ├── REVIEW.md
   └── ...
-REVIEW.md (in current directory)
 ```
 
 ### With staged changes
 ```bash
-git diff --cached | agpod --save
+git diff --cached | agpod diff --save
 ```
 
 ### Compare specific commits
 ```bash
-git diff HEAD~1 HEAD | agpod --save --save-path diffs/comparison
+git diff HEAD~1 HEAD | agpod diff --save --save-path diffs/comparison
 ```
 
 ## Command-line options
@@ -154,7 +154,7 @@ REVIEW.md: /home/user/my-project/REVIEW.md
 This format allows workflows to easily capture and use the generated paths:
 ```bash
 # Capture output in a script
-OUTPUT=$(git diff | agpod --save)
+OUTPUT=$(git diff | agpod diff --save)
 CHUNKS_DIR=$(echo "$OUTPUT" | grep "^generated:" | cut -d' ' -f2)
 REVIEW_FILE=$(echo "$OUTPUT" | grep "^REVIEW.md:" | cut -d' ' -f2)
 ```
@@ -169,8 +169,8 @@ llm/
         ├── chunk_aa.diff    # First file's changes
         ├── chunk_ab.diff    # Second file's changes
         ├── chunk_ac.diff    # Third file's changes
+        ├── REVIEW.md        # Review tracking file
         └── ...
-REVIEW.md                     # Review tracking file (in current directory)
 ```
 
 ## REVIEW.md format
@@ -208,7 +208,7 @@ This file tracks the review status of code changes.
 ```
 
 ### Review workflow
-1. Run `agpod --save` to generate chunks and REVIEW.md
+1. Run `agpod diff --save` to generate chunks and REVIEW.md
 2. Review each chunk file referenced in REVIEW.md
 3. Update `meta:status` field for each file after review:
    - `pending` → `reviewed@2025-10-13` (after review)
@@ -298,7 +298,7 @@ echo "changed" >> file1.txt
 git add .
 
 # Use --save option
-git diff --cached | /path/to/agpod --save
+git diff --cached | /path/to/agpod diff --save
 
 # Check results
 ls -la llm/diff/test_repo/
