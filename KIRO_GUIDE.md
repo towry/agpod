@@ -169,7 +169,7 @@ agpod kiro \
 
 Available in all templates:
 
-- `branch_name`: Generated branch name
+- `name`: Generated branch name
 - `desc`: User description
 - `template`: Template name
 - `now`: ISO 8601 timestamp
@@ -197,7 +197,7 @@ Templates support Jinja2's `{% extends %}` directive for template inheritance. T
 # {% block title %}{{ desc }}{% endblock %}
 
 ## Metadata
-- Branch: `{{ branch_name }}`
+- Branch: `{{ name }}`
 - Created: {{ now }}
 
 {% block content %}
@@ -232,7 +232,7 @@ See `examples/templates/TEMPLATE_EXTENSION.md` for detailed documentation and ex
 ```jinja2
 # {{ desc }}
 
-Branch: `{{ branch_name }}`
+Branch: `{{ name }}`
 Created: {{ now }}
 Author: {{ user }}
 

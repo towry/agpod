@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct TemplateContext {
-    pub branch_name: String,
+    pub name: String,
     pub desc: String,
     pub template: String,
     pub base_dir: String,
@@ -99,7 +99,7 @@ impl TemplateRenderer {
         }
 
         let ctx = context! {
-            branch_name => &context.branch_name,
+            name => &context.name,
             desc => &context.desc,
             template => &context.template,
             now => now.to_rfc3339(),
@@ -183,13 +183,13 @@ mod tests {
     #[test]
     fn test_template_rendering() {
         let temp_dir = TempDir::new().unwrap();
-        let template_content = "# {{ branch_name }}\n\nDesc: {{ desc }}\nUser: {{ user }}";
+        let template_content = "# {{ name }}\n\nDesc: {{ desc }}\nUser: {{ user }}";
         create_test_template(temp_dir.path(), "default", template_content);
 
         let mut renderer = TemplateRenderer::new(temp_dir.path().to_str().unwrap()).unwrap();
 
         let context = TemplateContext {
-            branch_name: "test-branch".to_string(),
+            name: "test-branch".to_string(),
             desc: "Test description".to_string(),
             template: "default".to_string(),
             base_dir: "/test/base".to_string(),
@@ -216,7 +216,7 @@ mod tests {
         let mut renderer = TemplateRenderer::new(temp_dir.path().to_str().unwrap()).unwrap();
 
         let context = TemplateContext {
-            branch_name: "test".to_string(),
+            name: "test".to_string(),
             desc: "Hello World Test".to_string(),
             template: "default".to_string(),
             base_dir: "/test".to_string(),

@@ -122,7 +122,7 @@ fn cmd_pr_new(
     // Prepare template context
     let pr_dir_abs = fs::canonicalize(&pr_dir)?.to_string_lossy().to_string();
     let context = TemplateContext {
-        branch_name: branch_name.clone(),
+        name: branch_name.clone(),
         desc: desc.to_string(),
         template: template_name.to_string(),
         base_dir: config.base_dir.clone(),

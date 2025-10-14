@@ -127,7 +127,7 @@ agpod kiro --pr
 
 Templates have access to the following variables:
 
-- `branch_name`: Generated branch name
+- `name`: Generated branch name
 - `desc`: Description provided by user
 - `template`: Template name being used
 - `now`: Current timestamp (ISO 8601)
@@ -155,7 +155,7 @@ All example templates use Jinja2's `{% extends %}` directive to inherit from bas
 # {% block title %}{{ desc }}{% endblock %}
 
 ## Metadata
-- Branch: `{{ branch_name }}`
+- Branch: `{{ name }}`
 
 {% block content %}
 Default content
