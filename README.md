@@ -4,7 +4,7 @@
 [![Rust Tests](https://img.shields.io/github/actions/workflow/status/towry/agpod/rust.yml?branch=main&label=tests&logo=rust)](https://github.com/towry/agpod/actions/workflows/rust.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust Version](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org)
-![GitHub Copilot](https://img.shields.io/badge/github_copilot-8957E5?style=for-the-badge&logo=github-copilot&logoColor=white)
+![GitHub Copilot](https://img.shields.io/badge/Github-Copilot-blue?logo=githubcopilot)
 ![GitHub Sponsors](https://img.shields.io/github/sponsors/towry)
 ![GitHub Issues or Pull Requests](https://img.shields.io/github/issues-pr/towry/agpod)
 ![GitHub Repo stars](https://img.shields.io/github/stars/towry/agpod)
