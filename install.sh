@@ -9,8 +9,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-REPO="towry/minimize-git-diff-llm"
-BINARY_NAME="minimize-git-diff-llm"
+REPO="towry/agpod"
+BINARY_NAME="agpod"
 INSTALL_DIR="/usr/local/bin"
 
 # Function to print colored output
@@ -214,8 +214,8 @@ verify_installation() {
 
 # Main installation process
 main() {
-    echo "🚀 Git Diff Minimizer Installer"
-    echo "================================"
+    echo "🚀 agpod Installer"
+    echo "=================="
     echo
     
     # Check if already installed
@@ -254,14 +254,14 @@ main() {
 
 # Check for help flag
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Git Diff Minimizer Installer"
+    echo "agpod Installer"
     echo
     echo "Usage: $0 [OPTIONS]"
     echo
     echo "OPTIONS:"
     echo "  -h, --help    Show this help message"
     echo
-    echo "This script downloads and installs the latest release of minimize-git-diff-llm"
+    echo "This script downloads and installs the latest release of agpod"
     echo "to $INSTALL_DIR for multiple platforms."
     echo
     echo "Requirements:"

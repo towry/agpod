@@ -236,7 +236,7 @@ jobs:
           EOF
 
           # Test the binary
-          target/${{ matrix.target }}/release/minimize-git-diff-llm < test_diff.txt
+          target/${{ matrix.target }}/release/agpod < test_diff.txt
           echo "✅ Binary test passed for ${{ matrix.target }}"
 
       - name: Display binary info
@@ -244,6 +244,6 @@ jobs:
         run: |
           echo "📊 Binary information for ${{ matrix.target }}:"
           if command -v file >/dev/null 2>&1; then
-            file target/${{ matrix.target }}/release/minimize-git-diff-llm
+            file target/${{ matrix.target }}/release/agpod
           fi
-          ls -lh target/${{ matrix.target }}/release/minimize-git-diff-llm
+          ls -lh target/${{ matrix.target }}/release/agpod
