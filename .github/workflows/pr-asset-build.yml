@@ -272,16 +272,7 @@ jobs:
 
               **Quick test after download:**
               \`\`\`bash
-              # Test with sample diff
-              echo "diff --git a/test.txt b/test.txt
-              new file mode 100644
-              index 0000000..1234567
-              --- /dev/null
-              +++ b/test.txt
-              @@ -0,0 +1,3 @@
-              +Line 1
-              +Line 2
-              +Line 3" | ./agpod
+              ./agpod --help
               \`\`\``;
             } else {
               commentBody = `❌ **PR asset build failed**
