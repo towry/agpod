@@ -25,7 +25,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           release-type: rust
-          package-name: agpod
 
   build_artifacts:
     name: Build Artifacts (reusable)
