@@ -14,20 +14,24 @@ sudo cp target/release/agpod /usr/local/bin/
 
 ### Basic Setup
 
-1. Create configuration directory:
-```bash
-mkdir -p ~/.config/agpod/templates
-```
+1. **Initialize configuration:**
+   ```bash
+   agpod kilo init
+   ```
+   
+   This creates `~/.config/agpod/` with default configuration and templates.
 
-2. Copy example templates:
-```bash
-cp -r examples/templates/* ~/.config/agpod/templates/
-```
+2. **(Optional) Add more templates:**
+   ```bash
+   # Copy additional example templates
+   cp -r examples/templates/vue ~/.config/agpod/templates/
+   cp -r examples/templates/rust ~/.config/agpod/templates/
+   ```
 
-3. (Optional) Copy and configure example config:
-```bash
-cp examples/config.toml ~/.config/agpod/config.toml
-```
+3. **Start using:**
+   ```bash
+   agpod kilo pr-new --desc "your first draft"
+   ```
 
 ## Commands
 

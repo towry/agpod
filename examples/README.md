@@ -30,6 +30,20 @@ examples/
 
 ## Setup
 
+**Quick Start (Recommended):**
+```bash
+# Initialize with default configuration and templates
+agpod kilo init
+```
+
+This creates `~/.config/agpod/` with:
+- Default configuration file (`config.toml`)
+- Base templates in `templates/_shared/`
+- Default template in `templates/default/`
+- Example plugin script in `plugins/`
+
+**Manual Setup (Advanced):**
+
 1. **Copy configuration to your config directory:**
    ```bash
    mkdir -p ~/.config/agpod

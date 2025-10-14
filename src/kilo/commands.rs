@@ -9,9 +9,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn execute(args: KiloArgs) -> Result<()> {
+    // Check if it's an init command first
+    let is_init = matches!(&args.command, Some(KiloCommand::Init { .. }));
+    
+    if is_init {
+        if let Some(KiloCommand::Init { force }) = args.command {
+            return cmd_init(force);
+        }
+    }
+    
+    // Check if config is initialized for other commands
+    if !Config::is_initialized() {
+        eprintln!("Error: agpod kilo is not initialized.");
+        eprintln!();
+        eprintln!("Please run the following command to initialize:");
+        eprintln!("  agpod kilo init");
+        eprintln!();
+        if let Some(config_dir) = Config::get_config_dir() {
+            eprintln!("This will create configuration files in: {}", config_dir.display());
+        }
+        std::process::exit(1);
+    }
+    
     // Load configuration
     let config = Config::load(args.config.as_deref(), &args)?;
-
+    
     // Determine which command to run
     let command = if let Some(cmd) = args.command {
         cmd
@@ -56,6 +78,7 @@ pub fn execute(args: KiloArgs) -> Result<()> {
         ),
         KiloCommand::PrList { summary_lines } => cmd_pr_list(&config, summary_lines, args.json),
         KiloCommand::Pr { fzf, output } => cmd_pr(&config, fzf, &output),
+        KiloCommand::Init { .. } => unreachable!(), // Already handled above
     }
 }
 
@@ -390,6 +413,97 @@ fn open_in_editor(file: &Path) -> Result<()> {
 
     std::process::Command::new(&editor).arg(file).status()?;
 
+    Ok(())
+}
+
+fn cmd_init(force: bool) -> Result<()> {
+    let config_dir = Config::get_config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    
+    // Check if already initialized
+    if config_dir.exists() && !force {
+        eprintln!("Configuration directory already exists: {}", config_dir.display());
+        eprintln!("Use --force to re-initialize.");
+        return Ok(());
+    }
+    
+    // Create directory structure
+    let templates_dir = config_dir.join("templates");
+    let plugins_dir = config_dir.join("plugins");
+    let shared_dir = templates_dir.join("_shared");
+    let default_dir = templates_dir.join("default");
+    
+    fs::create_dir_all(&shared_dir)?;
+    fs::create_dir_all(&default_dir)?;
+    fs::create_dir_all(&plugins_dir)?;
+    
+    // Create config file
+    let config_file = config_dir.join("config.toml");
+    if force || !config_file.exists() {
+        let config_content = include_str!("../../examples/config.toml");
+        fs::write(&config_file, config_content)?;
+        eprintln!("Created config file: {}", config_file.display());
+    }
+    
+    // Create base templates
+    let base_design = shared_dir.join("base_design.md.j2");
+    if force || !base_design.exists() {
+        let content = include_str!("../../examples/templates/_shared/base_design.md.j2");
+        fs::write(&base_design, content)?;
+        eprintln!("Created base template: {}", base_design.display());
+    }
+    
+    let base_task = shared_dir.join("base_task.md.j2");
+    if force || !base_task.exists() {
+        let content = include_str!("../../examples/templates/_shared/base_task.md.j2");
+        fs::write(&base_task, content)?;
+        eprintln!("Created base template: {}", base_task.display());
+    }
+    
+    // Create default templates
+    let default_design = default_dir.join("DESIGN.md.j2");
+    if force || !default_design.exists() {
+        let content = include_str!("../../examples/templates/default/DESIGN.md.j2");
+        fs::write(&default_design, content)?;
+        eprintln!("Created template: {}", default_design.display());
+    }
+    
+    let default_task = default_dir.join("TASK.md.j2");
+    if force || !default_task.exists() {
+        let content = include_str!("../../examples/templates/default/TASK.md.j2");
+        fs::write(&default_task, content)?;
+        eprintln!("Created template: {}", default_task.display());
+    }
+    
+    // Create example plugin
+    let plugin_file = plugins_dir.join("branch_name.sh");
+    if force || !plugin_file.exists() {
+        let content = include_str!("../../examples/plugins/branch_name.sh");
+        fs::write(&plugin_file, content)?;
+        
+        // Make plugin executable on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&plugin_file)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&plugin_file, perms)?;
+        }
+        
+        eprintln!("Created plugin: {}", plugin_file.display());
+    }
+    
+    eprintln!();
+    eprintln!("✓ agpod kilo initialized successfully!");
+    eprintln!();
+    eprintln!("Configuration directory: {}", config_dir.display());
+    eprintln!();
+    eprintln!("You can now use:");
+    eprintln!("  agpod kilo pr-new --desc \"your description\"");
+    eprintln!();
+    eprintln!("To add more templates, copy them to:");
+    eprintln!("  {}", templates_dir.display());
+    
     Ok(())
 }
 

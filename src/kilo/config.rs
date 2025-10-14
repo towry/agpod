@@ -2,7 +2,7 @@ use crate::kilo::error::{KiloError, KiloResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -104,8 +104,10 @@ fn default_base_dir() -> String {
 }
 
 fn default_templates_dir() -> String {
-    if let Some(config_dir) = dirs::config_dir() {
-        config_dir
+    // Always use ~/.config/agpod instead of platform-specific config dirs
+    if let Some(home_dir) = dirs::home_dir() {
+        home_dir
+            .join(".config")
             .join("agpod")
             .join("templates")
             .to_string_lossy()
@@ -116,8 +118,10 @@ fn default_templates_dir() -> String {
 }
 
 fn default_plugins_dir() -> String {
-    if let Some(config_dir) = dirs::config_dir() {
-        config_dir
+    // Always use ~/.config/agpod instead of platform-specific config dirs
+    if let Some(home_dir) = dirs::home_dir() {
+        home_dir
+            .join(".config")
             .join("agpod")
             .join("plugins")
             .to_string_lossy()
@@ -156,6 +160,20 @@ fn default_missing_policy() -> String {
 }
 
 impl Config {
+    /// Get the default config directory path
+    pub fn get_config_dir() -> Option<PathBuf> {
+        dirs::home_dir().map(|h| h.join(".config").join("agpod"))
+    }
+    
+    /// Check if config directory is initialized
+    pub fn is_initialized() -> bool {
+        if let Some(config_dir) = Self::get_config_dir() {
+            config_dir.join("templates").exists()
+        } else {
+            false
+        }
+    }
+    
     /// Load configuration with priority:
     /// 1. Defaults
     /// 2. Global config
@@ -168,9 +186,12 @@ impl Config {
     ) -> KiloResult<Self> {
         let mut config = Self::default();
 
-        // Try to load global config
-        if let Some(config_dir) = dirs::config_dir() {
-            let global_config = config_dir.join("agpod").join("config.toml");
+        // Try to load global config from ~/.config/agpod
+        if let Some(home_dir) = dirs::home_dir() {
+            let global_config = home_dir
+                .join(".config")
+                .join("agpod")
+                .join("config.toml");
             if global_config.exists() {
                 config = config.merge_from_file(&global_config)?;
             }
