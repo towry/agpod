@@ -30,7 +30,7 @@ Successfully implemented the complete `kiro` workflow subcommand for agpod, prov
   - `slugify`: Convert text to slug
   - `truncate(n)`: Truncate string
 - **Context variables**:
-  - Basic: branch_name, desc, template, user
+  - Basic: name, desc, template, user
   - Time: now (ISO 8601), date (YYYY-MM-DD)
   - Paths: base_dir, pr_dir_abs, pr_dir_rel
   - Git: repo_root, current_branch, short_sha
