@@ -80,11 +80,8 @@ agpod kiro --pr-list
 ### Interactive Selection
 
 ```bash
-# Built-in selector
+# Interactive selector - automatically uses fzf if installed
 agpod kiro pr
-
-# With fzf (if installed) - includes fuzzy filtering and preview
-agpod kiro pr --fzf
 
 # Get absolute path
 agpod kiro pr --output abs
@@ -96,12 +93,14 @@ agpod kiro pr --output name
 agpod kiro --pr
 ```
 
-**Fuzzy Filter Features (when using `--fzf`):**
+**Fuzzy Filter Features (automatically enabled when fzf is installed):**
 - Fuzzy search across PR draft names and summaries
 - Live preview of DESIGN.md content in a split pane (right side, 50% width)
 - Compact UI with 40% screen height
 - Visual border and inline match information
 - Keyboard navigation with immediate feedback
+
+**Note:** The command automatically detects and uses fzf if it's installed on your system. If fzf is not available, it falls back to the built-in dialoguer selector.
 
 **Use in scripts:**
 ```bash

@@ -255,7 +255,7 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
     Ok(())
 }
 
-fn cmd_pr(config: &Config, use_fzf: bool, output_format: &str) -> Result<()> {
+fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
     let base_dir = Path::new(&config.base_dir);
 
     if !base_dir.exists() {
@@ -297,8 +297,8 @@ fn cmd_pr(config: &Config, use_fzf: bool, output_format: &str) -> Result<()> {
 
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Try to use fzf if requested and available
-    if use_fzf && is_fzf_available() {
+    // Use fzf by default if available
+    if is_fzf_available() {
         let selected = select_with_fzf(&entries, base_dir)?;
         output_result(&selected, output_format, base_dir);
     } else {
