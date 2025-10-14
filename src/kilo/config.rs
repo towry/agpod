@@ -164,7 +164,7 @@ impl Config {
     pub fn get_config_dir() -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join(".config").join("agpod"))
     }
-    
+
     /// Check if config directory is initialized
     pub fn is_initialized() -> bool {
         if let Some(config_dir) = Self::get_config_dir() {
@@ -173,7 +173,7 @@ impl Config {
             false
         }
     }
-    
+
     /// Load configuration with priority:
     /// 1. Defaults
     /// 2. Global config
@@ -188,10 +188,7 @@ impl Config {
 
         // Try to load global config from ~/.config/agpod
         if let Some(home_dir) = dirs::home_dir() {
-            let global_config = home_dir
-                .join(".config")
-                .join("agpod")
-                .join("config.toml");
+            let global_config = home_dir.join(".config").join("agpod").join("config.toml");
             if global_config.exists() {
                 config = config.merge_from_file(&global_config)?;
             }

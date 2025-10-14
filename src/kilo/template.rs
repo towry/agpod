@@ -38,7 +38,7 @@ impl TemplateRenderer {
         }
 
         let mut env = Environment::new();
-        
+
         // Set up loader to support template inheritance ({% extends %})
         // This allows templates to extend base templates
         env.set_loader(minijinja::path_loader(&templates_path));

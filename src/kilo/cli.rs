@@ -89,7 +89,7 @@ pub enum KiloCommand {
         #[arg(long, default_value = "rel")]
         output: String,
     },
-    
+
     /// Initialize agpod kilo configuration and templates
     Init {
         /// Force re-initialization even if config exists
