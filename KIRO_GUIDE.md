@@ -83,7 +83,7 @@ agpod kiro --pr-list
 # Built-in selector
 agpod kiro pr
 
-# With fzf (if installed)
+# With fzf (if installed) - includes fuzzy filtering and preview
 agpod kiro pr --fzf
 
 # Get absolute path
@@ -95,6 +95,13 @@ agpod kiro pr --output name
 # Shortcut flag
 agpod kiro --pr
 ```
+
+**Fuzzy Filter Features (when using `--fzf`):**
+- Fuzzy search across PR draft names and summaries
+- Live preview of DESIGN.md content in a split pane (right side, 50% width)
+- Compact UI with 40% screen height
+- Visual border and inline match information
+- Keyboard navigation with immediate feedback
 
 **Use in scripts:**
 ```bash
