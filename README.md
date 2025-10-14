@@ -1,5 +1,13 @@
 # agpod
 
+[![CI](https://img.shields.io/github/actions/workflow/status/towry/agpod/ci.yml?branch=main&label=CI&logo=github)](https://github.com/towry/agpod/actions/workflows/ci.yml)
+[![Rust Tests](https://img.shields.io/github/actions/workflow/status/towry/agpod/rust.yml?branch=main&label=tests&logo=rust)](https://github.com/towry/agpod/actions/workflows/rust.yml)
+[![Crates.io](https://img.shields.io/crates/v/agpod?logo=rust)](https://crates.io/crates/agpod)
+[![Downloads](https://img.shields.io/crates/d/agpod?logo=rust)](https://crates.io/crates/agpod)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust Version](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org)
+[![GitHub Stars](https://img.shields.io/github/stars/towry/agpod?style=social)](https://github.com/towry/agpod)
+
 A powerful agent helper tool for optimizing git diffs for LLM context and managing PR drafts locally.
 
 ## Features
