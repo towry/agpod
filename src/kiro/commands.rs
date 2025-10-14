@@ -127,7 +127,7 @@ fn cmd_pr_new(
         template: template_name.to_string(),
         base_dir: config.base_dir.clone(),
         pr_dir_abs: pr_dir_abs.clone(),
-        pr_dir_rel: branch_name.clone(),
+        pr_dir_rel: pr_dir.to_string_lossy().to_string(),
         git_info,
     };
 

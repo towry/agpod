@@ -23,7 +23,7 @@ When creating or customizing templates in `~/.config/agpod/templates/`, you can 
 |----------|------|-------------|---------|
 | `base_dir` | string | Base directory for PR drafts | `llm/kiro` |
 | `pr_dir_abs` | string | Absolute path to PR directory | `/home/user/project/llm/kiro/feature-login` |
-| `pr_dir_rel` | string | Relative path to PR directory | `feature-user-login` |
+| `pr_dir_rel` | string | Relative path to PR directory (from project root) | `llm/kiro/feature-user-login` |
 
 ### Git Variables
 
