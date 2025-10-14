@@ -1,6 +1,6 @@
 # agpod
 
-A powerful agent tool for minimizing git diff content for LLM context, reducing token usage while preserving essential information. Written in Rust as a single binary with minimal dependencies.
+A powerful agent helper tool with features including git diff minimization for LLM context, reducing token usage while preserving essential information. Written in Rust as a single binary with minimal dependencies.
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
@@ -105,7 +105,7 @@ name = "agpod"
 version = "0.1.0"
 edition = "2021"
 authors = ["Development Team"]
-description = "A powerful agent tool for minimizing git diff content for LLM context"
+description = "A powerful agent helper tool with features including git diff minimization for LLM context"
 license = "MIT"
 
 [[bin]]

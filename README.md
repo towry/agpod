@@ -1,6 +1,6 @@
 # agpod
 
-A powerful agent tool for minimizing git diff content for LLM context, reducing token usage while preserving essential information.
+A powerful agent helper tool with features including git diff minimization for LLM context, reducing token usage while preserving essential information.
 
 ## Features
 
