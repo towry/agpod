@@ -12,6 +12,18 @@ body:
         
         Thank you for taking the time to report a bug!
         
+        ---
+        
+        ### 💝 Support This Project
+        
+        This project uses AI coding agents which incur operational costs. If you find agpod useful, please consider supporting its development:
+        
+        - ⭐ Star this repository
+        - ☕ [Support via GitHub Sponsors](https://github.com/sponsors/towry) (if available)
+        - 🐦 Share agpod with others who might find it useful
+        
+        Your support helps keep this project maintained and improved!
+        
   - type: textarea
     id: description
     attributes:

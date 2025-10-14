@@ -83,6 +83,16 @@ See [KIRO_GUIDE.md](KIRO_GUIDE.md) for comprehensive workflow documentation.
 2. **Regular files**: Preserves full diff with reduced empty lines (max 2 consecutive)
 3. **All file types**: Handles added, deleted, modified, and renamed files
 
+## Support This Project
+
+This project is maintained using AI coding agents, which incur operational costs. If you find agpod useful, please consider supporting its development:
+
+- ⭐ **Star this repository** - Show your appreciation and help others discover agpod
+- ☕ **[Sponsor on GitHub](https://github.com/sponsors/towry)** - Support ongoing development and maintenance (if available)
+- 🐦 **Share with others** - Help grow the community by sharing agpod with developers who might benefit
+
+Your support helps cover the costs of running AI agents and keeps this project actively maintained and improved. Every contribution, big or small, makes a difference!
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
