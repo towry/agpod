@@ -1,8 +1,8 @@
-# Kilo Workflow Implementation Summary
+# Kiro Workflow Implementation Summary
 
 ## Overview
 
-Successfully implemented the complete `kilo` workflow subcommand for agpod, providing a comprehensive PR draft management system as specified in the design document.
+Successfully implemented the complete `kiro` workflow subcommand for agpod, providing a comprehensive PR draft management system as specified in the design document.
 
 ## Implementation Status
 
@@ -72,7 +72,7 @@ Successfully implemented the complete `kilo` workflow subcommand for agpod, prov
 - Machine-readable stdout output
 
 #### 6. CLI Design
-- **Subcommand structure**: `agpod kilo <command>`
+- **Subcommand structure**: `agpod kiro <command>`
 - **Shortcut flags**: `--pr-new`, `--pr-list`, `--pr` for backward compatibility
 - **Global options**: `--config`, `--base-dir`, `--templates-dir`, `--plugins-dir`
 - **Utility options**: `--dry-run`, `--json`, `--log-level`
@@ -138,7 +138,7 @@ serde_json = "1.0"
 
 #### Module Structure:
 ```
-src/kilo/
+src/kiro/
 ├── mod.rs           # Module exports
 ├── cli.rs           # CLI argument parsing (clap)
 ├── commands.rs      # Command implementations
@@ -241,7 +241,7 @@ Potential additions mentioned in design doc but deferred:
 
 #### Backward Compatibility:
 - Legacy diff mode still works
-- New kilo subcommand is additive
+- New kiro subcommand is additive
 - Shortcut flags provide migration path
 
 #### Extensibility:
@@ -252,7 +252,7 @@ Potential additions mentioned in design doc but deferred:
 
 ## Conclusion
 
-The kilo workflow implementation is **production-ready** with:
+The kiro workflow implementation is **production-ready** with:
 - ✅ Complete feature set per spec
 - ✅ Comprehensive testing
 - ✅ Full documentation

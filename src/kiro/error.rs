@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum KiloError {
+pub enum KiroError {
     #[error("Configuration error: {0}")]
     Config(String),
 
@@ -25,4 +25,4 @@ pub enum KiloError {
     Git(String),
 }
 
-pub type KiloResult<T> = Result<T, KiloError>;
+pub type KiroResult<T> = Result<T, KiroError>;

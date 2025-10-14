@@ -1,4 +1,4 @@
-use crate::kilo::error::{KiloError, KiloResult};
+use crate::kiro::error::{KiroError, KiroResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -100,7 +100,7 @@ pub struct TemplateConfig {
 }
 
 fn default_base_dir() -> String {
-    "llm/kilo".to_string()
+    "llm/kiro".to_string()
 }
 
 fn default_templates_dir() -> String {
@@ -182,8 +182,8 @@ impl Config {
     /// 5. CLI arguments
     pub fn load(
         cli_config: Option<&str>,
-        cli_overrides: &crate::kilo::cli::KiloArgs,
-    ) -> KiloResult<Self> {
+        cli_overrides: &crate::kiro::cli::KiroArgs,
+    ) -> KiroResult<Self> {
         let mut config = Self::default();
 
         // Try to load global config from ~/.config/agpod
@@ -225,9 +225,9 @@ impl Config {
         Ok(config)
     }
 
-    fn merge_from_file(&self, path: &Path) -> KiloResult<Self> {
+    fn merge_from_file(&self, path: &Path) -> KiroResult<Self> {
         let content = fs::read_to_string(path).map_err(|e| {
-            KiloError::Config(format!(
+            KiroError::Config(format!(
                 "Failed to read config from {}: {}",
                 path.display(),
                 e
@@ -235,7 +235,7 @@ impl Config {
         })?;
 
         let file_config: Config = toml::from_str(&content).map_err(|e| {
-            KiloError::Config(format!(
+            KiroError::Config(format!(
                 "Failed to parse config from {}: {}",
                 path.display(),
                 e
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.base_dir, "llm/kilo");
+        assert_eq!(config.base_dir, "llm/kiro");
         assert_eq!(config.template, "default");
         assert_eq!(config.summary_lines, 3);
     }

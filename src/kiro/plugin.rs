@@ -1,5 +1,5 @@
-use crate::kilo::config::Config;
-use crate::kilo::error::KiloResult;
+use crate::kiro::config::Config;
+use crate::kiro::error::KiroResult;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -18,11 +18,11 @@ impl PluginExecutor {
         desc: &str,
         template: &str,
         prefix: &str,
-    ) -> KiloResult<String> {
+    ) -> KiroResult<String> {
         let plugin_config = &self.config.plugins.branch_name;
 
         if !plugin_config.enabled {
-            return Ok(crate::kilo::slug::generate_branch_name(desc, prefix));
+            return Ok(crate::kiro::slug::generate_branch_name(desc, prefix));
         }
 
         // Determine plugin path
@@ -40,7 +40,7 @@ impl PluginExecutor {
                 "Warning: Plugin not found at {}, using default branch name generation",
                 plugin_path
             );
-            return Ok(crate::kilo::slug::generate_branch_name(desc, prefix));
+            return Ok(crate::kiro::slug::generate_branch_name(desc, prefix));
         }
 
         // Prepare environment variables
@@ -103,7 +103,7 @@ impl PluginExecutor {
 
                     if sanitized.is_empty() {
                         eprintln!("Warning: Plugin returned empty branch name, using default");
-                        Ok(crate::kilo::slug::generate_branch_name(desc, prefix))
+                        Ok(crate::kiro::slug::generate_branch_name(desc, prefix))
                     } else {
                         Ok(sanitized)
                     }
@@ -115,13 +115,13 @@ impl PluginExecutor {
                         stderr
                     );
                     eprintln!("Falling back to default branch name generation");
-                    Ok(crate::kilo::slug::generate_branch_name(desc, prefix))
+                    Ok(crate::kiro::slug::generate_branch_name(desc, prefix))
                 }
             }
             Err(e) => {
                 eprintln!("Warning: Failed to execute plugin: {}", e);
                 eprintln!("Falling back to default branch name generation");
-                Ok(crate::kilo::slug::generate_branch_name(desc, prefix))
+                Ok(crate::kiro::slug::generate_branch_name(desc, prefix))
             }
         }
     }

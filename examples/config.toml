@@ -1,7 +1,7 @@
-# Example agpod kilo configuration
+# Example agpod kiro configuration
 # Place this at ~/.config/agpod/config.toml or .agpod.toml in your project root
 
-base_dir = "llm/kilo"
+base_dir = "llm/kiro"
 templates_dir = "~/.config/agpod/templates"
 plugins_dir = "~/.config/agpod/plugins"
 template = "default"

@@ -1,5 +1,5 @@
-use crate::kilo::error::{KiloError, KiloResult};
-use crate::kilo::template::GitInfo;
+use crate::kiro::error::{KiroError, KiroResult};
+use crate::kiro::template::GitInfo;
 use std::process::Command;
 
 pub struct GitHelper;
@@ -17,56 +17,56 @@ impl GitHelper {
         })
     }
 
-    pub fn get_repo_root() -> KiloResult<String> {
+    pub fn get_repo_root() -> KiroResult<String> {
         let output = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .output()
-            .map_err(|e| KiloError::Git(format!("Failed to execute git: {}", e)))?;
+            .map_err(|e| KiroError::Git(format!("Failed to execute git: {}", e)))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
-            Err(KiloError::Git("Not in a git repository".to_string()))
+            Err(KiroError::Git("Not in a git repository".to_string()))
         }
     }
 
-    pub fn get_current_branch() -> KiloResult<String> {
+    pub fn get_current_branch() -> KiroResult<String> {
         let output = Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .output()
-            .map_err(|e| KiloError::Git(format!("Failed to execute git: {}", e)))?;
+            .map_err(|e| KiroError::Git(format!("Failed to execute git: {}", e)))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
-            Err(KiloError::Git("Failed to get current branch".to_string()))
+            Err(KiroError::Git("Failed to get current branch".to_string()))
         }
     }
 
-    pub fn get_short_sha() -> KiloResult<String> {
+    pub fn get_short_sha() -> KiroResult<String> {
         let output = Command::new("git")
             .args(["rev-parse", "--short", "HEAD"])
             .output()
-            .map_err(|e| KiloError::Git(format!("Failed to execute git: {}", e)))?;
+            .map_err(|e| KiroError::Git(format!("Failed to execute git: {}", e)))?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
-            Err(KiloError::Git("Failed to get HEAD SHA".to_string()))
+            Err(KiroError::Git("Failed to get HEAD SHA".to_string()))
         }
     }
 
-    pub fn create_and_checkout_branch(branch_name: &str) -> KiloResult<()> {
+    pub fn create_and_checkout_branch(branch_name: &str) -> KiroResult<()> {
         let output = Command::new("git")
             .args(["checkout", "-b", branch_name])
             .output()
-            .map_err(|e| KiloError::Git(format!("Failed to execute git: {}", e)))?;
+            .map_err(|e| KiroError::Git(format!("Failed to execute git: {}", e)))?;
 
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(KiloError::Git(format!(
+            Err(KiroError::Git(format!(
                 "Failed to create branch: {}",
                 stderr
             )))

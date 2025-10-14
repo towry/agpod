@@ -1,29 +1,29 @@
-use crate::kilo::cli::{KiloArgs, KiloCommand};
-use crate::kilo::config::Config;
-use crate::kilo::error::KiloError;
-use crate::kilo::git::GitHelper;
-use crate::kilo::plugin::PluginExecutor;
-use crate::kilo::template::{TemplateContext, TemplateRenderer};
+use crate::kiro::cli::{KiroArgs, KiroCommand};
+use crate::kiro::config::Config;
+use crate::kiro::error::KiroError;
+use crate::kiro::git::GitHelper;
+use crate::kiro::plugin::PluginExecutor;
+use crate::kiro::template::{TemplateContext, TemplateRenderer};
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn execute(args: KiloArgs) -> Result<()> {
+pub fn execute(args: KiroArgs) -> Result<()> {
     // Check if it's an init command first
-    let is_init = matches!(&args.command, Some(KiloCommand::Init { .. }));
+    let is_init = matches!(&args.command, Some(KiroCommand::Init { .. }));
 
     if is_init {
-        if let Some(KiloCommand::Init { force }) = args.command {
+        if let Some(KiroCommand::Init { force }) = args.command {
             return cmd_init(force);
         }
     }
 
     // Check if config is initialized for other commands
     if !Config::is_initialized() {
-        eprintln!("Error: agpod kilo is not initialized.");
+        eprintln!("Error: agpod kiro is not initialized.");
         eprintln!();
         eprintln!("Please run the following command to initialize:");
-        eprintln!("  agpod kilo init");
+        eprintln!("  agpod kiro init");
         eprintln!();
         if let Some(config_dir) = Config::get_config_dir() {
             eprintln!(
@@ -41,7 +41,7 @@ pub fn execute(args: KiloArgs) -> Result<()> {
     let command = if let Some(cmd) = args.command {
         cmd
     } else if let Some(desc) = args.pr_new {
-        KiloCommand::PrNew {
+        KiroCommand::PrNew {
             desc,
             template: None,
             force: false,
@@ -49,11 +49,11 @@ pub fn execute(args: KiloArgs) -> Result<()> {
             open: false,
         }
     } else if args.pr_list {
-        KiloCommand::PrList {
+        KiroCommand::PrList {
             summary_lines: config.summary_lines,
         }
     } else if args.pr {
-        KiloCommand::Pr {
+        KiroCommand::Pr {
             fzf: false,
             output: "rel".to_string(),
         }
@@ -64,7 +64,7 @@ pub fn execute(args: KiloArgs) -> Result<()> {
     };
 
     match command {
-        KiloCommand::PrNew {
+        KiroCommand::PrNew {
             desc,
             template,
             force,
@@ -79,9 +79,9 @@ pub fn execute(args: KiloArgs) -> Result<()> {
             open,
             args.dry_run,
         ),
-        KiloCommand::PrList { summary_lines } => cmd_pr_list(&config, summary_lines, args.json),
-        KiloCommand::Pr { fzf, output } => cmd_pr(&config, fzf, &output),
-        KiloCommand::Init { .. } => unreachable!(), // Already handled above
+        KiroCommand::PrList { summary_lines } => cmd_pr_list(&config, summary_lines, args.json),
+        KiroCommand::Pr { fzf, output } => cmd_pr(&config, fzf, &output),
+        KiroCommand::Init { .. } => unreachable!(), // Already handled above
     }
 }
 
@@ -103,7 +103,7 @@ fn cmd_pr_new(
     // Check if directory already exists
     let pr_dir = PathBuf::from(&config.base_dir).join(&branch_name);
     if pr_dir.exists() && !force {
-        return Err(KiloError::DirectoryExists(pr_dir.display().to_string()).into());
+        return Err(KiroError::DirectoryExists(pr_dir.display().to_string()).into());
     }
 
     if dry_run {
@@ -500,12 +500,12 @@ fn cmd_init(force: bool) -> Result<()> {
     }
 
     eprintln!();
-    eprintln!("✓ agpod kilo initialized successfully!");
+    eprintln!("✓ agpod kiro initialized successfully!");
     eprintln!();
     eprintln!("Configuration directory: {}", config_dir.display());
     eprintln!();
     eprintln!("You can now use:");
-    eprintln!("  agpod kilo pr-new --desc \"your description\"");
+    eprintln!("  agpod kiro pr-new --desc \"your description\"");
     eprintln!();
     eprintln!("To add more templates, copy them to:");
     eprintln!("  {}", templates_dir.display());

@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
 
 #[derive(Debug, Args)]
-pub struct KiloArgs {
+pub struct KiroArgs {
     #[command(subcommand)]
-    pub command: Option<KiloCommand>,
+    pub command: Option<KiroCommand>,
 
     /// Specify configuration file path
     #[arg(long, env = "AGPOD_CONFIG")]
@@ -48,7 +48,7 @@ pub struct KiloArgs {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum KiloCommand {
+pub enum KiroCommand {
     /// Create a new PR draft
     PrNew {
         /// Description for the PR draft
@@ -90,7 +90,7 @@ pub enum KiloCommand {
         output: String,
     },
 
-    /// Initialize agpod kilo configuration and templates
+    /// Initialize agpod kiro configuration and templates
     Init {
         /// Force re-initialization even if config exists
         #[arg(short, long)]

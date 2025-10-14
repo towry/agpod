@@ -1,6 +1,6 @@
-# Agpod Kilo Examples
+# Agpod Kiro Examples
 
-This directory contains example configurations and templates for the `agpod kilo` workflow.
+This directory contains example configurations and templates for the `agpod kiro` workflow.
 
 ## Directory Structure
 
@@ -33,7 +33,7 @@ examples/
 **Quick Start (Recommended):**
 ```bash
 # Initialize with default configuration and templates
-agpod kilo init
+agpod kiro init
 ```
 
 This creates `~/.config/agpod/` with:
@@ -74,53 +74,53 @@ This creates `~/.config/agpod/` with:
 
 ```bash
 # Using default template
-agpod kilo pr-new --desc "实现用户登录功能"
+agpod kiro pr-new --desc "实现用户登录功能"
 
 # Using Vue template
-agpod kilo pr-new --desc "添加登录表单组件" --template vue
+agpod kiro pr-new --desc "添加登录表单组件" --template vue
 
 # Using Rust template
-agpod kilo pr-new --desc "实现JWT认证模块" --template rust
+agpod kiro pr-new --desc "实现JWT认证模块" --template rust
 ```
 
 ### List PR drafts
 
 ```bash
 # Table format
-agpod kilo pr-list
+agpod kiro pr-list
 
 # JSON format
-agpod kilo --json pr-list
+agpod kiro --json pr-list
 ```
 
 ### Interactive selection
 
 ```bash
 # Using built-in selector
-agpod kilo pr
+agpod kiro pr
 
 # Using fzf (if available)
-agpod kilo pr --fzf
+agpod kiro pr --fzf
 
 # Get absolute path
-agpod kilo pr --output abs
+agpod kiro pr --output abs
 
 # Use in shell scripts
-selected=$(agpod kilo pr)
-cd llm/kilo/$selected
+selected=$(agpod kiro pr)
+cd llm/kiro/$selected
 ```
 
 ### Shortcut flags
 
 ```bash
 # Equivalent to pr-new
-agpod kilo --pr-new "添加新功能"
+agpod kiro --pr-new "添加新功能"
 
 # Equivalent to pr-list
-agpod kilo --pr-list
+agpod kiro --pr-list
 
 # Equivalent to pr
-agpod kilo --pr
+agpod kiro --pr
 ```
 
 ## Template Variables
@@ -213,4 +213,4 @@ Configuration is loaded in this order (later sources override earlier ones):
 - Use `--log-level debug` for verbose output
 - Templates ending in `.j2` will have that extension removed in output
 - Plugin failures automatically fall back to default branch name generation
-- Use JSON output for scripting: `agpod kilo --json pr-list`
+- Use JSON output for scripting: `agpod kiro --json pr-list`

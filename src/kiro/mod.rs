@@ -7,10 +7,10 @@ mod plugin;
 mod slug;
 mod template;
 
-pub use cli::KiloArgs;
+pub use cli::KiroArgs;
 
 use anyhow::Result;
 
-pub fn run(args: KiloArgs) -> Result<()> {
+pub fn run(args: KiroArgs) -> Result<()> {
     commands::execute(args)
 }

@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
 
-mod kilo;
+mod kiro;
 
 #[derive(Parser)]
 #[command(name = "agpod")]
@@ -29,16 +29,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Kilo workflow commands for PR draft management
-    Kilo(kilo::KiloArgs),
+    /// Kiro workflow commands for PR draft management
+    Kiro(kiro::KiroArgs),
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Kilo(args)) => {
-            if let Err(e) = kilo::run(args) {
+        Some(Commands::Kiro(args)) => {
+            if let Err(e) = kiro::run(args) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

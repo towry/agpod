@@ -1,5 +1,5 @@
-use crate::kilo::config::Config;
-use crate::kilo::error::{KiloError, KiloResult};
+use crate::kiro::config::Config;
+use crate::kiro::error::{KiroError, KiroResult};
 use chrono::{Local, Utc};
 use minijinja::{context, Environment, Value};
 use std::collections::HashMap;
@@ -28,10 +28,10 @@ pub struct TemplateRenderer {
 }
 
 impl TemplateRenderer {
-    pub fn new(templates_dir: &str) -> KiloResult<Self> {
+    pub fn new(templates_dir: &str) -> KiroResult<Self> {
         let templates_path = PathBuf::from(templates_dir);
         if !templates_path.exists() {
-            return Err(KiloError::Template(format!(
+            return Err(KiroError::Template(format!(
                 "Templates directory not found: {}",
                 templates_dir
             )));
@@ -45,7 +45,7 @@ impl TemplateRenderer {
 
         // Add custom filters
         env.add_filter("slugify", |value: String| -> String {
-            crate::kilo::slug::slugify(&value)
+            crate::kiro::slug::slugify(&value)
         });
 
         env.add_filter("truncate", |value: String, n: usize| -> String {
@@ -68,14 +68,14 @@ impl TemplateRenderer {
         template_file: &str,
         context: &TemplateContext,
         config: &Config,
-    ) -> KiloResult<String> {
+    ) -> KiroResult<String> {
         // With path loader, template path is relative to templates_dir
         // Format: {template_name}/{template_file}
         let template_path_in_loader = format!("{}/{}", template_name, template_file);
         let full_template_path = self.templates_dir.join(template_name).join(template_file);
 
         if !full_template_path.exists() {
-            return Err(KiloError::TemplateNotFound(format!(
+            return Err(KiroError::TemplateNotFound(format!(
                 "{} in {}",
                 template_file,
                 full_template_path.display()
@@ -119,10 +119,10 @@ impl TemplateRenderer {
         let tmpl = self
             .env
             .get_template(&template_path_in_loader)
-            .map_err(|e| KiloError::Template(format!("Failed to get template: {}", e)))?;
+            .map_err(|e| KiroError::Template(format!("Failed to get template: {}", e)))?;
 
         tmpl.render(ctx)
-            .map_err(|e| KiloError::Template(format!("Failed to render template: {}", e)))
+            .map_err(|e| KiroError::Template(format!("Failed to render template: {}", e)))
     }
 
     pub fn render_all(
@@ -133,7 +133,7 @@ impl TemplateRenderer {
         config: &Config,
         output_dir: &Path,
         missing_policy: &str,
-    ) -> KiloResult<Vec<PathBuf>> {
+    ) -> KiroResult<Vec<PathBuf>> {
         let mut rendered_files = Vec::new();
 
         for file in files {
@@ -148,7 +148,7 @@ impl TemplateRenderer {
 
                     let output_path = output_dir.join(output_filename);
 
-                    fs::write(&output_path, content).map_err(KiloError::Io)?;
+                    fs::write(&output_path, content).map_err(KiroError::Io)?;
 
                     rendered_files.push(output_path);
                 }

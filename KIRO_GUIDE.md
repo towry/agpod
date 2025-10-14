@@ -1,6 +1,6 @@
-# Agpod Kilo Workflow Guide
+# Agpod Kiro Workflow Guide
 
-The `kilo` subcommand provides a powerful workflow for managing PR drafts locally. It helps you organize design documents, tasks, and implementation notes in a structured way.
+The `kiro` subcommand provides a powerful workflow for managing PR drafts locally. It helps you organize design documents, tasks, and implementation notes in a structured way.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ sudo cp target/release/agpod /usr/local/bin/
 
 1. **Initialize configuration:**
    ```bash
-   agpod kilo init
+   agpod kiro init
    ```
    
    This creates `~/.config/agpod/` with default configuration and templates.
@@ -30,7 +30,7 @@ sudo cp target/release/agpod /usr/local/bin/
 
 3. **Start using:**
    ```bash
-   agpod kilo pr-new --desc "your first draft"
+   agpod kiro pr-new --desc "your first draft"
    ```
 
 ## Commands
@@ -39,38 +39,38 @@ sudo cp target/release/agpod /usr/local/bin/
 
 ```bash
 # Basic usage
-agpod kilo pr-new --desc "实现用户登录功能"
+agpod kiro pr-new --desc "实现用户登录功能"
 
 # With specific template
-agpod kilo pr-new --desc "添加登录表单" --template vue
+agpod kiro pr-new --desc "添加登录表单" --template vue
 
 # With git branch creation
-agpod kilo pr-new --desc "实现JWT模块" --template rust --git-branch
+agpod kiro pr-new --desc "实现JWT模块" --template rust --git-branch
 
 # Open in editor after creation
-agpod kilo pr-new --desc "数据库连接池" --open
+agpod kiro pr-new --desc "数据库连接池" --open
 
 # Shortcut flag (backward compatible)
-agpod kilo --pr-new "实现新功能"
+agpod kiro --pr-new "实现新功能"
 ```
 
 **Output:**
 - Prints branch name to stdout (machine-readable)
 - Logs creation details to stderr
-- Creates directory: `llm/kilo/<branch-name>/`
+- Creates directory: `llm/kiro/<branch-name>/`
 - Renders template files (DESIGN.md, TASK.md, etc.)
 
 ### Listing PR Drafts
 
 ```bash
 # Table format
-agpod kilo pr-list
+agpod kiro pr-list
 
 # JSON format (for scripting)
-agpod kilo --json pr-list
+agpod kiro --json pr-list
 
 # Shortcut flag
-agpod kilo --pr-list
+agpod kiro --pr-list
 ```
 
 **Output:**
@@ -81,29 +81,29 @@ agpod kilo --pr-list
 
 ```bash
 # Built-in selector
-agpod kilo pr
+agpod kiro pr
 
 # With fzf (if installed)
-agpod kilo pr --fzf
+agpod kiro pr --fzf
 
 # Get absolute path
-agpod kilo pr --output abs
+agpod kiro pr --output abs
 
 # Get name only
-agpod kilo pr --output name
+agpod kiro pr --output name
 
 # Shortcut flag
-agpod kilo --pr
+agpod kiro --pr
 ```
 
 **Use in scripts:**
 ```bash
 # Navigate to selected draft
-selected=$(agpod kilo pr)
-cd llm/kilo/$selected
+selected=$(agpod kiro pr)
+cd llm/kiro/$selected
 
 # Open in editor
-code llm/kilo/$(agpod kilo pr)
+code llm/kiro/$(agpod kiro pr)
 ```
 
 ## Configuration
@@ -121,7 +121,7 @@ Priority (highest to lowest):
 
 ```toml
 # ~/.config/agpod/config.toml
-base_dir = "llm/kilo"
+base_dir = "llm/kiro"
 templates_dir = "~/.config/agpod/templates"
 plugins_dir = "~/.config/agpod/plugins"
 template = "default"
@@ -156,7 +156,7 @@ export AGPOD_LOG_LEVEL=debug
 ### CLI Overrides
 
 ```bash
-agpod kilo \
+agpod kiro \
   --base-dir ~/custom/path \
   --templates-dir ~/templates \
   --log-level debug \
@@ -263,7 +263,7 @@ touch ~/.config/agpod/templates/mytemplate/TASK.md.j2
 
 3. Use the template:
 ```bash
-agpod kilo pr-new --desc "test" --template mytemplate
+agpod kiro pr-new --desc "test" --template mytemplate
 ```
 
 ## Plugins
@@ -319,34 +319,34 @@ Plugins receive:
 
 Preview without creating files:
 ```bash
-agpod kilo --dry-run pr-new --desc "test"
+agpod kiro --dry-run pr-new --desc "test"
 ```
 
 ### Force Overwrite
 
 Overwrite existing directory:
 ```bash
-agpod kilo pr-new --desc "test" --force
+agpod kiro pr-new --desc "test" --force
 ```
 
 ### Custom Output Directory
 
 ```bash
-agpod kilo --base-dir ~/my-drafts pr-new --desc "test"
+agpod kiro --base-dir ~/my-drafts pr-new --desc "test"
 ```
 
 ### Scripting
 
 ```bash
 # Create draft and open in editor
-draft=$(agpod kilo pr-new --desc "新功能")
-code llm/kilo/$draft
+draft=$(agpod kiro pr-new --desc "新功能")
+code llm/kiro/$draft
 
 # List all drafts in JSON
-agpod kilo --json pr-list | jq -r '.[].name'
+agpod kiro --json pr-list | jq -r '.[].name'
 
 # Select and navigate
-cd llm/kilo/$(agpod kilo pr --output name)
+cd llm/kiro/$(agpod kiro pr --output name)
 ```
 
 ## Troubleshooting
@@ -376,14 +376,14 @@ ls ~/.config/agpod/templates/default/
 ### Directory Already Exists
 
 ```
-Error: Directory already exists: llm/kilo/feature-...
+Error: Directory already exists: llm/kiro/feature-...
 ```
 
 **Solution:** Use `--force` flag or choose different description:
 ```bash
-agpod kilo pr-new --desc "new description"
+agpod kiro pr-new --desc "new description"
 # or
-agpod kilo pr-new --desc "same description" --force
+agpod kiro pr-new --desc "same description" --force
 ```
 
 ## Tips
