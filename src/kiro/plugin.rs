@@ -13,16 +13,11 @@ impl PluginExecutor {
         Self { config }
     }
 
-    pub fn generate_branch_name(
-        &self,
-        desc: &str,
-        template: &str,
-        prefix: &str,
-    ) -> KiroResult<String> {
+    pub fn generate_branch_name(&self, desc: &str, template: &str) -> KiroResult<String> {
         let plugin_config = &self.config.plugins.branch_name;
 
         if !plugin_config.enabled {
-            return Ok(crate::kiro::slug::generate_branch_name(desc, prefix));
+            return Ok(crate::kiro::slug::generate_branch_name(desc));
         }
 
         // Determine plugin path
@@ -40,14 +35,13 @@ impl PluginExecutor {
                 "Warning: Plugin not found at {}, using default branch name generation",
                 plugin_path
             );
-            return Ok(crate::kiro::slug::generate_branch_name(desc, prefix));
+            return Ok(crate::kiro::slug::generate_branch_name(desc));
         }
 
         // Prepare environment variables
         let mut env_vars = HashMap::new();
         env_vars.insert("AGPOD_DESC".to_string(), desc.to_string());
         env_vars.insert("AGPOD_TEMPLATE".to_string(), template.to_string());
-        env_vars.insert("AGPOD_BRANCH_PREFIX".to_string(), prefix.to_string());
         env_vars.insert(
             "AGPOD_TIME_ISO".to_string(),
             chrono::Utc::now().to_rfc3339(),
@@ -103,7 +97,7 @@ impl PluginExecutor {
 
                     if sanitized.is_empty() {
                         eprintln!("Warning: Plugin returned empty branch name, using default");
-                        Ok(crate::kiro::slug::generate_branch_name(desc, prefix))
+                        Ok(crate::kiro::slug::generate_branch_name(desc))
                     } else {
                         Ok(sanitized)
                     }
@@ -115,13 +109,13 @@ impl PluginExecutor {
                         stderr
                     );
                     eprintln!("Falling back to default branch name generation");
-                    Ok(crate::kiro::slug::generate_branch_name(desc, prefix))
+                    Ok(crate::kiro::slug::generate_branch_name(desc))
                 }
             }
             Err(e) => {
                 eprintln!("Warning: Failed to execute plugin: {}", e);
                 eprintln!("Falling back to default branch name generation");
-                Ok(crate::kiro::slug::generate_branch_name(desc, prefix))
+                Ok(crate::kiro::slug::generate_branch_name(desc))
             }
         }
     }

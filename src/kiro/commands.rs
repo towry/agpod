@@ -98,7 +98,7 @@ fn cmd_pr_new(
 
     // Generate branch name
     let plugin_executor = PluginExecutor::new(config.clone());
-    let branch_name = plugin_executor.generate_branch_name(desc, template_name, "feature-impl")?;
+    let branch_name = plugin_executor.generate_branch_name(desc, template_name)?;
 
     // Check if directory already exists
     let pr_dir = PathBuf::from(&config.base_dir).join(&branch_name);

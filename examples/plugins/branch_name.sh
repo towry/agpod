@@ -7,7 +7,6 @@
 # Environment variables available:
 #   AGPOD_DESC          - The description provided by --desc flag
 #   AGPOD_TEMPLATE      - The template name being used (e.g., "vue", "rust")
-#   AGPOD_BRANCH_PREFIX - Suggested branch prefix (default: "feature-impl")
 #   AGPOD_TIME_ISO      - Current time in ISO8601 format
 #   AGPOD_BASE_DIR      - Base directory for PR drafts
 #   AGPOD_REPO_ROOT     - Git repository root (if in a git repo)
@@ -24,7 +23,6 @@ set -uo pipefail
 
 # Get environment variables
 desc="${AGPOD_DESC:-}"
-prefix="${AGPOD_BRANCH_PREFIX:-feature-impl}"
 template="${AGPOD_TEMPLATE:-default}"
 
 # Return empty if no description (triggers fallback)
@@ -46,14 +44,5 @@ if [[ -z "$slug" ]]; then
   exit 0
 fi
 
-# Generate random suffix
-rand=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 6 || echo "")
-
-# If random generation failed, return empty for fallback
-if [[ -z "$rand" ]]; then
-  echo ""
-  exit 0
-fi
-
-# Output branch name
-echo "${prefix}-${slug}-${rand}"
+# Output branch name (just the slug, no prefix or random suffix)
+echo "$slug"
