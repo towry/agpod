@@ -81,7 +81,7 @@ pub enum KiroCommand {
 
     /// Interactive PR draft selection
     Pr {
-        /// Use fzf for selection if available
+        /// (Deprecated) fzf is now used automatically if available
         #[arg(long)]
         fzf: bool,
 

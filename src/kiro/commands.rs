@@ -255,7 +255,7 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
     Ok(())
 }
 
-fn cmd_pr(config: &Config, use_fzf: bool, output_format: &str) -> Result<()> {
+fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
     let base_dir = Path::new(&config.base_dir);
 
     if !base_dir.exists() {
@@ -297,9 +297,9 @@ fn cmd_pr(config: &Config, use_fzf: bool, output_format: &str) -> Result<()> {
 
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Try to use fzf if requested and available
-    if use_fzf && is_fzf_available() {
-        let selected = select_with_fzf(&entries)?;
+    // Use fzf by default if available
+    if is_fzf_available() {
+        let selected = select_with_fzf(&entries, base_dir)?;
         output_result(&selected, output_format, base_dir);
     } else {
         let selected = select_with_dialoguer(&entries)?;
@@ -336,14 +336,30 @@ fn is_fzf_available() -> bool {
         .unwrap_or(false)
 }
 
-fn select_with_fzf(entries: &[(String, String)]) -> Result<String> {
+fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new("fzf")
-        .stdin(Stdio::piped())
+    // Build fzf command with fuzzy filter options
+    let mut cmd = Command::new("fzf");
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()?;
+        .arg("--height=40%")
+        .arg("--reverse")
+        .arg("--prompt=Select PR: ")
+        .arg("--border")
+        .arg("--info=inline");
+
+    // Add preview to show DESIGN.md content from the selected PR directory
+    let preview_cmd = format!(
+        "test -f {}/{{1}}/DESIGN.md && cat {}/{{1}}/DESIGN.md || echo 'No DESIGN.md found'",
+        base_dir.display(),
+        base_dir.display()
+    );
+    cmd.arg("--preview").arg(preview_cmd);
+    cmd.arg("--preview-window=right:50%:wrap");
+
+    let mut child = cmd.spawn()?;
 
     {
         let stdin = child.stdin.as_mut().unwrap();
