@@ -401,11 +401,12 @@ fn output_result(name: &str, format: &str, base_dir: &Path) {
             }
         }
         "rel" => {
-            // Relative to base_dir
-            println!("{}", name);
+            // Relative path from cwd: base_dir/name
+            let rel_path = base_dir.join(name);
+            println!("{}", rel_path.display());
         }
         _ => {
-            // Default to rel
+            // Default to name
             println!("{}", name);
         }
     }
