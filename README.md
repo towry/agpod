@@ -6,7 +6,7 @@
 [![Rust Version](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org)
 ![GitHub Copilot](https://img.shields.io/badge/github_copilot-8957E5?style=for-the-badge&logo=github-copilot&logoColor=white)
 ![GitHub Sponsors](https://img.shields.io/github/sponsors/towry)
-![Gitea Pull Requests](https://img.shields.io/gitea/pull-requests/open/towry/agpod)
+![GitHub Issues or Pull Requests](https://img.shields.io/github/issues-pr/towry/agpod)
 ![GitHub Repo stars](https://img.shields.io/github/stars/towry/agpod)
 
 A powerful agent helper tool for optimizing git diffs for LLM context and managing PR drafts locally.
