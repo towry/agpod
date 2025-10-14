@@ -17,18 +17,20 @@ mod kiro;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-
-    /// Save diff chunks to separate files (for legacy mode)
-    #[arg(long, conflicts_with = "command")]
-    save: bool,
-
-    /// Specify custom output directory (for legacy mode)
-    #[arg(long, conflicts_with = "command")]
-    save_path: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Minimize git diff for LLM context (reads from stdin)
+    Diff {
+        /// Save diff chunks to separate files
+        #[arg(long)]
+        save: bool,
+
+        /// Specify custom output directory
+        #[arg(long)]
+        save_path: Option<String>,
+    },
     /// Kiro workflow commands for PR draft management
     Kiro(kiro::KiroArgs),
 }
@@ -37,6 +39,16 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Some(Commands::Diff { save, save_path }) => {
+            // Process git diff from stdin
+            match process_git_diff(save, save_path) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(Commands::Kiro(args)) => {
             if let Err(e) = kiro::run(args) {
                 eprintln!("Error: {}", e);
@@ -44,14 +56,10 @@ fn main() {
             }
         }
         None => {
-            // Legacy mode: process git diff
-            match process_git_diff(cli.save, cli.save_path) {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
-            }
+            // No command provided, print help
+            use clap::CommandFactory;
+            let _ = Cli::command().print_help();
+            println!(); // Add a newline after help
         }
     }
 }

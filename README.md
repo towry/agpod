@@ -49,20 +49,22 @@ The binary will be available at `target/release/agpod`.
 
 ### Basic usage
 
+Minimize a git diff (reads from stdin):
+
 ```bash
-git diff | agpod
+git diff | agpod diff
 ```
 
 ### With staged changes
 
 ```bash
-git diff --cached | agpod
+git diff --cached | agpod diff
 ```
 
 ### Compare specific commits
 
 ```bash
-git diff HEAD~1 HEAD | agpod
+git diff HEAD~1 HEAD | agpod diff
 ```
 
 ### Save mode for review workflows
@@ -71,10 +73,10 @@ Split diff into separate chunk files with review tracking:
 
 ```bash
 # Save chunks to default location (llm/diff/<project-name>/)
-git diff | agpod --save
+git diff | agpod diff --save
 
 # Save chunks to custom location
-git diff | agpod --save --save-path custom/path
+git diff | agpod diff --save --save-path custom/path
 ```
 
 Output format (machine-readable, to stdout):
@@ -85,7 +87,7 @@ REVIEW.md: /path/to/working/directory/REVIEW.md
 
 This creates:
 - Individual diff chunk files in `<path>/<project-name>/chunk_*.diff`
-- A `REVIEW.md` file in the current directory for tracking review progress
+- A `REVIEW.md` file in the same directory for tracking review progress
 
 The `REVIEW.md` file includes:
 - File hashes for change tracking
@@ -99,10 +101,10 @@ See [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) for detailed documentation.
 
 ```bash
 # Copy minimized diff to clipboard (macOS)
-git diff | agpod | pbcopy
+git diff | agpod diff | pbcopy
 
 # Save to file
-git diff | agpod > minimized_diff.txt
+git diff | agpod diff > minimized_diff.txt
 ```
 
 ## Strategy
