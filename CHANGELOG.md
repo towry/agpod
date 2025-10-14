@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/towry/agpod/compare/v0.3.0...v0.4.0) (2025-10-14)
+
+
+### Features
+
+* Add kiro workflow subcommand for PR draft management ([#21](https://github.com/towry/agpod/issues/21)) ([ae95ba4](https://github.com/towry/agpod/commit/ae95ba451c7a125c95eaa74cbb328dc21bb8b139))
+* **kiro:** add fuzzy filter enhancements and auto-detection to pr command ([#29](https://github.com/towry/agpod/issues/29)) ([9bdd057](https://github.com/towry/agpod/commit/9bdd05702f046ea22fdf690922404f77eefa57d7))
+* save REVIEW.md in chunks directory alongside diff files ([#15](https://github.com/towry/agpod/issues/15)) ([43441a3](https://github.com/towry/agpod/commit/43441a3d91b6ab6979c8928f580e0d2989e51751))
+
+
+### Bug Fixes
+
+* **workflow:** remove invalid package-name parameter from release-please action v4 ([#31](https://github.com/towry/agpod/issues/31)) ([be348f0](https://github.com/towry/agpod/commit/be348f044cde818c1e451189dc17cbef54f4d5b0))
+* **workflow:** replace deprecated command usage with help command in pr-asset-build ([#33](https://github.com/towry/agpod/issues/33)) ([a7edf63](https://github.com/towry/agpod/commit/a7edf639c39e0a457dccb7a9993a06722f567ea9))
+
 ## [0.3.0](https://github.com/towry/agpod/compare/v0.2.0...v0.3.0) (2025-10-13)
 
 
