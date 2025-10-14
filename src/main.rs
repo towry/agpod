@@ -1,3 +1,4 @@
+use clap::{Parser, Subcommand};
 use regex::Regex;
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -7,84 +8,56 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
 
+mod kiro;
+
+#[derive(Parser)]
+#[command(name = "agpod")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = env!("CARGO_PKG_DESCRIPTION"), long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Save diff chunks to separate files (for legacy mode)
+    #[arg(long, conflicts_with = "command")]
+    save: bool,
+
+    /// Specify custom output directory (for legacy mode)
+    #[arg(long, conflicts_with = "command")]
+    save_path: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Kiro workflow commands for PR draft management
+    Kiro(kiro::KiroArgs),
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    // Check for help or version flags
-    if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
-        print_help();
-        return;
-    }
-
-    if args.contains(&"--version".to_string()) || args.contains(&"-V".to_string()) {
-        print_version();
-        return;
-    }
-
-    let save_mode = args.contains(&"--save".to_string());
-
-    // Parse optional --save-path argument
-    let save_path = parse_save_path(&args);
-
-    match process_git_diff(save_mode, save_path) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
+    match cli.command {
+        Some(Commands::Kiro(args)) => {
+            if let Err(e) = kiro::run(args) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        None => {
+            // Legacy mode: process git diff
+            match process_git_diff(cli.save, cli.save_path) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
     }
-}
-
-fn print_version() {
-    println!("agpod {}", env!("CARGO_PKG_VERSION"));
-}
-
-fn print_help() {
-    println!("agpod {}", env!("CARGO_PKG_VERSION"));
-    println!("{}", env!("CARGO_PKG_DESCRIPTION"));
-    println!();
-    println!("USAGE:");
-    println!("    git diff | agpod [OPTIONS]");
-    println!();
-    println!("OPTIONS:");
-    println!("    -h, --help              Print help information");
-    println!("    -V, --version           Print version information");
-    println!("    --save                  Save diff chunks to separate files");
-    println!("    --save-path <PATH>      Specify custom output directory (default: llm/diff)");
-    println!();
-    println!("EXAMPLES:");
-    println!("    # Minimize diff from stdin");
-    println!("    git diff | agpod");
-    println!();
-    println!("    # Save diff chunks to files");
-    println!("    git diff | agpod --save");
-    println!();
-    println!("    # Save to custom directory");
-    println!("    git diff | agpod --save --save-path custom/path");
-    println!();
-    println!("    # With staged changes");
-    println!("    git diff --cached | agpod --save");
-    println!();
-    println!("OUTPUT (when using --save):");
-    println!("    generated: <path>/<project-name>/");
-    println!("    REVIEW.md: <absolute-path-to-REVIEW.md>");
-    println!();
-    println!(
-        "For more information, visit: {}",
-        env!("CARGO_PKG_REPOSITORY")
-    );
-}
-
-fn parse_save_path(args: &[String]) -> Option<String> {
-    for i in 0..args.len() {
-        if args[i] == "--save-path" && i + 1 < args.len() {
-            return Some(expand_path(&args[i + 1]));
-        }
-    }
-    None
 }
 
 /// Expand environment variables and tilde in path
+#[allow(dead_code)]
 fn expand_path(path: &str) -> String {
     let mut expanded = path.to_string();
 
@@ -1009,26 +982,6 @@ index 0000000..abc123
 
         // Clean up after test
         let _ = fs::remove_dir_all(custom_path);
-    }
-
-    #[test]
-    fn test_parse_save_path() {
-        // Test with --save-path argument
-        let args = vec![
-            "program".to_string(),
-            "--save".to_string(),
-            "--save-path".to_string(),
-            "my/custom/path".to_string(),
-        ];
-        assert_eq!(parse_save_path(&args), Some("my/custom/path".to_string()));
-
-        // Test without --save-path argument
-        let args = vec!["program".to_string(), "--save".to_string()];
-        assert_eq!(parse_save_path(&args), None);
-
-        // Test with --save-path but no value
-        let args = vec!["program".to_string(), "--save-path".to_string()];
-        assert_eq!(parse_save_path(&args), None);
     }
 
     #[test]

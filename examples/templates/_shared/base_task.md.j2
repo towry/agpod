@@ -1,0 +1,33 @@
+{# Base template for all TASK.md files #}
+{# This template can be extended by specific templates #}
+
+# {% block title %}任务清单：{{ branch_name }}{% endblock %}
+
+## {% block workflow_title %}开发流程{% endblock %}
+{% block workflow %}
+- [ ] 需求确认
+- [ ] 技术方案评审
+- [ ] 环境准备
+- [ ] 编码实现
+- [ ] 单元测试
+- [ ] 集成测试
+- [ ] 代码审查
+- [ ] 文档更新
+- [ ] 部署上线
+{% endblock %}
+
+{% block extra_tasks %}
+{# Child templates can add extra task sections here #}
+{% endblock %}
+
+---
+
+## 上下文信息
+- 目录：`{{ pr_dir_rel }}`
+- 日期：{{ date }}
+- 基础目录：{{ base_dir }}
+
+{% block footer %}
+## 相关资源
+（在此添加相关文档、设计图等链接）
+{% endblock %}

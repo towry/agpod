@@ -1,0 +1,40 @@
+{# Base template for all DESIGN.md files #}
+{# This template can be extended by specific templates #}
+
+# {% block title %}设计方案：{{ desc }}{% endblock %}
+
+## 元信息 (Metadata)
+
+- 分支名：`{{ branch_name }}`
+- 模板：`{{ template }}`
+- 创建时间：{{ now }}
+- 作者：{{ user }}
+{% if git.repo_root %}
+- 仓库：{{ git.repo_root }}
+{% if git.current_branch %}
+- 当前分支：{{ git.current_branch }}
+{% endif %}
+{% endif %}
+
+---
+
+{% block content %}
+## 背景
+（在此补充背景）
+
+## 目标
+（在此补充目标）
+
+## 方案
+（在此补充方案）
+{% endblock %}
+
+---
+
+{% block footer %}
+## 附录
+
+相关资源：
+- 目录：`{{ pr_dir_rel }}`
+- 日期：{{ date }}
+{% endblock %}

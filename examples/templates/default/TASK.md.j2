@@ -1,0 +1,11 @@
+{% extends "_shared/base_task.md.j2" %}
+
+{# This template extends the base task template #}
+{# The base workflow is inherited automatically #}
+
+{% block extra_tasks %}
+## 质量检查
+- [ ] 代码格式化 (cargo fmt / prettier)
+- [ ] 静态检查 (clippy / eslint)
+- [ ] 安全审计
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "_shared/base_design.md.j2" %}
+
+{# Rust-specific design template #}
+
+{% block title %}Rust 模块设计：{{ desc }}{% endblock %}
+
+{% block content %}
+## 模块概述
+（描述模块的功能和职责）
+
+## API 设计
+```rust
+// TODO: 定义公开 API
+```
+
+## 数据结构
+```rust
+// TODO: 定义核心数据结构
+```
+
+## 错误处理
+```rust
+// TODO: 定义错误类型
+```
+
+## 性能考虑
+（描述性能优化策略）
+
+## 安全性
+（描述安全相关的设计考虑）
+
+## 测试策略
+- [ ] 单元测试
+- [ ] 集成测试
+- [ ] 基准测试
+- [ ] 模糊测试
+{% endblock %}
