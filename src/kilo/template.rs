@@ -38,6 +38,10 @@ impl TemplateRenderer {
         }
 
         let mut env = Environment::new();
+        
+        // Set up loader to support template inheritance ({% extends %})
+        // This allows templates to extend base templates
+        env.set_loader(minijinja::path_loader(&templates_path));
 
         // Add custom filters
         env.add_filter("slugify", |value: String| -> String {
@@ -65,23 +69,18 @@ impl TemplateRenderer {
         context: &TemplateContext,
         config: &Config,
     ) -> KiloResult<String> {
-        let template_path = self.templates_dir.join(template_name).join(template_file);
+        // With path loader, template path is relative to templates_dir
+        // Format: {template_name}/{template_file}
+        let template_path_in_loader = format!("{}/{}", template_name, template_file);
+        let full_template_path = self.templates_dir.join(template_name).join(template_file);
 
-        if !template_path.exists() {
+        if !full_template_path.exists() {
             return Err(KiloError::TemplateNotFound(format!(
                 "{} in {}",
                 template_file,
-                template_path.display()
+                full_template_path.display()
             )));
         }
-
-        let template_content = fs::read_to_string(&template_path).map_err(|e| {
-            KiloError::Template(format!(
-                "Failed to read template {}: {}",
-                template_path.display(),
-                e
-            ))
-        })?;
 
         // Create template context
         let now = Utc::now();
@@ -116,13 +115,10 @@ impl TemplateRenderer {
             },
         };
 
-        self.env
-            .add_template_owned(template_file.to_string(), template_content)
-            .map_err(|e| KiloError::Template(format!("Failed to parse template: {}", e)))?;
-
+        // Use the path loader to get the template (supports {% extends %})
         let tmpl = self
             .env
-            .get_template(template_file)
+            .get_template(&template_path_in_loader)
             .map_err(|e| KiloError::Template(format!("Failed to get template: {}", e)))?;
 
         tmpl.render(ctx)

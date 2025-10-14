@@ -1,10 +1,10 @@
-# Vue 组件设计：{{ desc }}
+{% extends "_shared/base_design.md.j2" %}
 
-- 分支名：`{{ branch_name }}`
-- 模板：`{{ template }}` (Vue)
-- 创建时间：{{ now }}
-- 作者：{{ user }}
+{# Vue-specific design template that extends the base #}
 
+{% block title %}Vue 组件设计：{{ desc }}{% endblock %}
+
+{% block content %}
 ## 组件概述
 （描述组件的用途和功能）
 
@@ -32,3 +32,4 @@ interface Emits {
 - [ ] 单元测试
 - [ ] 组件测试
 - [ ] E2E 测试
+{% endblock %}

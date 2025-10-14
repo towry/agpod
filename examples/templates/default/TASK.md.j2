@@ -1,20 +1,11 @@
-# 任务清单：{{ branch_name }}
+{% extends "_shared/base_task.md.j2" %}
 
-## 开发流程
-- [ ] 需求确认
-- [ ] 技术方案评审
-- [ ] 环境准备
-- [ ] 编码实现
-- [ ] 单元测试
-- [ ] 集成测试
-- [ ] 代码审查
-- [ ] 文档更新
-- [ ] 部署上线
+{# This template extends the base task template #}
+{# The base workflow is inherited automatically #}
 
-## 上下文信息
-- 目录：`{{ pr_dir_rel }}`
-- 日期：{{ date }}
-- 基础目录：{{ base_dir }}
-
-## 相关资源
-（在此添加相关文档、设计图等链接）
+{% block extra_tasks %}
+## 质量检查
+- [ ] 代码格式化 (cargo fmt / prettier)
+- [ ] 静态检查 (clippy / eslint)
+- [ ] 安全审计
+{% endblock %}

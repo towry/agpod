@@ -1,13 +1,9 @@
-# 设计方案：{{ desc }}
+{% extends "_shared/base_design.md.j2" %}
 
-- 分支名：`{{ branch_name }}`
-- 模板：`{{ template }}`
-- 创建时间：{{ now }}
-- 作者：{{ user }}
-{% if git.repo_root %}
-- 仓库：{{ git.repo_root }}
-{% endif %}
+{# This template extends the base design template #}
+{# You can override any block defined in the base template #}
 
+{% block content %}
 ## 背景
 （在此补充背景）
 
@@ -25,3 +21,4 @@
 
 ## 风险评估
 （在此补充风险和缓解措施）
+{% endblock %}

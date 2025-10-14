@@ -1,10 +1,10 @@
-# Rust 模块设计：{{ desc }}
+{% extends "_shared/base_design.md.j2" %}
 
-- 分支名：`{{ branch_name }}`
-- 模板：`{{ template }}` (Rust)
-- 创建时间：{{ now }}
-- 作者：{{ user }}
+{# Rust-specific design template #}
 
+{% block title %}Rust 模块设计：{{ desc }}{% endblock %}
+
+{% block content %}
 ## 模块概述
 （描述模块的功能和职责）
 
@@ -34,3 +34,4 @@
 - [ ] 集成测试
 - [ ] 基准测试
 - [ ] 模糊测试
+{% endblock %}

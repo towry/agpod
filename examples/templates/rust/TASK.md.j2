@@ -1,6 +1,10 @@
-# Rust 开发任务：{{ branch_name }}
+{% extends "_shared/base_task.md.j2" %}
 
-## 开发步骤
+{# Rust-specific task template #}
+
+{% block title %}Rust 开发任务：{{ branch_name }}{% endblock %}
+
+{% block workflow %}
 - [ ] 定义模块结构
 - [ ] 实现核心功能
 - [ ] 添加错误处理
@@ -9,15 +13,15 @@
 - [ ] 运行 clippy 检查
 - [ ] 运行 fmt 格式化
 - [ ] 更新 CHANGELOG
+{% endblock %}
 
-## 上下文
-- 目录：`{{ pr_dir_rel }}`
-- 日期：{{ date }}
-
+{% block extra_tasks %}
 ## Cargo 相关
 ```bash
 cargo check
 cargo test
 cargo clippy -- -D warnings
 cargo fmt
+cargo bench  # 如果有性能测试
 ```
+{% endblock %}

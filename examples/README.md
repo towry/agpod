@@ -8,17 +8,21 @@ This directory contains example configurations and templates for the `agpod kilo
 examples/
 ├── config.toml                      # Example configuration file
 ├── templates/                       # Template directories
-│   ├── default/                    # Default template
-│   │   ├── DESIGN.md.j2
-│   │   └── TASK.md.j2
-│   ├── vue/                        # Vue-specific template
-│   │   ├── DESIGN.md.j2
-│   │   ├── TASK.md.j2
-│   │   └── COMPONENT.md.j2
-│   └── rust/                       # Rust-specific template
-│       ├── DESIGN.md.j2
-│       ├── TASK.md.j2
-│       └── IMPL.md.j2
+│   ├── _shared/                    # Shared base templates (for extension)
+│   │   ├── base_design.md.j2      # Base template for DESIGN.md
+│   │   └── base_task.md.j2        # Base template for TASK.md
+│   ├── default/                    # Default template (extends _shared)
+│   │   ├── DESIGN.md.j2           # Extends base_design.md.j2
+│   │   └── TASK.md.j2             # Extends base_task.md.j2
+│   ├── vue/                        # Vue-specific template (extends _shared)
+│   │   ├── DESIGN.md.j2           # Extends base with Vue customizations
+│   │   ├── TASK.md.j2             # Extends base with Vue tasks
+│   │   └── COMPONENT.md.j2        # Standalone Vue component template
+│   ├── rust/                       # Rust-specific template (extends _shared)
+│   │   ├── DESIGN.md.j2           # Extends base with Rust customizations
+│   │   ├── TASK.md.j2             # Extends base with Rust tasks
+│   │   └── IMPL.md.j2             # Standalone implementation template
+│   └── TEMPLATE_EXTENSION.md       # Detailed guide on template inheritance
 ├── plugins/                        # Example plugins
 │   └── branch_name.sh             # Custom branch name generator
 └── README.md                       # This file
@@ -37,6 +41,11 @@ examples/
    mkdir -p ~/.config/agpod/templates
    cp -r examples/templates/* ~/.config/agpod/templates/
    ```
+   
+   This includes:
+   - Shared base templates in `_shared/` directory
+   - Default, Vue, and Rust templates that extend the base templates
+   - See `templates/TEMPLATE_EXTENSION.md` for details on template inheritance
 
 3. **Copy and enable plugins (optional):**
    ```bash
@@ -122,6 +131,40 @@ Templates have access to the following variables:
 
 - `slugify`: Convert text to URL-safe slug
 - `truncate(n)`: Truncate string to n characters
+
+## Template Extension (Inheritance)
+
+All example templates use Jinja2's `{% extends %}` directive to inherit from base templates in `_shared/`:
+
+**Base Template** (`_shared/base_design.md.j2`):
+```jinja2
+# {% block title %}{{ desc }}{% endblock %}
+
+## Metadata
+- Branch: `{{ branch_name }}`
+
+{% block content %}
+Default content
+{% endblock %}
+```
+
+**Child Template** (`default/DESIGN.md.j2`):
+```jinja2
+{% extends "_shared/base_design.md.j2" %}
+
+{% block content %}
+## Custom sections
+Override base content here
+{% endblock %}
+```
+
+**Benefits:**
+- Consistent structure across all templates
+- Easy to maintain - update base, all children inherit changes
+- Customize only what's different
+- Use `{{ super() }}` to include parent block content
+
+For detailed documentation on template extension, see `templates/TEMPLATE_EXTENSION.md`.
 
 ## Custom Plugins
 

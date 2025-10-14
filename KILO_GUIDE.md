@@ -184,6 +184,45 @@ Available in all templates:
 - `slugify`: Convert to URL-safe slug
 - `truncate(n)`: Truncate to n characters
 
+### Template Extension (Inheritance)
+
+Templates support Jinja2's `{% extends %}` directive for template inheritance. This allows you to create base templates and extend them in specific templates.
+
+**Example - Base Template** (`_shared/base_design.md.j2`):
+```jinja2
+# {% block title %}{{ desc }}{% endblock %}
+
+## Metadata
+- Branch: `{{ branch_name }}`
+- Created: {{ now }}
+
+{% block content %}
+## Default content
+{% endblock %}
+
+{% block footer %}
+## Footer
+{% endblock %}
+```
+
+**Example - Child Template** (`default/DESIGN.md.j2`):
+```jinja2
+{% extends "_shared/base_design.md.j2" %}
+
+{% block content %}
+## Custom content
+This overrides the base template's content block.
+{% endblock %}
+```
+
+**Key Features:**
+- `{% extends "path/to/base.md.j2" %}` - Extend a base template
+- `{% block name %}...{% endblock %}` - Define overridable sections
+- `{{ super() }}` - Include parent block content
+- Multiple inheritance levels supported
+
+See `examples/templates/TEMPLATE_EXTENSION.md` for detailed documentation and examples.
+
 ### Example Template
 
 ```jinja2

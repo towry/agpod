@@ -1,6 +1,10 @@
-# Vue 开发任务：{{ branch_name }}
+{% extends "_shared/base_task.md.j2" %}
 
-## 开发步骤
+{# Vue-specific task template #}
+
+{% block title %}Vue 开发任务：{{ branch_name }}{% endblock %}
+
+{% block workflow %}
 - [ ] 创建组件文件
 - [ ] 实现组件逻辑
 - [ ] 编写样式
@@ -8,7 +12,12 @@
 - [ ] 编写单元测试
 - [ ] 编写 Storybook 故事
 - [ ] 文档更新
+{% endblock %}
 
-## 上下文
-- 目录：`{{ pr_dir_rel }}`
-- 日期：{{ date }}
+{% block extra_tasks %}
+## Vue 专项检查
+- [ ] 运行 Vue Test Utils 测试
+- [ ] 检查响应式数据
+- [ ] 验证生命周期钩子
+- [ ] 测试组件通信
+{% endblock %}
