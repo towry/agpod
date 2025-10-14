@@ -34,7 +34,7 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginConfig {
     #[serde(default)]
-    pub branch_name: BranchNamePlugin,
+    pub name: BranchNamePlugin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ pub struct BranchNamePlugin {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    #[serde(default = "default_branch_name_command")]
+    #[serde(default = "default_name_command")]
     pub command: String,
 
     #[serde(default = "default_timeout_secs")]
@@ -56,7 +56,7 @@ impl Default for BranchNamePlugin {
     fn default() -> Self {
         Self {
             enabled: true,
-            command: default_branch_name_command(),
+            command: default_name_command(),
             timeout_secs: default_timeout_secs(),
             pass_env: vec![
                 "AGPOD_*".to_string(),
@@ -143,8 +143,8 @@ fn default_true() -> bool {
     true
 }
 
-fn default_branch_name_command() -> String {
-    "branch_name.sh".to_string()
+fn default_name_command() -> String {
+    "name.sh".to_string()
 }
 
 fn default_timeout_secs() -> u64 {
