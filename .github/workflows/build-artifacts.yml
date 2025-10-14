@@ -29,7 +29,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  BIN_NAME: minimize-git-diff-llm
+  BIN_NAME: agpod
 
 jobs:
   build:
@@ -126,7 +126,7 @@ jobs:
           cat > install.sh << 'SCRIPT_EOF'
           #!/bin/bash
 
-          # minimize-git-diff-llm install script
+          # agpod install script
           # Downloads and installs the latest release binary
 
           set -euo pipefail
@@ -145,7 +145,7 @@ jobs:
           # Help text
           show_help() {
               cat << EOF
-          minimize-git-diff-llm Installer
+          agpod Installer
 
           Usage: $0 [OPTIONS]
 
@@ -213,8 +213,8 @@ jobs:
 
           # Download and install binary
           install_binary() {
-              local repo="towry/minimize-git-diff-llm"
-              local binary_name="minimize-git-diff-llm"
+              local repo="towry/agpod"
+              local binary_name="agpod"
               local download_url=""
 
               # Determine download URL
@@ -245,7 +245,7 @@ jobs:
                   local version="${RELEASE_VERSION#v}" # strip leading v if present
                   case "$PLATFORM" in
                       macos-arm)
-                          download_url="https://github.com/$repo/releases/download/v$version/minimize-git-diff-llm-$version-aarch64-apple-darwin.tar.gz"
+                          download_url="https://github.com/$repo/releases/download/v$version/agpod-$version-aarch64-apple-darwin.tar.gz"
                           ;;
                   esac
               fi
@@ -272,7 +272,7 @@ jobs:
 
               # Find binary
               local binary_path=""
-              for file in */minimize-git-diff-llm; do
+              for file in */agpod; do
                   if [[ -f "$file" ]]; then
                       binary_path="$file"
                       break
@@ -337,7 +337,7 @@ jobs:
 
           # Main execution
           main() {
-              echo -e "${GREEN}minimize-git-diff-llm Installer${NC}"
+              echo -e "${GREEN}agpod Installer${NC}"
               echo
 
               detect_platform
@@ -346,8 +346,8 @@ jobs:
               echo
               echo -e "${GREEN}Installation complete! 🎉${NC}"
               echo -e "${YELLOW}Usage examples:${NC}"
-              echo "  git diff | minimize-git-diff-llm"
-              echo "  git diff --cached | minimize-git-diff-llm"
+              echo "  git diff | agpod"
+              echo "  git diff --cached | agpod"
               echo
           }
 
@@ -377,12 +377,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Install the latest version directly:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/v${version}/install.sh | bash" >> $GITHUB_STEP_SUMMARY
+          echo "curl -fsSL https://raw.githubusercontent.com/towry/agpod/v${version}/install.sh | bash" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Or download and run manually:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "wget https://raw.githubusercontent.com/towry/minimize-git-diff-llm/v${version}/install.sh" >> $GITHUB_STEP_SUMMARY
+          echo "wget https://raw.githubusercontent.com/towry/agpod/v${version}/install.sh" >> $GITHUB_STEP_SUMMARY
           echo "chmod +x install.sh" >> $GITHUB_STEP_SUMMARY
           echo "./install.sh" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

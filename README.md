@@ -1,6 +1,6 @@
-# minimize-git-diff-llm
+# agpod
 
-CLI tool to minimize git diff content for LLM context, reducing token usage while preserving essential information.
+A powerful agent tool for minimizing git diff content for LLM context, reducing token usage while preserving essential information.
 
 ## Features
 
@@ -19,13 +19,13 @@ CLI tool to minimize git diff content for LLM context, reducing token usage whil
 Install the latest release directly to `/usr/local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/towry/minimize-git-diff-llm/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/towry/agpod/main/install.sh | bash
 ```
 
 Or download and run the install script manually:
 
 ```bash
-wget https://raw.githubusercontent.com/towry/minimize-git-diff-llm/main/install.sh
+wget https://raw.githubusercontent.com/towry/agpod/main/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -38,31 +38,31 @@ chmod +x install.sh
 ### From source
 
 ```bash
-git clone https://github.com/towry/minimize-git-diff-llm.git
-cd minimize-git-diff-llm
+git clone https://github.com/towry/agpod.git
+cd agpod
 cargo build --release
 ```
 
-The binary will be available at `target/release/minimize-git-diff-llm`.
+The binary will be available at `target/release/agpod`.
 
 ## Usage
 
 ### Basic usage
 
 ```bash
-git diff | minimize-git-diff-llm
+git diff | agpod
 ```
 
 ### With staged changes
 
 ```bash
-git diff --cached | minimize-git-diff-llm
+git diff --cached | agpod
 ```
 
 ### Compare specific commits
 
 ```bash
-git diff HEAD~1 HEAD | minimize-git-diff-llm
+git diff HEAD~1 HEAD | agpod
 ```
 
 ### Save mode for review workflows
@@ -71,10 +71,10 @@ Split diff into separate chunk files with review tracking:
 
 ```bash
 # Save chunks to default location (llm/diff/<project-name>/)
-git diff | minimize-git-diff-llm --save
+git diff | agpod --save
 
 # Save chunks to custom location
-git diff | minimize-git-diff-llm --save --save-path custom/path
+git diff | agpod --save --save-path custom/path
 ```
 
 Output format (machine-readable, to stdout):
@@ -99,10 +99,10 @@ See [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) for detailed documentation.
 
 ```bash
 # Copy minimized diff to clipboard (macOS)
-git diff | minimize-git-diff-llm | pbcopy
+git diff | agpod | pbcopy
 
 # Save to file
-git diff | minimize-git-diff-llm > minimized_diff.txt
+git diff | agpod > minimized_diff.txt
 ```
 
 ## Strategy

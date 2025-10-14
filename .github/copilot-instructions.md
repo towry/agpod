@@ -1,6 +1,6 @@
-# minimize-git-diff-llm
+# agpod
 
-CLI tool to minimize git diff content for LLM context, reducing token usage while preserving essential information. Written in Rust as a single binary with minimal dependencies.
+A powerful agent tool for minimizing git diff content for LLM context, reducing token usage while preserving essential information. Written in Rust as a single binary with minimal dependencies.
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
@@ -20,10 +20,10 @@ Follow git conventional commits, use message format `type(scope): message`
 
 - Run the CLI tool:
   - ALWAYS build first with `cargo build --release`
-  - Binary location: `./target/release/minimize-git-diff-llm`
-  - Usage: `git diff | ./target/release/minimize-git-diff-llm`
-  - Usage: `git diff --cached | ./target/release/minimize-git-diff-llm`
-  - Usage: `cat diff_file.txt | ./target/release/minimize-git-diff-llm`
+  - Binary location: `./target/release/agpod`
+  - Usage: `git diff | ./target/release/agpod`
+  - Usage: `git diff --cached | ./target/release/agpod`
+  - Usage: `cat diff_file.txt | ./target/release/agpod`
 
 - Dependencies:
   - Only one external dependency: `regex = "1.0"` (specified in Cargo.toml)
@@ -35,7 +35,7 @@ Follow git conventional commits, use message format `type(scope): message`
 - Always manually validate any new code changes by running through complete scenarios.
 - ALWAYS run through at least one complete end-to-end scenario after making changes:
   1. Build the application: `cargo build --release`
-  2. Create test diff: `git init && git add . && git diff --cached | ./target/release/minimize-git-diff-llm`
+  2. Create test diff: `git init && git add . && git diff --cached | ./target/release/agpod`
   3. Test large file handling: Use test file with 400+ lines, verify it shows summary only
   4. Test deleted file handling: Verify it shows "Deleted file: filename" only
   5. Test small diff handling: Verify it preserves content for small changes
@@ -59,7 +59,7 @@ Follow git conventional commits, use message format `type(scope): message`
   @@ -0,0 +1,3 @@
   +Line 1
   +Line 2
-  +Line 3' | ./target/release/minimize-git-diff-llm
+  +Line 3' | ./target/release/agpod
   
   # Large file test - should show summary only
   wc -l test_data/large_config.json  # Shows 431 lines
@@ -72,7 +72,7 @@ Follow git conventional commits, use message format `type(scope): message`
   +++ /dev/null
   @@ -1,5 +0,0 @@
   -Line 1
-  -Line 2' | ./target/release/minimize-git-diff-llm
+  -Line 2' | ./target/release/agpod
   # Expected output: "Deleted file: oldfile.txt"
   ```
 
@@ -101,15 +101,15 @@ The following are outputs from frequently run commands. Reference them instead o
 ### Cargo.toml contents
 ```toml
 [package]
-name = "minimize-git-diff-llm"
+name = "agpod"
 version = "0.1.0"
 edition = "2021"
 authors = ["Development Team"]
-description = "CLI tool to minimize git diff content for LLM context"
+description = "A powerful agent tool for minimizing git diff content for LLM context"
 license = "MIT"
 
 [[bin]]
-name = "minimize-git-diff-llm"
+name = "agpod"
 path = "src/main.rs"
 
 [dependencies]

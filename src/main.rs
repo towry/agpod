@@ -36,15 +36,15 @@ fn main() {
 }
 
 fn print_version() {
-    println!("minimize-git-diff-llm {}", env!("CARGO_PKG_VERSION"));
+    println!("agpod {}", env!("CARGO_PKG_VERSION"));
 }
 
 fn print_help() {
-    println!("minimize-git-diff-llm {}", env!("CARGO_PKG_VERSION"));
+    println!("agpod {}", env!("CARGO_PKG_VERSION"));
     println!("{}", env!("CARGO_PKG_DESCRIPTION"));
     println!();
     println!("USAGE:");
-    println!("    git diff | minimize-git-diff-llm [OPTIONS]");
+    println!("    git diff | agpod [OPTIONS]");
     println!();
     println!("OPTIONS:");
     println!("    -h, --help              Print help information");
@@ -54,16 +54,16 @@ fn print_help() {
     println!();
     println!("EXAMPLES:");
     println!("    # Minimize diff from stdin");
-    println!("    git diff | minimize-git-diff-llm");
+    println!("    git diff | agpod");
     println!();
     println!("    # Save diff chunks to files");
-    println!("    git diff | minimize-git-diff-llm --save");
+    println!("    git diff | agpod --save");
     println!();
     println!("    # Save to custom directory");
-    println!("    git diff | minimize-git-diff-llm --save --save-path custom/path");
+    println!("    git diff | agpod --save --save-path custom/path");
     println!();
     println!("    # With staged changes");
-    println!("    git diff --cached | minimize-git-diff-llm --save");
+    println!("    git diff --cached | agpod --save");
     println!();
     println!("OUTPUT (when using --save):");
     println!("    generated: <path>/<project-name>/");
@@ -1036,7 +1036,7 @@ index 0000000..abc123
         // Should return a non-empty string
         let project_id = get_project_identifier();
         assert!(!project_id.is_empty());
-        // In git repository, should return "minimize-git-diff-llm"
+        // In git repository, should return "agpod"
         // In non-git context, returns current directory name or "default-project"
     }
 

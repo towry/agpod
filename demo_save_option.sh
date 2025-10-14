@@ -76,15 +76,15 @@ echo "... (truncated)"
 echo ""
 
 # Use --save option
-echo "5. Running: git diff --cached | minimize-git-diff-llm --save"
+echo "5. Running: git diff --cached | agpod --save"
 
 # Try to find the binary
-if command -v minimize-git-diff-llm &> /dev/null; then
-    git diff --cached | minimize-git-diff-llm --save
-elif [ -f "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" ]; then
-    git diff --cached | "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" --save
+if command -v agpod &> /dev/null; then
+    git diff --cached | agpod --save
+elif [ -f "$ORIGINAL_DIR/target/release/agpod" ]; then
+    git diff --cached | "$ORIGINAL_DIR/target/release/agpod" --save
 else
-    echo "Error: minimize-git-diff-llm not found. Please build it first with: cargo build --release"
+    echo "Error: agpod not found. Please build it first with: cargo build --release"
     exit 1
 fi
 
@@ -122,10 +122,10 @@ echo ""
 # Test custom path option
 echo "11. Testing custom path: --save-path custom/diffs"
 echo "-----------------------------------"
-if command -v minimize-git-diff-llm &> /dev/null; then
-    git diff --cached | minimize-git-diff-llm --save --save-path custom/diffs
-elif [ -f "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" ]; then
-    git diff --cached | "$ORIGINAL_DIR/target/release/minimize-git-diff-llm" --save --save-path custom/diffs
+if command -v agpod &> /dev/null; then
+    git diff --cached | agpod --save --save-path custom/diffs
+elif [ -f "$ORIGINAL_DIR/target/release/agpod" ]; then
+    git diff --cached | "$ORIGINAL_DIR/target/release/agpod" --save --save-path custom/diffs
 fi
 
 echo ""
@@ -157,8 +157,8 @@ echo "  ✓ Each file gets its own chunk for easier review"
 echo "  ✓ File hashes help detect outdated chunks"
 echo ""
 echo "Usage examples:"
-echo "  Default path:  git diff | minimize-git-diff-llm --save"
-echo "  Custom path:   git diff | minimize-git-diff-llm --save --save-path my/output"
+echo "  Default path:  git diff | agpod --save"
+echo "  Custom path:   git diff | agpod --save --save-path my/output"
 echo ""
 echo "Review workflow:"
 echo "  1. Review each chunk file"

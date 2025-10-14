@@ -25,7 +25,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           release-type: rust
-          package-name: minimize-git-diff-llm
+          package-name: agpod
 
   build_artifacts:
     name: Build Artifacts (reusable)
@@ -34,6 +34,6 @@ jobs:
     uses: ./.github/workflows/build-artifacts.yml
     with:
       tag_name: ${{ needs.release_please.outputs.tag_name }}
-      bin_name: minimize-git-diff-llm
+      bin_name: agpod
 
   

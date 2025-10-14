@@ -1,17 +1,17 @@
 [package]
-name = "minimize-git-diff-llm"
+name = "agpod"
 version = "0.3.0"
 edition = "2021"
 authors = ["Development Team"]
-description = "CLI tool to minimize git diff content for LLM context, reducing token usage while preserving essential information"
+description = "A powerful agent tool for minimizing git diff content for LLM context, reducing token usage while preserving essential information"
 license = "MIT"
-repository = "https://github.com/towry/minimize-git-diff-llm"
+repository = "https://github.com/towry/agpod"
 readme = "README.md"
-keywords = ["git", "diff", "llm", "cli", "minimizer"]
+keywords = ["git", "diff", "llm", "cli", "agent"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "minimize-git-diff-llm"
+name = "agpod"
 path = "src/main.rs"
 
 [dependencies]
