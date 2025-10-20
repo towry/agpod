@@ -40,9 +40,14 @@ pub struct KiroConfig {
     #[serde(default = "default_summary_lines")]
     pub summary_lines: usize,
 
-    // For backward compatibility, keep existing nested structures
-    #[serde(flatten)]
-    pub legacy_fields: serde_json::Value,
+    #[serde(default)]
+    pub plugins: KiroPluginConfig,
+
+    #[serde(default)]
+    pub rendering: KiroRenderingConfig,
+
+    #[serde(default)]
+    pub templates: std::collections::HashMap<String, KiroTemplateConfig>,
 }
 
 impl Default for KiroConfig {
@@ -53,9 +58,86 @@ impl Default for KiroConfig {
             plugins_dir: default_plugins_dir(),
             template: default_template(),
             summary_lines: default_summary_lines(),
-            legacy_fields: serde_json::Value::Null,
+            plugins: KiroPluginConfig::default(),
+            rendering: KiroRenderingConfig::default(),
+            templates: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Plugin configuration for Kiro
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KiroPluginConfig {
+    #[serde(default)]
+    pub name: KiroBranchNamePlugin,
+}
+
+/// Branch name plugin configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KiroBranchNamePlugin {
+    #[serde(default = "default_plugin_enabled")]
+    pub enabled: bool,
+
+    #[serde(default = "default_plugin_command")]
+    pub command: String,
+
+    #[serde(default = "default_plugin_timeout")]
+    pub timeout_secs: u64,
+
+    #[serde(default)]
+    pub pass_env: Vec<String>,
+}
+
+impl Default for KiroBranchNamePlugin {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: default_plugin_command(),
+            timeout_secs: default_plugin_timeout(),
+            pass_env: vec![
+                "AGPOD_*".to_string(),
+                "GIT_*".to_string(),
+                "USER".to_string(),
+                "HOME".to_string(),
+            ],
+        }
+    }
+}
+
+/// Rendering configuration for Kiro
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KiroRenderingConfig {
+    #[serde(default = "default_rendering_files")]
+    pub files: Vec<String>,
+
+    #[serde(default)]
+    pub extra: Vec<String>,
+
+    #[serde(default = "default_missing_policy")]
+    pub missing_policy: String,
+}
+
+impl Default for KiroRenderingConfig {
+    fn default() -> Self {
+        Self {
+            files: default_rendering_files(),
+            extra: vec![],
+            missing_policy: default_missing_policy(),
+        }
+    }
+}
+
+/// Template-specific configuration for Kiro
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KiroTemplateConfig {
+    #[serde(default)]
+    pub description: String,
+
+    #[serde(default = "default_rendering_files")]
+    pub files: Vec<String>,
+
+    #[serde(default = "default_missing_policy")]
+    pub missing_policy: String,
 }
 
 /// Configuration for diff minimization
@@ -127,6 +209,26 @@ fn default_template() -> String {
 
 fn default_summary_lines() -> usize {
     3
+}
+
+fn default_plugin_enabled() -> bool {
+    true
+}
+
+fn default_plugin_command() -> String {
+    "name.sh".to_string()
+}
+
+fn default_plugin_timeout() -> u64 {
+    3
+}
+
+fn default_rendering_files() -> Vec<String> {
+    vec!["DESIGN.md.j2".to_string(), "TASK.md.j2".to_string()]
+}
+
+fn default_missing_policy() -> String {
+    "error".to_string()
 }
 
 // Default value functions for Diff

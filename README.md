@@ -91,6 +91,8 @@ agpod supports feature-specific configuration through `config.toml` files. Confi
 - **Global**: `~/.config/agpod/config.toml` - Applies to all projects
 - **Project**: `.agpod.toml` in project root - Project-specific overrides
 
+> **⚠️ Breaking Change in v0.5.0**: The configuration format has changed to use structured sections. The old flat format is no longer supported. You must update your config files to use `[kiro]` and `[diff]` sections.
+
 ### Configuration Structure
 
 ```toml

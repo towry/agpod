@@ -86,9 +86,10 @@ All 38 existing tests continue to pass, plus 4 new config tests:
 
 ### 6. Breaking Changes
 
-**Configuration:**
-- Old format (top-level kiro settings) still works for backward compatibility
-- New format recommended: settings under `[kiro]` and `[diff]` sections
+**Configuration: BREAKING CHANGE**
+- Old format (top-level kiro settings) is **NO LONGER SUPPORTED**
+- New format **REQUIRED**: All settings must be under `[kiro]` and `[diff]` sections
+- Users must migrate their config files to the new structured format
 
 **Code Usage:**
 - Binary CLI unchanged - no breaking changes for users
@@ -115,14 +116,14 @@ agpod kiro pr-new --desc "feature"
 
 ### For Configuration
 
-Old format still works:
+**REQUIRED**: Old format no longer works. You **MUST** migrate to the new structured format:
+
 ```toml
+# Old format (NO LONGER SUPPORTED)
 base_dir = "llm/kiro"
 template = "default"
-```
 
-New format recommended:
-```toml
+# New format (REQUIRED)
 [kiro]
 base_dir = "llm/kiro"
 template = "default"
@@ -130,6 +131,10 @@ template = "default"
 [diff]
 output_dir = "llm/diff"
 ```
+
+Update your config files:
+- `~/.config/agpod/config.toml`
+- `.agpod.toml` in your project root
 
 ### For Library Users (NEW)
 

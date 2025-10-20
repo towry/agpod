@@ -15,6 +15,10 @@
 * **config:** New `DiffConfig` structure supporting diff-specific settings (output_dir, thresholds)
 * **tests:** Comprehensive test suite for new configuration module (42 tests total)
 
+### BREAKING CHANGES
+
+* **config:** Configuration file format has changed. The old flat format is no longer supported. All configuration must now use structured sections `[kiro]` and `[diff]`. Users must migrate their `~/.config/agpod/config.toml` and `.agpod.toml` files to the new format. See examples/config.toml for the new format.
+
 ## [0.4.1](https://github.com/towry/agpod/compare/v0.4.0...v0.4.1) (2025-10-14)
 
 
