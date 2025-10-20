@@ -8,10 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// Current configuration version
+pub const CURRENT_CONFIG_VERSION: &str = "1";
+
+/// Supported configuration versions
+pub const SUPPORTED_CONFIG_VERSIONS: &[&str] = &["1"];
+
 /// Root configuration structure supporting multiple features
 #[allow(dead_code)] // Public API for library users
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Configuration version for tracking schema changes
+    #[serde(default = "default_config_version")]
+    pub version: String,
+
     /// Kiro workflow configuration
     #[serde(default)]
     pub kiro: Option<KiroConfig>,
@@ -19,6 +29,16 @@ pub struct Config {
     /// Diff minimization configuration
     #[serde(default)]
     pub diff: Option<DiffConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            version: default_config_version(),
+            kiro: None,
+            diff: None,
+        }
+    }
 }
 
 /// Configuration for Kiro workflow
@@ -172,6 +192,11 @@ impl Default for DiffConfig {
     }
 }
 
+// Default value functions for root Config
+fn default_config_version() -> String {
+    CURRENT_CONFIG_VERSION.to_string()
+}
+
 // Default value functions for Kiro
 fn default_kiro_base_dir() -> String {
     "llm/kiro".to_string()
@@ -249,11 +274,42 @@ fn default_max_consecutive_empty_lines() -> usize {
 }
 
 impl Config {
+    /// Check if the configuration version is supported
+    #[allow(dead_code)] // Public API for library users
+    pub fn is_version_supported(&self) -> bool {
+        SUPPORTED_CONFIG_VERSIONS.contains(&self.version.as_str())
+    }
+
+    /// Get a warning message for unsupported versions
+    #[allow(dead_code)] // Public API for library users
+    pub fn version_warning(&self) -> Option<String> {
+        if !self.is_version_supported() {
+            Some(format!(
+                "Warning: Configuration version '{}' is not supported. Supported versions: {}. Using defaults where needed.",
+                self.version,
+                SUPPORTED_CONFIG_VERSIONS.join(", ")
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Load configuration from file
     #[allow(dead_code)] // Public API for library users
     pub fn load_from_file(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+
+        // Warn if version is not supported
+        if let Some(warning) = config.version_warning() {
+            eprintln!("{}", warning);
+        }
+
+        // Set to current version if empty or missing
+        if config.version.is_empty() {
+            config.version = CURRENT_CONFIG_VERSION.to_string();
+        }
+
         Ok(config)
     }
 
@@ -295,6 +351,11 @@ impl Config {
     /// Merge another config into this one (other takes precedence)
     #[allow(dead_code)] // Public API for library users
     pub fn merge(mut self, other: Config) -> Self {
+        // Prefer the other version if it's not the default
+        if other.version != CURRENT_CONFIG_VERSION || !other.version.is_empty() {
+            self.version = other.version;
+        }
+
         if other.kiro.is_some() {
             self.kiro = other.kiro;
         }
@@ -312,8 +373,57 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
+        assert_eq!(config.version, "1");
         assert!(config.kiro.is_none());
         assert!(config.diff.is_none());
+    }
+
+    #[test]
+    fn test_config_version_validation() {
+        let config = Config {
+            version: "1".to_string(),
+            kiro: None,
+            diff: None,
+        };
+        assert!(config.is_version_supported());
+        assert!(config.version_warning().is_none());
+
+        let unsupported_config = Config {
+            version: "999".to_string(),
+            kiro: None,
+            diff: None,
+        };
+        assert!(!unsupported_config.is_version_supported());
+        assert!(unsupported_config.version_warning().is_some());
+    }
+
+    #[test]
+    fn test_parse_config_with_version() {
+        let toml_str = r#"
+version = "1"
+
+[kiro]
+base_dir = "custom/kiro"
+template = "rust"
+
+[diff]
+output_dir = "custom/diff"
+large_file_changes_threshold = 200
+"#;
+
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.version, "1");
+        assert!(config.is_version_supported());
+        assert!(config.kiro.is_some());
+        assert!(config.diff.is_some());
+
+        let kiro = config.kiro.unwrap();
+        assert_eq!(kiro.base_dir, "custom/kiro");
+        assert_eq!(kiro.template, "rust");
+
+        let diff = config.diff.unwrap();
+        assert_eq!(diff.output_dir, "custom/diff");
+        assert_eq!(diff.large_file_changes_threshold, 200);
     }
 
     #[test]

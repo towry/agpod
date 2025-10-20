@@ -95,7 +95,12 @@ agpod supports feature-specific configuration through `config.toml` files. Confi
 
 ### Configuration Structure
 
+The configuration file uses a versioned schema to track changes and ensure compatibility:
+
 ```toml
+# Configuration version (current: "1")
+version = "1"
+
 # Kiro workflow settings
 [kiro]
 base_dir = "llm/kiro"
@@ -109,6 +114,11 @@ large_file_changes_threshold = 100
 large_file_lines_threshold = 500
 max_consecutive_empty_lines = 2
 ```
+
+The `version` field helps track configuration schema changes over time, allowing agpod to:
+- Detect deprecated configuration options
+- Provide migration warnings when needed
+- Maintain compatibility across versions
 
 See [examples/config.toml](examples/config.toml) for a complete configuration example.
 

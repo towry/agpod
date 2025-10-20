@@ -124,6 +124,8 @@ base_dir = "llm/kiro"
 template = "default"
 
 # New format (REQUIRED)
+version = "1"
+
 [kiro]
 base_dir = "llm/kiro"
 template = "default"
@@ -131,6 +133,8 @@ template = "default"
 [diff]
 output_dir = "llm/diff"
 ```
+
+The `version` field helps track configuration schema changes and enables deprecation warnings for future updates.
 
 Update your config files:
 - `~/.config/agpod/config.toml`

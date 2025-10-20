@@ -5,6 +5,9 @@
 # - [kiro] for PR draft workflow settings
 # - [diff] for git diff minimization settings
 
+# Configuration version (for tracking schema changes and deprecations)
+version = "1"
+
 # Kiro workflow configuration
 [kiro]
 base_dir = "llm/kiro"
