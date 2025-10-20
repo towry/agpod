@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+* **refactor:** Separated diff and kiro functionality into dedicated modules for better maintainability
+* **config:** Introduced structured configuration with `[kiro]` and `[diff]` sections in config.toml
+* **architecture:** Created library structure with `agpod::diff`, `agpod::kiro`, and `agpod::config` modules
+* **docs:** Updated README with configuration examples and architecture overview
+
+### Added
+
+* **lib:** Added `src/lib.rs` to enable library usage of agpod modules
+* **config:** New `DiffConfig` structure supporting diff-specific settings (output_dir, thresholds)
+* **tests:** Comprehensive test suite for new configuration module (42 tests total)
+
 ## [0.4.1](https://github.com/towry/agpod/compare/v0.4.0...v0.4.1) (2025-10-14)
 
 

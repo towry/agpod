@@ -84,6 +84,46 @@ agpod kiro pr
 
 See [KIRO_GUIDE.md](KIRO_GUIDE.md) for comprehensive workflow documentation.
 
+## Configuration
+
+agpod supports feature-specific configuration through `config.toml` files. Configuration can be placed at:
+
+- **Global**: `~/.config/agpod/config.toml` - Applies to all projects
+- **Project**: `.agpod.toml` in project root - Project-specific overrides
+
+### Configuration Structure
+
+```toml
+# Kiro workflow settings
+[kiro]
+base_dir = "llm/kiro"
+templates_dir = "~/.config/agpod/templates"
+template = "default"
+
+# Diff minimization settings
+[diff]
+output_dir = "llm/diff"
+large_file_changes_threshold = 100
+large_file_lines_threshold = 500
+max_consecutive_empty_lines = 2
+```
+
+See [examples/config.toml](examples/config.toml) for a complete configuration example.
+
+## Architecture
+
+agpod is built as a modular Rust library with clean separation of concerns:
+
+- **`agpod::diff`** - Git diff minimization and processing logic
+- **`agpod::kiro`** - PR draft workflow management  
+- **`agpod::config`** - Unified configuration system
+
+This modular design allows:
+- Easy addition of new features
+- Publishing individual modules as libraries
+- Clear separation between features
+- Independent testing of each component
+
 ## How It Works
 
 ### Diff Minimization Strategy
