@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/towry/agpod/compare/v0.4.1...v0.5.0) (2025-10-20)
+
+
+### Features
+
+* **diff:** add --context option to include reference documentation in REVIEW.md ([#46](https://github.com/towry/agpod/issues/46)) ([6156a62](https://github.com/towry/agpod/commit/6156a62fb2aeb23a2ee73559abce2ada52901373))
+* **kiro:** add list-templates command and issue templates for different types ([#41](https://github.com/towry/agpod/issues/41)) ([ad2bb6d](https://github.com/towry/agpod/commit/ad2bb6d00319ee7f1e70034dbeca80bef3c5c386))
+
 ## [Unreleased]
 
 ### Changed
