@@ -1,3 +1,4 @@
+use crate::config::get_config_home;
 use crate::kiro::error::{KiroError, KiroResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -107,10 +108,9 @@ fn default_base_dir() -> String {
 }
 
 fn default_templates_dir() -> String {
-    // Always use ~/.config/agpod instead of platform-specific config dirs
-    if let Some(home_dir) = dirs::home_dir() {
-        home_dir
-            .join(".config")
+    // Respects XDG_CONFIG_HOME environment variable
+    if let Some(config_home) = get_config_home() {
+        config_home
             .join("agpod")
             .join("templates")
             .to_string_lossy()
@@ -121,10 +121,9 @@ fn default_templates_dir() -> String {
 }
 
 fn default_plugins_dir() -> String {
-    // Always use ~/.config/agpod instead of platform-specific config dirs
-    if let Some(home_dir) = dirs::home_dir() {
-        home_dir
-            .join(".config")
+    // Respects XDG_CONFIG_HOME environment variable
+    if let Some(config_home) = get_config_home() {
+        config_home
             .join("agpod")
             .join("plugins")
             .to_string_lossy()
@@ -164,8 +163,9 @@ fn default_missing_policy() -> String {
 
 impl Config {
     /// Get the default config directory path
+    /// Respects XDG_CONFIG_HOME environment variable
     pub fn get_config_dir() -> Option<PathBuf> {
-        dirs::home_dir().map(|h| h.join(".config").join("agpod"))
+        get_config_home().map(|h| h.join("agpod"))
     }
 
     /// Check if config directory is initialized

@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+* **refactor:** Separated diff and kiro functionality into dedicated modules for better maintainability
+* **config:** Introduced structured configuration with `[kiro]` and `[diff]` sections in config.toml
+* **architecture:** Created library structure with `agpod::diff`, `agpod::kiro`, and `agpod::config` modules
+* **docs:** Updated README with configuration examples and architecture overview
+
+### Added
+
+* **lib:** Added `src/lib.rs` to enable library usage of agpod modules
+* **config:** New `DiffConfig` structure supporting diff-specific settings (output_dir, thresholds)
+* **config:** Added `version` field to configuration for tracking schema changes and enabling future deprecation warnings
+* **config:** Added `XDG_CONFIG_HOME` environment variable support for flexible configuration directory location
+* **tests:** Comprehensive test suite for new configuration module (47 tests total)
+
+### BREAKING CHANGES
+
+* **config:** Configuration file format has changed. The old flat format is no longer supported. All configuration must now use structured sections `[kiro]` and `[diff]` with a required `version` field. Users must migrate their `~/.config/agpod/config.toml` and `.agpod.toml` files to the new format. See examples/config.toml for the new format.
+
 ## [0.4.1](https://github.com/towry/agpod/compare/v0.4.0...v0.4.1) (2025-10-14)
 
 

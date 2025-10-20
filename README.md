@@ -84,6 +84,60 @@ agpod kiro pr
 
 See [KIRO_GUIDE.md](KIRO_GUIDE.md) for comprehensive workflow documentation.
 
+## Configuration
+
+agpod supports feature-specific configuration through `config.toml` files. Configuration can be placed at:
+
+- **Global**: `$XDG_CONFIG_HOME/agpod/config.toml` or `~/.config/agpod/config.toml` - Applies to all projects
+- **Project**: `.agpod.toml` in project root - Project-specific overrides
+
+The global configuration location respects the `XDG_CONFIG_HOME` environment variable, making it easy to test different configurations without affecting your default setup.
+
+> **⚠️ Breaking Change in v0.5.0**: The configuration format has changed to use structured sections. The old flat format is no longer supported. You must update your config files to use `[kiro]` and `[diff]` sections.
+
+### Configuration Structure
+
+The configuration file uses a versioned schema to track changes and ensure compatibility:
+
+```toml
+# Configuration version (current: "1")
+version = "1"
+
+# Kiro workflow settings
+[kiro]
+base_dir = "llm/kiro"
+templates_dir = "~/.config/agpod/templates"
+template = "default"
+
+# Diff minimization settings
+[diff]
+output_dir = "llm/diff"
+large_file_changes_threshold = 100
+large_file_lines_threshold = 500
+max_consecutive_empty_lines = 2
+```
+
+The `version` field helps track configuration schema changes over time, allowing agpod to:
+- Detect deprecated configuration options
+- Provide migration warnings when needed
+- Maintain compatibility across versions
+
+See [examples/config.toml](examples/config.toml) for a complete configuration example.
+
+## Architecture
+
+agpod is built as a modular Rust library with clean separation of concerns:
+
+- **`agpod::diff`** - Git diff minimization and processing logic
+- **`agpod::kiro`** - PR draft workflow management  
+- **`agpod::config`** - Unified configuration system
+
+This modular design allows:
+- Easy addition of new features
+- Publishing individual modules as libraries
+- Clear separation between features
+- Independent testing of each component
+
 ## How It Works
 
 ### Diff Minimization Strategy
