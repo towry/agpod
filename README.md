@@ -88,8 +88,10 @@ See [KIRO_GUIDE.md](KIRO_GUIDE.md) for comprehensive workflow documentation.
 
 agpod supports feature-specific configuration through `config.toml` files. Configuration can be placed at:
 
-- **Global**: `~/.config/agpod/config.toml` - Applies to all projects
+- **Global**: `$XDG_CONFIG_HOME/agpod/config.toml` or `~/.config/agpod/config.toml` - Applies to all projects
 - **Project**: `.agpod.toml` in project root - Project-specific overrides
+
+The global configuration location respects the `XDG_CONFIG_HOME` environment variable, making it easy to test different configurations without affecting your default setup.
 
 > **⚠️ Breaking Change in v0.5.0**: The configuration format has changed to use structured sections. The old flat format is no longer supported. You must update your config files to use `[kiro]` and `[diff]` sections.
 

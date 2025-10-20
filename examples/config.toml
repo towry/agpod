@@ -1,5 +1,9 @@
 # Example agpod configuration
-# Place this at ~/.config/agpod/config.toml or .agpod.toml in your project root
+# Place this at $XDG_CONFIG_HOME/agpod/config.toml (or ~/.config/agpod/config.toml)
+# or .agpod.toml in your project root
+#
+# The XDG_CONFIG_HOME environment variable is respected for the global config location,
+# making it easy to test different configurations without affecting your default setup.
 #
 # This configuration file now supports feature-specific sections:
 # - [kiro] for PR draft workflow settings

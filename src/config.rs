@@ -5,6 +5,7 @@
 //! - [diff] - Git diff minimization settings
 
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -197,15 +198,27 @@ fn default_config_version() -> String {
     CURRENT_CONFIG_VERSION.to_string()
 }
 
+/// Get the configuration home directory, respecting XDG_CONFIG_HOME
+fn get_config_home() -> Option<PathBuf> {
+    // First check XDG_CONFIG_HOME environment variable
+    if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+        if !xdg_config_home.is_empty() {
+            return Some(PathBuf::from(xdg_config_home));
+        }
+    }
+
+    // Fall back to ~/.config
+    dirs::home_dir().map(|h| h.join(".config"))
+}
+
 // Default value functions for Kiro
 fn default_kiro_base_dir() -> String {
     "llm/kiro".to_string()
 }
 
 fn default_templates_dir() -> String {
-    if let Some(home_dir) = dirs::home_dir() {
-        home_dir
-            .join(".config")
+    if let Some(config_home) = get_config_home() {
+        config_home
             .join("agpod")
             .join("templates")
             .to_string_lossy()
@@ -216,9 +229,8 @@ fn default_templates_dir() -> String {
 }
 
 fn default_plugins_dir() -> String {
-    if let Some(home_dir) = dirs::home_dir() {
-        home_dir
-            .join(".config")
+    if let Some(config_home) = get_config_home() {
+        config_home
             .join("agpod")
             .join("plugins")
             .to_string_lossy()
@@ -314,14 +326,15 @@ impl Config {
     }
 
     /// Get the default config directory path
+    /// Respects XDG_CONFIG_HOME environment variable
     #[allow(dead_code)] // Public API for library users
     pub fn get_config_dir() -> Option<PathBuf> {
-        dirs::home_dir().map(|h| h.join(".config").join("agpod"))
+        get_config_home().map(|h| h.join("agpod"))
     }
 
     /// Load configuration with priority:
     /// 1. Defaults
-    /// 2. Global config (~/.config/agpod/config.toml)
+    /// 2. Global config ($XDG_CONFIG_HOME/agpod/config.toml or ~/.config/agpod/config.toml)
     /// 3. Repo config (.agpod.toml)
     #[allow(dead_code)] // Public API for library users
     pub fn load() -> Self {
@@ -466,5 +479,46 @@ large_file_changes_threshold = 200
         let diff = config.diff.unwrap();
         assert_eq!(diff.output_dir, "custom/diff");
         assert_eq!(diff.large_file_changes_threshold, 200);
+    }
+
+    #[test]
+    fn test_xdg_config_home_support() {
+        // Test with XDG_CONFIG_HOME set
+        env::set_var("XDG_CONFIG_HOME", "/tmp/test_config");
+        let config_dir = Config::get_config_dir();
+        assert!(config_dir.is_some());
+        assert_eq!(
+            config_dir.unwrap().to_str().unwrap(),
+            "/tmp/test_config/agpod"
+        );
+        env::remove_var("XDG_CONFIG_HOME");
+
+        // Test with XDG_CONFIG_HOME empty (should fall back to ~/.config)
+        env::set_var("XDG_CONFIG_HOME", "");
+        let config_dir = Config::get_config_dir();
+        assert!(config_dir.is_some());
+        // Should use default ~/.config path
+        let path = config_dir.unwrap();
+        let path_str = path.to_str().unwrap();
+        assert!(path_str.ends_with(".config/agpod"));
+        env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn test_xdg_config_home_in_templates_dir() {
+        // Test that templates_dir respects XDG_CONFIG_HOME
+        env::set_var("XDG_CONFIG_HOME", "/custom/config");
+        let templates_dir = default_templates_dir();
+        assert_eq!(templates_dir, "/custom/config/agpod/templates");
+        env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn test_xdg_config_home_in_plugins_dir() {
+        // Test that plugins_dir respects XDG_CONFIG_HOME
+        env::set_var("XDG_CONFIG_HOME", "/custom/config");
+        let plugins_dir = default_plugins_dir();
+        assert_eq!(plugins_dir, "/custom/config/agpod/plugins");
+        env::remove_var("XDG_CONFIG_HOME");
     }
 }

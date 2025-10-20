@@ -14,7 +14,8 @@
 * **lib:** Added `src/lib.rs` to enable library usage of agpod modules
 * **config:** New `DiffConfig` structure supporting diff-specific settings (output_dir, thresholds)
 * **config:** Added `version` field to configuration for tracking schema changes and enabling future deprecation warnings
-* **tests:** Comprehensive test suite for new configuration module (44 tests total)
+* **config:** Added `XDG_CONFIG_HOME` environment variable support for flexible configuration directory location
+* **tests:** Comprehensive test suite for new configuration module (47 tests total)
 
 ### BREAKING CHANGES
 
