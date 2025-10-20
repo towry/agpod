@@ -1,7 +1,7 @@
+use crate::config::get_config_home;
 use crate::kiro::error::{KiroError, KiroResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -159,19 +159,6 @@ fn default_rendering_files() -> Vec<String> {
 
 fn default_missing_policy() -> String {
     "error".to_string()
-}
-
-/// Get the configuration home directory, respecting XDG_CONFIG_HOME
-fn get_config_home() -> Option<PathBuf> {
-    // First check XDG_CONFIG_HOME environment variable
-    if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
-        if !xdg_config_home.is_empty() {
-            return Some(PathBuf::from(xdg_config_home));
-        }
-    }
-
-    // Fall back to ~/.config
-    dirs::home_dir().map(|h| h.join(".config"))
 }
 
 impl Config {

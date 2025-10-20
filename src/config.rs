@@ -199,7 +199,11 @@ fn default_config_version() -> String {
 }
 
 /// Get the configuration home directory, respecting XDG_CONFIG_HOME
-fn get_config_home() -> Option<PathBuf> {
+///
+/// This is a shared utility function used across the codebase to ensure
+/// consistent XDG_CONFIG_HOME support.
+#[allow(dead_code)] // Public API for library users and internal modules
+pub fn get_config_home() -> Option<PathBuf> {
     // First check XDG_CONFIG_HOME environment variable
     if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
         if !xdg_config_home.is_empty() {
