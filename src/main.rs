@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+mod config;
 mod diff;
 mod kiro;
 

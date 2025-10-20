@@ -1,35 +1,55 @@
-# Example agpod kiro configuration
+# Example agpod configuration
 # Place this at ~/.config/agpod/config.toml or .agpod.toml in your project root
+#
+# This configuration file now supports feature-specific sections:
+# - [kiro] for PR draft workflow settings
+# - [diff] for git diff minimization settings
 
+# Kiro workflow configuration
+[kiro]
 base_dir = "llm/kiro"
 templates_dir = "~/.config/agpod/templates"
 plugins_dir = "~/.config/agpod/plugins"
 template = "default"
 summary_lines = 3
 
-[plugins.name]
+[kiro.plugins.name]
 enabled = true
 command = "name.sh"
 timeout_secs = 3
 pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
 
-[rendering]
+[kiro.rendering]
 files = ["DESIGN.md.j2", "TASK.md.j2"]
 extra = []
 missing_policy = "error"
 
-# Template-specific configurations
-[templates.default]
+# Template-specific configurations for Kiro
+[kiro.templates.default]
 description = "Standard PR draft template with design and task documents"
 files = ["DESIGN.md.j2", "TASK.md.j2"]
 missing_policy = "error"
 
-[templates.vue]
+[kiro.templates.vue]
 description = "Vue.js component development template"
 files = ["DESIGN.md.j2", "TASK.md.j2", "COMPONENT.md.j2"]
 missing_policy = "skip"
 
-[templates.rust]
+[kiro.templates.rust]
 description = "Rust implementation template with detailed design"
 files = ["DESIGN.md.j2", "TASK.md.j2", "IMPL.md.j2"]
 missing_policy = "error"
+
+# Diff minimization configuration
+[diff]
+# Default output directory for saved diff chunks
+output_dir = "llm/diff"
+
+# Threshold for considering a file "large" (number of changes)
+large_file_changes_threshold = 100
+
+# Threshold for considering a file "large" (total lines)
+large_file_lines_threshold = 500
+
+# Maximum consecutive empty lines to keep in output
+max_consecutive_empty_lines = 2

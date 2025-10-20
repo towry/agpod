@@ -185,19 +185,13 @@ fn test_change_type_strings() {
 fn test_expand_path_tilde() {
     // Test tilde expansion
     if let Ok(home) = env::var("HOME") {
-        assert_eq!(
-            super::save::expand_path("~/test"),
-            format!("{}/test", home)
-        );
+        assert_eq!(super::save::expand_path("~/test"), format!("{}/test", home));
         assert_eq!(super::save::expand_path("~"), home);
     }
 
     // Test path without tilde (should remain unchanged)
     assert_eq!(super::save::expand_path("/tmp/test"), "/tmp/test");
-    assert_eq!(
-        super::save::expand_path("relative/path"),
-        "relative/path"
-    );
+    assert_eq!(super::save::expand_path("relative/path"), "relative/path");
 }
 
 #[test]
