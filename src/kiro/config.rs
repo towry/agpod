@@ -1,6 +1,7 @@
 use crate::kiro::error::{KiroError, KiroResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -107,10 +108,9 @@ fn default_base_dir() -> String {
 }
 
 fn default_templates_dir() -> String {
-    // Always use ~/.config/agpod instead of platform-specific config dirs
-    if let Some(home_dir) = dirs::home_dir() {
-        home_dir
-            .join(".config")
+    // Respects XDG_CONFIG_HOME environment variable
+    if let Some(config_home) = get_config_home() {
+        config_home
             .join("agpod")
             .join("templates")
             .to_string_lossy()
@@ -121,10 +121,9 @@ fn default_templates_dir() -> String {
 }
 
 fn default_plugins_dir() -> String {
-    // Always use ~/.config/agpod instead of platform-specific config dirs
-    if let Some(home_dir) = dirs::home_dir() {
-        home_dir
-            .join(".config")
+    // Respects XDG_CONFIG_HOME environment variable
+    if let Some(config_home) = get_config_home() {
+        config_home
             .join("agpod")
             .join("plugins")
             .to_string_lossy()
@@ -162,10 +161,24 @@ fn default_missing_policy() -> String {
     "error".to_string()
 }
 
+/// Get the configuration home directory, respecting XDG_CONFIG_HOME
+fn get_config_home() -> Option<PathBuf> {
+    // First check XDG_CONFIG_HOME environment variable
+    if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+        if !xdg_config_home.is_empty() {
+            return Some(PathBuf::from(xdg_config_home));
+        }
+    }
+
+    // Fall back to ~/.config
+    dirs::home_dir().map(|h| h.join(".config"))
+}
+
 impl Config {
     /// Get the default config directory path
+    /// Respects XDG_CONFIG_HOME environment variable
     pub fn get_config_dir() -> Option<PathBuf> {
-        dirs::home_dir().map(|h| h.join(".config").join("agpod"))
+        get_config_home().map(|h| h.join("agpod"))
     }
 
     /// Check if config directory is initialized
