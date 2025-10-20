@@ -19,10 +19,17 @@ extra = []
 missing_policy = "error"
 
 # Template-specific configurations
+[templates.default]
+description = "Standard PR draft template with design and task documents"
+files = ["DESIGN.md.j2", "TASK.md.j2"]
+missing_policy = "error"
+
 [templates.vue]
+description = "Vue.js component development template"
 files = ["DESIGN.md.j2", "TASK.md.j2", "COMPONENT.md.j2"]
 missing_policy = "skip"
 
 [templates.rust]
+description = "Rust implementation template with detailed design"
 files = ["DESIGN.md.j2", "TASK.md.j2", "IMPL.md.j2"]
 missing_policy = "error"

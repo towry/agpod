@@ -81,6 +81,7 @@ pub fn execute(args: KiroArgs) -> Result<()> {
         ),
         KiroCommand::PrList { summary_lines } => cmd_pr_list(&config, summary_lines, args.json),
         KiroCommand::Pr { fzf, output } => cmd_pr(&config, fzf, &output),
+        KiroCommand::ListTemplates => cmd_list_templates(&config, args.json),
         KiroCommand::Init { .. } => unreachable!(), // Already handled above
     }
 }
@@ -436,6 +437,81 @@ fn open_in_editor(file: &Path) -> Result<()> {
     Ok(())
 }
 
+fn cmd_list_templates(config: &Config, json: bool) -> Result<()> {
+    let templates_dir = Path::new(&config.templates_dir);
+
+    if !templates_dir.exists() {
+        if json {
+            println!("[]");
+        } else {
+            eprintln!("Templates directory not found: {}", templates_dir.display());
+        }
+        return Ok(());
+    }
+
+    let mut templates = Vec::new();
+
+    // Scan template directories
+    for entry in fs::read_dir(templates_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Skip special directories (like _shared)
+        if name.starts_with('_') || name.starts_with('.') {
+            continue;
+        }
+
+        // Get description from config if available
+        let description = if let Some(template_config) = config.templates.get(&name) {
+            template_config.description.clone()
+        } else {
+            String::new()
+        };
+
+        templates.push((name, description));
+    }
+
+    // Sort by name
+    templates.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if json {
+        let json_templates: Vec<serde_json::Value> = templates
+            .iter()
+            .map(|(name, description)| {
+                serde_json::json!({
+                    "name": name,
+                    "description": description
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_templates)?);
+    } else {
+        // Table output
+        println!("{:<20} DESCRIPTION", "TEMPLATE");
+        println!("{}", "-".repeat(80));
+        for (name, description) in templates {
+            let description_display = if description.is_empty() {
+                "(no description)"
+            } else {
+                &description
+            };
+            println!("{:<20} {}", name, description_display);
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_init(force: bool) -> Result<()> {
     let config_dir = Config::get_config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
@@ -551,5 +627,45 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let summary = read_summary(temp_dir.path(), 3);
         assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn test_list_templates() {
+        // Create a temporary config directory with templates
+        let temp_dir = TempDir::new().unwrap();
+        let templates_dir = temp_dir.path().join("templates");
+        fs::create_dir_all(&templates_dir).unwrap();
+
+        // Create some template directories
+        fs::create_dir_all(templates_dir.join("default")).unwrap();
+        fs::create_dir_all(templates_dir.join("rust")).unwrap();
+        fs::create_dir_all(templates_dir.join("vue")).unwrap();
+        fs::create_dir_all(templates_dir.join("_shared")).unwrap(); // Should be skipped
+
+        // Create a config with template descriptions
+        use crate::kiro::config::TemplateConfig;
+        let mut templates = std::collections::HashMap::new();
+        templates.insert(
+            "rust".to_string(),
+            TemplateConfig {
+                description: "Rust template".to_string(),
+                files: vec![],
+                missing_policy: "error".to_string(),
+            },
+        );
+
+        let config = Config {
+            templates_dir: templates_dir.to_string_lossy().to_string(),
+            templates,
+            ..Default::default()
+        };
+
+        // Test that cmd_list_templates can run without errors
+        let result = cmd_list_templates(&config, false);
+        assert!(result.is_ok());
+
+        // Test JSON output
+        let result_json = cmd_list_templates(&config, true);
+        assert!(result_json.is_ok());
     }
 }
