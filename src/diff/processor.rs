@@ -5,13 +5,17 @@ use regex::Regex;
 use std::io::{self, Read};
 
 /// Process git diff from stdin and output minimized version
-pub fn process_git_diff(save_mode: bool, save_path: Option<String>) -> io::Result<()> {
+pub fn process_git_diff(
+    save_mode: bool,
+    save_path: Option<String>,
+    context: Option<String>,
+) -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
 
     if save_mode {
         let path = save_path.as_deref().unwrap_or("llm/diff");
-        super::save::save_diff_chunks(&input, path)?;
+        super::save::save_diff_chunks(&input, path, context.as_deref())?;
     } else {
         let minimized_diff = minimize_diff(&input);
         print!("{}", minimized_diff);
