@@ -643,11 +643,9 @@ mod tests {
         fs::create_dir_all(templates_dir.join("_shared")).unwrap(); // Should be skipped
 
         // Create a config with template descriptions
-        let mut config = Config::default();
-        config.templates_dir = templates_dir.to_string_lossy().to_string();
-
         use crate::kiro::config::TemplateConfig;
-        config.templates.insert(
+        let mut templates = std::collections::HashMap::new();
+        templates.insert(
             "rust".to_string(),
             TemplateConfig {
                 description: "Rust template".to_string(),
@@ -655,6 +653,12 @@ mod tests {
                 missing_policy: "error".to_string(),
             },
         );
+
+        let config = Config {
+            templates_dir: templates_dir.to_string_lossy().to_string(),
+            templates,
+            ..Default::default()
+        };
 
         // Test that cmd_list_templates can run without errors
         let result = cmd_list_templates(&config, false);
