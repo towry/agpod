@@ -24,6 +24,10 @@ enum Commands {
         /// Specify custom output directory
         #[arg(long)]
         save_path: Option<String>,
+
+        /// Add context information to REVIEW.md (e.g., reference documentation)
+        #[arg(long)]
+        context: Option<String>,
     },
     /// Kiro workflow commands for PR draft management
     Kiro(kiro::KiroArgs),
@@ -33,9 +37,13 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Diff { save, save_path }) => {
+        Some(Commands::Diff {
+            save,
+            save_path,
+            context,
+        }) => {
             // Process git diff from stdin
-            match diff::process_git_diff(save, save_path) {
+            match diff::process_git_diff(save, save_path, context) {
                 Ok(()) => {}
                 Err(e) => {
                     eprintln!("Error: {}", e);

@@ -166,7 +166,11 @@ pub(crate) fn expand_path(path: &str) -> String {
 }
 
 /// Save diff chunks to separate files with review tracking
-pub fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> {
+pub fn save_diff_chunks(
+    diff_content: &str,
+    output_dir: &str,
+    context: Option<&str>,
+) -> io::Result<()> {
     // Determine if we should add project identifier to path
     // Add project subfolder only for absolute paths (outside the project)
     // For relative paths, user is saving within their project, so no subfolder needed
@@ -214,8 +218,18 @@ pub fn save_diff_chunks(diff_content: &str, output_dir: &str) -> io::Result<()> 
     // Prepare REVIEW.md content
     let mut review_content = String::from(
         "# Code Review Tracking\n\n\
-        This file tracks the review status of code changes.\n\n\
-        ## Guidelines\n\
+        This file tracks the review status of code changes.\n\n",
+    );
+
+    // Add context section if provided
+    if let Some(ctx) = context {
+        review_content.push_str("## Context\n\n");
+        review_content.push_str(ctx);
+        review_content.push_str("\n\n");
+    }
+
+    review_content.push_str(
+        "## Guidelines\n\
         - Diff chunks are stored in: ",
     );
     review_content.push_str(&project_output_dir);

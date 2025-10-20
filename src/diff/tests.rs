@@ -314,7 +314,7 @@ index 0000000..xyz123
     let _ = fs::remove_dir_all("llm/diff");
 
     // Test save with default path
-    save_diff_chunks(diff, "llm/diff").unwrap();
+    save_diff_chunks(diff, "llm/diff", None).unwrap();
 
     // For default path, no project subfolder is added
     let project_dir = "llm/diff";
@@ -370,7 +370,7 @@ index 0000000..abc123
     let _ = fs::remove_dir_all(custom_path);
 
     // Test save with custom path
-    save_diff_chunks(diff, custom_path).unwrap();
+    save_diff_chunks(diff, custom_path, None).unwrap();
 
     // For relative paths, no project subfolder is added
     let project_dir = custom_path;
@@ -438,7 +438,7 @@ index 0000000..abc123
     let _ = fs::remove_dir_all("test_review");
 
     // Save diff chunks
-    save_diff_chunks(diff, "test_review").unwrap();
+    save_diff_chunks(diff, "test_review", None).unwrap();
 
     // Verify REVIEW.md format in the chunks directory
     let review_path = "test_review/REVIEW.md";
@@ -488,7 +488,7 @@ index 0000000..xyz789
     let _ = fs::remove_dir_all(test_path);
 
     // First run - save file1
-    save_diff_chunks(diff1, test_path).unwrap();
+    save_diff_chunks(diff1, test_path, None).unwrap();
 
     let review_path = format!("{}/REVIEW.md", test_path);
     assert!(Path::new(&review_path).exists());
@@ -506,7 +506,7 @@ index 0000000..xyz789
     fs::write(&review_path, &review_content).unwrap();
 
     // Second run - save file2 (different file)
-    save_diff_chunks(diff2, test_path).unwrap();
+    save_diff_chunks(diff2, test_path, None).unwrap();
 
     // Verify REVIEW.md still exists
     assert!(Path::new(&review_path).exists());
@@ -543,7 +543,7 @@ index 0000000..abc123
     let _ = fs::remove_dir_all(test_path);
 
     // First run
-    save_diff_chunks(diff, test_path).unwrap();
+    save_diff_chunks(diff, test_path, None).unwrap();
 
     let review_path = format!("{}/REVIEW.md", test_path);
 
@@ -560,7 +560,7 @@ index 0000000..abc123
     fs::write(&review_path, &review_content).unwrap();
 
     // Second run with the same diff (hash should match)
-    save_diff_chunks(diff, test_path).unwrap();
+    save_diff_chunks(diff, test_path, None).unwrap();
 
     // Verify comments and status are preserved
     let final_review = fs::read_to_string(review_path).unwrap();
@@ -599,7 +599,7 @@ index 0000000..xyz789
     let _ = fs::remove_dir_all(test_path);
 
     // First run
-    save_diff_chunks(diff1, test_path).unwrap();
+    save_diff_chunks(diff1, test_path, None).unwrap();
 
     let review_path = format!("{}/REVIEW.md", test_path);
 
@@ -614,13 +614,92 @@ index 0000000..xyz789
     fs::write(&review_path, &review_content).unwrap();
 
     // Second run with modified diff (hash will change)
-    save_diff_chunks(diff2, test_path).unwrap();
+    save_diff_chunks(diff2, test_path, None).unwrap();
 
     // Verify status is marked as outdated but comments are preserved
     let final_review = fs::read_to_string(review_path).unwrap();
     assert!(final_review.contains("My review comments"));
     assert!(final_review.contains("- meta:status: outdated"));
     assert!(!final_review.contains("reviewed@2025-01-20"));
+
+    // Clean up
+    let _ = fs::remove_dir_all(test_path);
+}
+
+#[test]
+fn test_context_in_review_md() {
+    // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+    let _guard = REVIEW_MD_LOCK.lock().unwrap();
+
+    let diff = r#"diff --git a/feature.rs b/feature.rs
+new file mode 100644
+index 0000000..abc123
+--- /dev/null
++++ b/feature.rs
+@@ -0,0 +1,3 @@
++fn new_feature() {
++    println!("Feature");
++}"#;
+
+    let context_text = "See ../docs/feature-spec.md for reference on this implementation";
+    let test_path = "test_context";
+
+    // Clean up before test
+    let _ = fs::remove_dir_all(test_path);
+
+    // Save diff chunks with context
+    save_diff_chunks(diff, test_path, Some(context_text)).unwrap();
+
+    // Verify REVIEW.md includes context
+    let review_path = format!("{}/REVIEW.md", test_path);
+    assert!(Path::new(&review_path).exists());
+    let review = fs::read_to_string(review_path).unwrap();
+
+    // Check for context section
+    assert!(review.contains("## Context"));
+    assert!(review.contains(context_text));
+
+    // Context should appear before Guidelines
+    let context_pos = review.find("## Context").unwrap();
+    let guidelines_pos = review.find("## Guidelines").unwrap();
+    assert!(context_pos < guidelines_pos);
+
+    // Clean up
+    let _ = fs::remove_dir_all(test_path);
+}
+
+#[test]
+fn test_no_context_in_review_md() {
+    // Use shared lock to prevent parallel execution of tests that write to REVIEW.md
+    let _guard = REVIEW_MD_LOCK.lock().unwrap();
+
+    let diff = r#"diff --git a/simple.rs b/simple.rs
+new file mode 100644
+index 0000000..def456
+--- /dev/null
++++ b/simple.rs
+@@ -0,0 +1,1 @@
++// Simple file"#;
+
+    let test_path = "test_no_context";
+
+    // Clean up before test
+    let _ = fs::remove_dir_all(test_path);
+
+    // Save diff chunks without context
+    save_diff_chunks(diff, test_path, None).unwrap();
+
+    // Verify REVIEW.md does not include context section
+    let review_path = format!("{}/REVIEW.md", test_path);
+    assert!(Path::new(&review_path).exists());
+    let review = fs::read_to_string(review_path).unwrap();
+
+    // Should not have context section
+    assert!(!review.contains("## Context"));
+
+    // Should have other sections
+    assert!(review.contains("## Guidelines"));
+    assert!(review.contains("## simple.rs"));
 
     // Clean up
     let _ = fs::remove_dir_all(test_path);
