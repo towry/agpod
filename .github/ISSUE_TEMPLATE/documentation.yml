@@ -1,0 +1,123 @@
+name: Documentation Improvement
+description: Suggest improvements or report issues with documentation
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Important Notice
+        
+        **This repository is maintained by GitHub Copilot Agent.** Please do not approach the repository owner for coding tasks or implementation details. All code-related work is handled by automated agents.
+        
+        Thank you for helping improve our documentation!
+        
+        ---
+        
+        ### 💝 Support This Project
+        
+        This project uses AI coding agents which incur operational costs. If you find agpod useful, please consider supporting its development:
+        
+        - ⭐ Star this repository
+        - ☕ [Support via GitHub Sponsors](https://github.com/sponsors/towry) (if available)
+        - 🐦 Share agpod with others who might find it useful
+        
+        Your support helps keep this project maintained and improved!
+        
+  - type: textarea
+    id: description
+    attributes:
+      label: Documentation Issue or Improvement
+      description: Describe what documentation needs improvement or is missing
+      placeholder: |
+        What documentation needs to be added or improved?
+        What information is unclear or missing?
+        Where did you encounter this issue?
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Documentation Type
+      description: What type of documentation is this about?
+      options:
+        - README
+        - User Guide
+        - API Documentation
+        - Code Comments
+        - Examples/Tutorials
+        - Configuration Guide
+        - Contributing Guide
+        - Changelog
+        - Other
+    validations:
+      required: true
+      
+  - type: textarea
+    id: current-state
+    attributes:
+      label: Current Documentation
+      description: Describe the current state of the documentation (if applicable)
+      placeholder: |
+        - What does the current documentation say?
+        - What file or section is affected?
+        - Why is it inadequate or confusing?
+    validations:
+      required: false
+      
+  - type: textarea
+    id: proposed-improvement
+    attributes:
+      label: Proposed Improvement
+      description: What would you like to see in the documentation?
+      placeholder: |
+        - What information should be added or changed?
+        - How should it be explained?
+        - What examples would help?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case / Context
+      description: When would someone need this documentation?
+      placeholder: |
+        - What task were you trying to accomplish?
+        - What information were you looking for?
+        - Who would benefit from this documentation?
+    validations:
+      required: true
+      
+  - type: checkboxes
+    id: files
+    attributes:
+      label: Affected Documentation Files
+      description: Which files need to be updated?
+      options:
+        - label: README.md
+          required: false
+        - label: User guides (KIRO_GUIDE.md, etc.)
+          required: false
+        - label: Code comments/docstrings
+          required: false
+        - label: Example files
+          required: false
+        - label: Configuration examples
+          required: false
+        - label: New documentation file needed
+          required: false
+          
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the documentation improvement here
+      placeholder: |
+        - Screenshots of confusing sections
+        - Links to similar documentation in other projects
+        - Draft content or examples
+        - Related issues or discussions
+    validations:
+      required: false

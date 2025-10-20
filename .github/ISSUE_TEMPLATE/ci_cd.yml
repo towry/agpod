@@ -1,0 +1,122 @@
+name: CI/CD Improvement
+description: Propose improvements to continuous integration, deployment, or workflows
+title: "[CI/CD]: "
+labels: ["ci", "automation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Important Notice
+        
+        **This repository is maintained by GitHub Copilot Agent.** Please do not approach the repository owner for coding tasks or implementation details. All code-related work is handled by automated agents.
+        
+        Thank you for proposing a CI/CD improvement!
+        
+        ---
+        
+        ### 💝 Support This Project
+        
+        This project uses AI coding agents which incur operational costs. If you find agpod useful, please consider supporting its development:
+        
+        - ⭐ Star this repository
+        - ☕ [Support via GitHub Sponsors](https://github.com/sponsors/towry) (if available)
+        - 🐦 Share agpod with others who might find it useful
+        
+        Your support helps keep this project maintained and improved!
+        
+  - type: textarea
+    id: description
+    attributes:
+      label: CI/CD Improvement Description
+      description: Describe the improvement you'd like to see in CI/CD workflows
+      placeholder: |
+        What CI/CD process needs improvement?
+        Why is this improvement necessary?
+        What problem does it solve?
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: area
+    attributes:
+      label: CI/CD Area
+      description: Which area does this improvement relate to?
+      options:
+        - Build process
+        - Testing automation
+        - Deployment process
+        - Release automation
+        - GitHub Actions workflows
+        - Performance optimization
+        - Code quality checks
+        - Other
+    validations:
+      required: true
+      
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current Behavior
+      description: Describe how the CI/CD currently works
+      placeholder: |
+        - What is the current workflow?
+        - What are the issues or limitations?
+        - Which workflow files are affected?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: proposed-changes
+    attributes:
+      label: Proposed Changes
+      description: Describe the improvements you'd like to implement
+      placeholder: |
+        - What changes should be made?
+        - How will the workflow be improved?
+        - What tools or actions should be used?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: benefits
+    attributes:
+      label: Expected Benefits
+      description: What improvements will this bring?
+      placeholder: |
+        - Faster build times
+        - More reliable tests
+        - Better deployment process
+        - Cost savings
+        - Improved developer experience
+    validations:
+      required: true
+      
+  - type: checkboxes
+    id: workflows
+    attributes:
+      label: Affected Workflows
+      description: Which workflows will be affected?
+      options:
+        - label: Build workflow
+          required: false
+        - label: Test workflow
+          required: false
+        - label: Release workflow
+          required: false
+        - label: PR checks
+          required: false
+        - label: Deployment workflow
+          required: false
+          
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the CI/CD improvement here
+      placeholder: |
+        - Example configurations
+        - Links to relevant documentation
+        - Performance metrics
+        - Security considerations
+    validations:
+      required: false

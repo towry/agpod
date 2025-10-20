@@ -1,0 +1,126 @@
+name: Chore / Maintenance
+description: Maintenance tasks, dependency updates, or housekeeping
+title: "[Chore]: "
+labels: ["chore"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Important Notice
+        
+        **This repository is maintained by GitHub Copilot Agent.** Please do not approach the repository owner for coding tasks or implementation details. All code-related work is handled by automated agents.
+        
+        Thank you for helping maintain the project!
+        
+        ---
+        
+        ### 💝 Support This Project
+        
+        This project uses AI coding agents which incur operational costs. If you find agpod useful, please consider supporting its development:
+        
+        - ⭐ Star this repository
+        - ☕ [Support via GitHub Sponsors](https://github.com/sponsors/towry) (if available)
+        - 🐦 Share agpod with others who might find it useful
+        
+        Your support helps keep this project maintained and improved!
+        
+  - type: textarea
+    id: description
+    attributes:
+      label: Maintenance Task Description
+      description: Describe the maintenance task or chore that needs to be done
+      placeholder: |
+        What maintenance task needs to be done?
+        Why is it necessary?
+        What will it accomplish?
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: task-type
+    attributes:
+      label: Task Type
+      description: What type of maintenance task is this?
+      options:
+        - Dependency update
+        - Code cleanup
+        - Repository configuration
+        - Build system update
+        - Tooling update
+        - File organization
+        - License/Copyright updates
+        - Security updates
+        - Other
+    validations:
+      required: true
+      
+  - type: textarea
+    id: current-state
+    attributes:
+      label: Current State
+      description: Describe the current state that needs maintenance
+      placeholder: |
+        - What is the current situation?
+        - What dependencies or files are affected?
+        - Why does this need attention now?
+    validations:
+      required: true
+      
+  - type: textarea
+    id: proposed-action
+    attributes:
+      label: Proposed Action
+      description: What should be done?
+      placeholder: |
+        - What changes need to be made?
+        - How should it be updated?
+        - What versions or configurations should be used?
+    validations:
+      required: true
+      
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Impact Assessment
+      description: What areas will be affected?
+      options:
+        - label: Dependencies (Cargo.toml, Cargo.lock)
+          required: false
+        - label: Build configuration
+          required: false
+        - label: CI/CD workflows
+          required: false
+        - label: Development environment
+          required: false
+        - label: Documentation
+          required: false
+        - label: Tests
+          required: false
+          
+  - type: checkboxes
+    id: urgency
+    attributes:
+      label: Urgency Level
+      description: How urgent is this maintenance task?
+      options:
+        - label: Critical (security issue, blocking bug)
+          required: false
+        - label: Important (should be done soon)
+          required: false
+        - label: Normal (can be scheduled)
+          required: false
+        - label: Low priority (nice to have)
+          required: false
+          
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the maintenance task here
+      placeholder: |
+        - Links to relevant changelogs or security advisories
+        - Related issues or PRs
+        - Migration guides
+        - Testing considerations
+    validations:
+      required: false
