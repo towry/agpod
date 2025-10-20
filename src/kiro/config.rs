@@ -92,6 +92,9 @@ impl Default for RenderingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateConfig {
+    #[serde(default)]
+    pub description: String,
+
     #[serde(default = "default_rendering_files")]
     pub files: Vec<String>,
 

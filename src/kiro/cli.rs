@@ -96,4 +96,7 @@ pub enum KiroCommand {
         #[arg(short, long)]
         force: bool,
     },
+
+    /// List available templates
+    ListTemplates,
 }
