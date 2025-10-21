@@ -3,6 +3,7 @@ members = [
     "crates/agpod-core",
     "crates/agpod-diff",
     "crates/agpod-kiro",
+    "crates/agpod-vcs",
     "crates/agpod",
 ]
 resolver = "2"
@@ -19,6 +20,7 @@ repository = "https://github.com/towry/agpod"
 agpod-core = { path = "crates/agpod-core" }
 agpod-diff = { path = "crates/agpod-diff" }
 agpod-kiro = { path = "crates/agpod-kiro" }
+agpod-vcs = { path = "crates/agpod-vcs" }
 
 # External dependencies
 regex = "1.11"
@@ -36,3 +38,6 @@ pinyin = "0.10"
 rand = "0.8"
 serde_json = "1.0"
 tempfile = "3.13"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
+git2 = { version = "0.19", default-features = false, features = ["https"] }
