@@ -1,6 +1,6 @@
 use agpod_diff as diff;
 use agpod_kiro as kiro;
-use agpod_path as path;
+use agpod_vcs_path as vcs_path;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -31,7 +31,7 @@ enum Commands {
     /// Kiro workflow commands for PR draft management
     Kiro(kiro::KiroArgs),
     /// Format paths with VCS (Git/Jujutsu) branch/bookmark information
-    VcsPathInfo(path::VcsPathInfoArgs),
+    VcsPathInfo(vcs_path::VcsPathInfoArgs),
 }
 
 #[tokio::main]
@@ -60,7 +60,7 @@ async fn main() {
             }
         }
         Some(Commands::VcsPathInfo(args)) => {
-            if let Err(e) = path::run(args).await {
+            if let Err(e) = vcs_path::run(args).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
