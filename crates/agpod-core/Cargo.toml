@@ -1,0 +1,13 @@
+[package]
+name = "agpod-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core configuration and utilities for agpod"
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }

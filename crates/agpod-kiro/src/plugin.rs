@@ -1,5 +1,5 @@
-use crate::kiro::config::Config;
-use crate::kiro::error::KiroResult;
+use crate::config::Config;
+use crate::error::KiroResult;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -17,7 +17,7 @@ impl PluginExecutor {
         let plugin_config = &self.config.plugins.name;
 
         if !plugin_config.enabled {
-            return Ok(crate::kiro::slug::generate_branch_name(desc));
+            return Ok(crate::slug::generate_branch_name(desc));
         }
 
         // Determine plugin path
@@ -35,7 +35,7 @@ impl PluginExecutor {
                 "Warning: Plugin not found at {}, using default branch name generation",
                 plugin_path
             );
-            return Ok(crate::kiro::slug::generate_branch_name(desc));
+            return Ok(crate::slug::generate_branch_name(desc));
         }
 
         // Prepare environment variables
@@ -97,7 +97,7 @@ impl PluginExecutor {
 
                     if sanitized.is_empty() {
                         eprintln!("Warning: Plugin returned empty branch name, using default");
-                        Ok(crate::kiro::slug::generate_branch_name(desc))
+                        Ok(crate::slug::generate_branch_name(desc))
                     } else {
                         Ok(sanitized)
                     }
@@ -109,13 +109,13 @@ impl PluginExecutor {
                         stderr
                     );
                     eprintln!("Falling back to default branch name generation");
-                    Ok(crate::kiro::slug::generate_branch_name(desc))
+                    Ok(crate::slug::generate_branch_name(desc))
                 }
             }
             Err(e) => {
                 eprintln!("Warning: Failed to execute plugin: {}", e);
                 eprintln!("Falling back to default branch name generation");
-                Ok(crate::kiro::slug::generate_branch_name(desc))
+                Ok(crate::slug::generate_branch_name(desc))
             }
         }
     }

@@ -146,6 +146,49 @@ This modular design allows:
 2. **Regular files**: Preserves full diff with reduced empty lines (max 2 consecutive)
 3. **All file types**: Handles added, deleted, modified, and renamed files
 
+## Development
+
+agpod is structured as a Rust workspace with multiple crates:
+
+- **agpod-core**: Core configuration and utilities
+- **agpod-diff**: Git diff minimization functionality
+- **agpod-kiro**: PR draft workflow management
+- **agpod**: CLI binary that integrates all features
+
+### Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/towry/agpod.git
+cd agpod
+
+# Build all workspace crates
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run linting
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Format code
+cargo fmt --all
+```
+
+### Workspace Structure
+
+```
+agpod/
+├── Cargo.toml          # Workspace root
+├── crates/
+│   ├── agpod-core/     # Core configuration library
+│   ├── agpod-diff/     # Diff processing library
+│   ├── agpod-kiro/     # Kiro workflow library
+│   └── agpod/          # Binary crate (CLI)
+├── examples/           # Example templates and configs
+└── test_data/          # Test fixtures
+```
+
 ## Support This Project
 
 This project is maintained using AI coding agents, which incur operational costs. If you find agpod useful, please consider supporting its development:

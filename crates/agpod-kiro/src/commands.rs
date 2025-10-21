@@ -1,9 +1,9 @@
-use crate::kiro::cli::{KiroArgs, KiroCommand};
-use crate::kiro::config::Config;
-use crate::kiro::error::KiroError;
-use crate::kiro::git::GitHelper;
-use crate::kiro::plugin::PluginExecutor;
-use crate::kiro::template::{TemplateContext, TemplateRenderer};
+use crate::cli::{KiroArgs, KiroCommand};
+use crate::config::Config;
+use crate::error::KiroError;
+use crate::git::GitHelper;
+use crate::plugin::PluginExecutor;
+use crate::template::{TemplateContext, TemplateRenderer};
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -539,7 +539,7 @@ fn cmd_init(force: bool) -> Result<()> {
     // Create config file
     let config_file = config_dir.join("config.toml");
     if force || !config_file.exists() {
-        let config_content = include_str!("../../examples/config.toml");
+        let config_content = include_str!("../../../examples/config.toml");
         fs::write(&config_file, config_content)?;
         eprintln!("Created config file: {}", config_file.display());
     }
@@ -547,14 +547,14 @@ fn cmd_init(force: bool) -> Result<()> {
     // Create base templates
     let base_design = shared_dir.join("base_design.md.j2");
     if force || !base_design.exists() {
-        let content = include_str!("../../examples/templates/_shared/base_design.md.j2");
+        let content = include_str!("../../../examples/templates/_shared/base_design.md.j2");
         fs::write(&base_design, content)?;
         eprintln!("Created base template: {}", base_design.display());
     }
 
     let base_task = shared_dir.join("base_task.md.j2");
     if force || !base_task.exists() {
-        let content = include_str!("../../examples/templates/_shared/base_task.md.j2");
+        let content = include_str!("../../../examples/templates/_shared/base_task.md.j2");
         fs::write(&base_task, content)?;
         eprintln!("Created base template: {}", base_task.display());
     }
@@ -562,14 +562,14 @@ fn cmd_init(force: bool) -> Result<()> {
     // Create default templates
     let default_design = default_dir.join("DESIGN.md.j2");
     if force || !default_design.exists() {
-        let content = include_str!("../../examples/templates/default/DESIGN.md.j2");
+        let content = include_str!("../../../examples/templates/default/DESIGN.md.j2");
         fs::write(&default_design, content)?;
         eprintln!("Created template: {}", default_design.display());
     }
 
     let default_task = default_dir.join("TASK.md.j2");
     if force || !default_task.exists() {
-        let content = include_str!("../../examples/templates/default/TASK.md.j2");
+        let content = include_str!("../../../examples/templates/default/TASK.md.j2");
         fs::write(&default_task, content)?;
         eprintln!("Created template: {}", default_task.display());
     }
@@ -577,7 +577,7 @@ fn cmd_init(force: bool) -> Result<()> {
     // Create example plugin
     let plugin_file = plugins_dir.join("name.sh");
     if force || !plugin_file.exists() {
-        let content = include_str!("../../examples/plugins/name.sh");
+        let content = include_str!("../../../examples/plugins/name.sh");
         fs::write(&plugin_file, content)?;
 
         // Make plugin executable on Unix
@@ -643,7 +643,7 @@ mod tests {
         fs::create_dir_all(templates_dir.join("_shared")).unwrap(); // Should be skipped
 
         // Create a config with template descriptions
-        use crate::kiro::config::TemplateConfig;
+        use crate::config::TemplateConfig;
         let mut templates = std::collections::HashMap::new();
         templates.insert(
             "rust".to_string(),

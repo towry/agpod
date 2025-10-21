@@ -6,6 +6,37 @@ version = 4
 name = "agpod"
 version = "0.5.0"
 dependencies = [
+ "agpod-core",
+ "agpod-diff",
+ "agpod-kiro",
+ "clap",
+]
+
+[[package]]
+name = "agpod-core"
+version = "0.5.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "toml",
+]
+
+[[package]]
+name = "agpod-diff"
+version = "0.5.0"
+dependencies = [
+ "agpod-core",
+ "anyhow",
+ "chrono",
+ "regex",
+ "tempfile",
+]
+
+[[package]]
+name = "agpod-kiro"
+version = "0.5.0"
+dependencies = [
+ "agpod-core",
  "anyhow",
  "chrono",
  "clap",

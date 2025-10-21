@@ -1,5 +1,5 @@
-use crate::config::get_config_home;
-use crate::kiro::error::{KiroError, KiroResult};
+use crate::error::{KiroError, KiroResult};
+use agpod_core::get_config_home;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -185,7 +185,7 @@ impl Config {
     /// 5. CLI arguments
     pub fn load(
         cli_config: Option<&str>,
-        cli_overrides: &crate::kiro::cli::KiroArgs,
+        cli_overrides: &crate::cli::KiroArgs,
     ) -> KiroResult<Self> {
         let mut config = Self::default();
 
