@@ -61,7 +61,7 @@ git diff | agpod diff | pbcopy              # Copy to clipboard (macOS)
 git diff | agpod diff > minimized_diff.txt  # Save to file
 ```
 
-**Save mode** creates separate chunk files with `REVIEW.md` for tracking review status. See [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) for details.
+**Save mode** creates separate chunk files with `REVIEW.md` for tracking review status. See [SAVE_OPTION_SUMMARY.md](docs/SAVE_OPTION_SUMMARY.md) for details.
 
 ### Kiro Workflow
 
@@ -82,7 +82,7 @@ agpod kiro pr-list
 agpod kiro pr
 ```
 
-See [KIRO_GUIDE.md](KIRO_GUIDE.md) for comprehensive workflow documentation.
+See [KIRO_GUIDE.md](docs/KIRO_GUIDE.md) for comprehensive workflow documentation.
 
 ## Configuration
 
