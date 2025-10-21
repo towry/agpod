@@ -162,7 +162,7 @@ agpod is built as a modular Rust library with clean separation of concerns:
 
 - **`agpod::diff`** - Git diff minimization and processing logic
 - **`agpod::kiro`** - PR draft workflow management
-- **`agpod::vcs`** - VCS path information formatting
+- **`agpod::path`** - VCS path information formatting
 - **`agpod::config`** - Unified configuration system
 
 This modular design allows:
@@ -186,7 +186,7 @@ agpod is structured as a Rust workspace with multiple crates:
 - **agpod-core**: Core configuration and utilities
 - **agpod-diff**: Git diff minimization functionality
 - **agpod-kiro**: PR draft workflow management
-- **agpod-vcs**: VCS path information formatting
+- **agpod-path**: VCS path information formatting
 - **agpod**: CLI binary that integrates all features
 
 ### Building from Source
@@ -218,7 +218,7 @@ agpod/
 │   ├── agpod-core/     # Core configuration library
 │   ├── agpod-diff/     # Diff processing library
 │   ├── agpod-kiro/     # Kiro workflow library
-│   ├── agpod-vcs/      # VCS path info library
+│   ├── agpod-path/     # VCS path info library
 │   └── agpod/          # Binary crate (CLI)
 ├── examples/           # Example templates and configs
 └── test_data/          # Test fixtures

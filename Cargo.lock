@@ -15,7 +15,7 @@ dependencies = [
  "agpod-core",
  "agpod-diff",
  "agpod-kiro",
- "agpod-vcs",
+ "agpod-path",
  "clap",
  "tokio",
 ]
@@ -63,7 +63,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "agpod-vcs"
+name = "agpod-path"
 version = "0.5.0"
 dependencies = [
  "agpod-core",

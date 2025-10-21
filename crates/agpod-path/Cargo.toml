@@ -1,5 +1,5 @@
 [package]
-name = "agpod-vcs"
+name = "agpod-path"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

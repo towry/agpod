@@ -3,7 +3,7 @@ members = [
     "crates/agpod-core",
     "crates/agpod-diff",
     "crates/agpod-kiro",
-    "crates/agpod-vcs",
+    "crates/agpod-path",
     "crates/agpod",
 ]
 resolver = "2"
@@ -20,7 +20,7 @@ repository = "https://github.com/towry/agpod"
 agpod-core = { path = "crates/agpod-core" }
 agpod-diff = { path = "crates/agpod-diff" }
 agpod-kiro = { path = "crates/agpod-kiro" }
-agpod-vcs = { path = "crates/agpod-vcs" }
+agpod-path = { path = "crates/agpod-path" }
 
 # External dependencies
 regex = "1.11"
