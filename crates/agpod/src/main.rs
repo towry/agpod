@@ -1,8 +1,6 @@
+use agpod_diff as diff;
+use agpod_kiro as kiro;
 use clap::{Parser, Subcommand};
-
-mod config;
-mod diff;
-mod kiro;
 
 #[derive(Parser)]
 #[command(name = "agpod")]

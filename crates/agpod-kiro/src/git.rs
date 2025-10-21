@@ -1,5 +1,5 @@
-use crate::kiro::error::{KiroError, KiroResult};
-use crate::kiro::template::GitInfo;
+use crate::error::{KiroError, KiroResult};
+use crate::template::GitInfo;
 use std::process::Command;
 
 pub struct GitHelper;

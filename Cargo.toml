@@ -1,20 +1,26 @@
-[package]
-name = "agpod"
+[workspace]
+members = [
+    "crates/agpod-core",
+    "crates/agpod-diff",
+    "crates/agpod-kiro",
+    "crates/agpod",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.5.0"
 edition = "2021"
 authors = ["Development Team"]
-description = "A powerful agent helper tool with features including git diff minimization for LLM context and token usage optimization"
 license = "MIT"
 repository = "https://github.com/towry/agpod"
-readme = "README.md"
-keywords = ["git", "diff", "llm", "cli", "agent"]
-categories = ["command-line-utilities", "development-tools"]
 
-[[bin]]
-name = "agpod"
-path = "src/main.rs"
+[workspace.dependencies]
+# Workspace crates
+agpod-core = { path = "crates/agpod-core" }
+agpod-diff = { path = "crates/agpod-diff" }
+agpod-kiro = { path = "crates/agpod-kiro" }
 
-[dependencies]
+# External dependencies
 regex = "1.11"
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -29,6 +35,4 @@ anyhow = "1.0"
 pinyin = "0.10"
 rand = "0.8"
 serde_json = "1.0"
-
-[dev-dependencies]
 tempfile = "3.13"

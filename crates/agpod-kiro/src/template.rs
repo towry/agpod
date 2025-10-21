@@ -1,5 +1,5 @@
-use crate::kiro::config::Config;
-use crate::kiro::error::{KiroError, KiroResult};
+use crate::config::Config;
+use crate::error::{KiroError, KiroResult};
 use chrono::{Local, Utc};
 use minijinja::{context, Environment, Value};
 use std::collections::HashMap;
@@ -45,7 +45,7 @@ impl TemplateRenderer {
 
         // Add custom filters
         env.add_filter("slugify", |value: String| -> String {
-            crate::kiro::slug::slugify(&value)
+            crate::slug::slugify(&value)
         });
 
         env.add_filter("truncate", |value: String, n: usize| -> String {

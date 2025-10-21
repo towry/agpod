@@ -54,7 +54,7 @@ index 0000000..abcdefg
 #[test]
 fn test_large_added_file() {
     // Read the actual large JSON file
-    let json_content = include_str!("../../test_data/large_config.json");
+    let json_content = include_str!("../../../test_data/large_config.json");
 
     // Create a git diff for adding this large JSON file
     let mut diff = String::from(
@@ -90,7 +90,7 @@ index 0000000..1234567
 #[test]
 fn test_large_json_file_realistic() {
     // Test with a realistic large JSON configuration file
-    let json_content = include_str!("../../test_data/large_config.json");
+    let json_content = include_str!("../../../test_data/large_config.json");
     let lines: Vec<&str> = json_content.lines().collect();
 
     // Verify our test file is actually large enough

@@ -1,0 +1,17 @@
+[package]
+name = "agpod-diff"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Git diff minimization for LLM context optimization"
+
+[dependencies]
+agpod-core = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

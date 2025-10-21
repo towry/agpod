@@ -1,7 +1,6 @@
 # agpod
 
 [![CI](https://img.shields.io/github/actions/workflow/status/towry/agpod/ci.yml?branch=main&label=CI&logo=github)](https://github.com/towry/agpod/actions/workflows/ci.yml)
-[![Rust Tests](https://img.shields.io/github/actions/workflow/status/towry/agpod/rust.yml?branch=main&label=tests&logo=rust)](https://github.com/towry/agpod/actions/workflows/rust.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust Version](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org)
 ![GitHub Copilot](https://img.shields.io/badge/Github-Copilot-blue?logo=githubcopilot)
@@ -61,7 +60,7 @@ git diff | agpod diff | pbcopy              # Copy to clipboard (macOS)
 git diff | agpod diff > minimized_diff.txt  # Save to file
 ```
 
-**Save mode** creates separate chunk files with `REVIEW.md` for tracking review status. See [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) for details.
+**Save mode** creates separate chunk files with `REVIEW.md` for tracking review status. See [SAVE_OPTION_SUMMARY.md](docs/SAVE_OPTION_SUMMARY.md) for details.
 
 ### Kiro Workflow
 
@@ -82,7 +81,7 @@ agpod kiro pr-list
 agpod kiro pr
 ```
 
-See [KIRO_GUIDE.md](KIRO_GUIDE.md) for comprehensive workflow documentation.
+See [KIRO_GUIDE.md](docs/KIRO_GUIDE.md) for comprehensive workflow documentation.
 
 ## Configuration
 
@@ -145,6 +144,49 @@ This modular design allows:
 1. **Large files** (>100 changes or >500 lines): Shows metadata only (filename, change type, line count)
 2. **Regular files**: Preserves full diff with reduced empty lines (max 2 consecutive)
 3. **All file types**: Handles added, deleted, modified, and renamed files
+
+## Development
+
+agpod is structured as a Rust workspace with multiple crates:
+
+- **agpod-core**: Core configuration and utilities
+- **agpod-diff**: Git diff minimization functionality
+- **agpod-kiro**: PR draft workflow management
+- **agpod**: CLI binary that integrates all features
+
+### Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/towry/agpod.git
+cd agpod
+
+# Build all workspace crates
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run linting
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Format code
+cargo fmt --all
+```
+
+### Workspace Structure
+
+```
+agpod/
+├── Cargo.toml          # Workspace root
+├── crates/
+│   ├── agpod-core/     # Core configuration library
+│   ├── agpod-diff/     # Diff processing library
+│   ├── agpod-kiro/     # Kiro workflow library
+│   └── agpod/          # Binary crate (CLI)
+├── examples/           # Example templates and configs
+└── test_data/          # Test fixtures
+```
 
 ## Support This Project
 

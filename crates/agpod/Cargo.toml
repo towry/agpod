@@ -1,0 +1,21 @@
+[package]
+name = "agpod"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A powerful agent helper tool with features including git diff minimization for LLM context and token usage optimization"
+readme = "../../README.md"
+keywords = ["git", "diff", "llm", "cli", "agent"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "agpod"
+path = "src/main.rs"
+
+[dependencies]
+agpod-core = { workspace = true }
+agpod-diff = { workspace = true }
+agpod-kiro = { workspace = true }
+clap = { workspace = true }
