@@ -8,6 +8,34 @@ Always reference these instructions first and fallback to search or bash command
 
 Follow git conventional commits, use message format `type(scope): message`
 
+## Release Management
+
+This repository uses [release-please](https://github.com/googleapis/release-please) to automate releases. Two configuration files manage the release process:
+
+### Configuration Files
+
+1. **`release-please-config.json`** - Main configuration file
+   - Defines release type as "rust"
+   - Specifies CHANGELOG path
+   - Lists all workspace member Cargo.toml files in `extra-files` array
+   - Uses `cargo-workspace` plugin to handle workspace version inheritance
+
+2. **`.release-please-manifest.json`** - Version tracking file
+   - Tracks the current version for the workspace root (currently "0.5.0")
+   - Automatically updated by release-please on version bumps
+
+### Adding New Workspace Packages
+
+When adding a new package to the workspace:
+
+1. Add the package to `[workspace.members]` in root `Cargo.toml`
+2. Update `release-please-config.json`:
+   - Add the new package's Cargo.toml path to the `extra-files` array
+   - Example: `"crates/new-package/Cargo.toml"`
+3. The `.release-please-manifest.json` typically does not need updates (it tracks the workspace root version)
+
+**Important**: The workspace uses `version.workspace = true` in all crate Cargo.toml files, which inherits the version from `[workspace.package]` in the root Cargo.toml. Release-please handles this automatically via the cargo-workspace plugin.
+
 ## Working Effectively
 
 - Bootstrap, build, and test the repository:
