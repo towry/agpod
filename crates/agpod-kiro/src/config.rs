@@ -237,16 +237,8 @@ impl Config {
             ))
         })?;
 
-        // First try to parse as root config with [kiro] section
-        if let Ok(root_config) = toml::from_str::<agpod_core::Config>(&content) {
-            if let Some(kiro_config) = root_config.kiro {
-                // Convert agpod_core::KiroConfig to our Config
-                return Ok(self.merge_with_core_config(kiro_config));
-            }
-        }
-
-        // Fallback: try to parse as direct kiro config (for backwards compatibility)
-        let file_config: Config = toml::from_str(&content).map_err(|e| {
+        // Parse as root config with [kiro] section
+        let root_config = toml::from_str::<agpod_core::Config>(&content).map_err(|e| {
             KiroError::Config(format!(
                 "Failed to parse config from {}: {}",
                 path.display(),
@@ -254,7 +246,16 @@ impl Config {
             ))
         })?;
 
-        Ok(self.merge_with(file_config))
+        // Extract kiro section
+        let kiro_config = root_config.kiro.ok_or_else(|| {
+            KiroError::Config(format!(
+                "No [kiro] section found in config file: {}",
+                path.display()
+            ))
+        })?;
+
+        // Convert agpod_core::KiroConfig to our Config
+        Ok(self.merge_with_core_config(kiro_config))
     }
 
     fn merge_with_core_config(&self, other: agpod_core::KiroConfig) -> Self {
@@ -291,19 +292,6 @@ impl Config {
                     )
                 })
                 .collect(),
-        }
-    }
-
-    fn merge_with(&self, other: Self) -> Self {
-        Self {
-            base_dir: other.base_dir,
-            templates_dir: other.templates_dir,
-            plugins_dir: other.plugins_dir,
-            template: other.template,
-            summary_lines: other.summary_lines,
-            plugins: other.plugins,
-            rendering: other.rendering,
-            templates: other.templates,
         }
     }
 }
