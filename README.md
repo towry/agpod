@@ -8,7 +8,7 @@
 <a href="https://github.com/towry/agpod/pulls">![GitHub Issues or Pull Requests](https://img.shields.io/github/issues-pr/towry/agpod)</a>
 ![GitHub Repo stars](https://img.shields.io/github/stars/towry/agpod)
 
-A powerful agent helper tool for optimizing git diffs for LLM context and managing PR drafts locally.
+A powerful agent helper tool for optimizing git diffs for LLM context, managing PR drafts locally, and enhancing path listings with VCS information.
 
 ## Features
 
@@ -21,6 +21,12 @@ A powerful agent helper tool for optimizing git diffs for LLM context and managi
 - **PR draft management**: Organize design docs, tasks, and implementation notes locally
 - **Template system**: Customizable templates for different project types
 - **Git integration**: Auto-create branches and manage workflow state
+
+### VCS Path Info
+- **Branch detection**: Automatically detects Git branch names for repository paths
+- **Custom formatting**: Format output with `{path}` and `{branch}` placeholders
+- **Filtering**: Show only paths that are Git repositories
+- **Integration ready**: Designed to work with tools like zoxide and fzf
 
 ## Installation
 
@@ -83,6 +89,33 @@ agpod kiro pr
 
 See [KIRO_GUIDE.md](docs/KIRO_GUIDE.md) for comprehensive workflow documentation.
 
+### VCS Path Info
+
+Format directory paths with Git repository branch information. Useful for enhancing path listings with version control context.
+
+```bash
+# Basic usage - append branch name
+echo "/path/to/repo" | agpod vcs-path-info
+
+# Custom format with brackets
+echo "/path/to/repo" | agpod vcs-path-info -f "{path} [{branch}]"
+
+# Filter to show only Git repositories
+cat paths.txt | agpod vcs-path-info --filter
+
+# Integration with zoxide and fzf
+zoxide query --list | agpod vcs-path-info --filter -f "{path} [{branch}]" | fzf
+
+# Multiple paths at once
+printf "/home/user/project1\n/home/user/project2\n" | agpod vcs-path-info
+```
+
+**Options:**
+- `-f, --format <FORMAT>`: Format output with `{path}` and `{branch}` placeholders (default: `{path} {branch}`)
+- `-n, --nth <NTH>`: Specify which segment is the path when input has multiple whitespace-separated values
+- `--filter`: Only output paths that are Git repositories
+- `--no-bare`: Exclude bare Git repositories from output
+
 ## Configuration
 
 agpod supports feature-specific configuration through `config.toml` files. Configuration can be placed at:
@@ -128,7 +161,8 @@ See [examples/config.toml](examples/config.toml) for a complete configuration ex
 agpod is built as a modular Rust library with clean separation of concerns:
 
 - **`agpod::diff`** - Git diff minimization and processing logic
-- **`agpod::kiro`** - PR draft workflow management  
+- **`agpod::kiro`** - PR draft workflow management
+- **`agpod::vcs_path`** - VCS path information formatting
 - **`agpod::config`** - Unified configuration system
 
 This modular design allows:
@@ -152,6 +186,7 @@ agpod is structured as a Rust workspace with multiple crates:
 - **agpod-core**: Core configuration and utilities
 - **agpod-diff**: Git diff minimization functionality
 - **agpod-kiro**: PR draft workflow management
+- **agpod-vcs-path**: VCS path information formatting
 - **agpod**: CLI binary that integrates all features
 
 ### Building from Source
@@ -183,6 +218,7 @@ agpod/
 │   ├── agpod-core/     # Core configuration library
 │   ├── agpod-diff/     # Diff processing library
 │   ├── agpod-kiro/     # Kiro workflow library
+│   ├── agpod-vcs-path/ # VCS path info library
 │   └── agpod/          # Binary crate (CLI)
 ├── examples/           # Example templates and configs
 └── test_data/          # Test fixtures
