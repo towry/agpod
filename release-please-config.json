@@ -6,13 +6,19 @@
       "bump-patch-for-minor-pre-major": true,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
-        "Cargo.toml"
+        "Cargo.toml",
+        "crates/agpod-core/Cargo.toml",
+        "crates/agpod-diff/Cargo.toml",
+        "crates/agpod-kiro/Cargo.toml",
+        "crates/agpod-vcs-path/Cargo.toml",
+        "crates/agpod/Cargo.toml"
       ]
     }
   },
   "plugins": [
     {
-      "type": "cargo-workspace"
+      "type": "cargo-workspace",
+      "merge": false
     }
   ]
 }
