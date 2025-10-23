@@ -1,10 +1,30 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "plugins": ["cargo-workspace"],
-  "release-type": "rust",
   "packages": {
-    ".": {
+    "crates/agpod": {
+      "release-type": "rust",
       "component": "agpod",
+      "include-component-in-tag": false
+    },
+    "crates/agpod-core": {
+      "release-type": "rust",
+      "component": "agpod-core",
+      "include-component-in-tag": false
+    },
+    "crates/agpod-diff": {
+      "release-type": "rust",
+      "component": "agpod-diff",
+      "include-component-in-tag": false
+    },
+    "crates/agpod-kiro": {
+      "release-type": "rust",
+      "component": "agpod-kiro",
+      "include-component-in-tag": false
+    },
+    "crates/agpod-vcs-path": {
+      "release-type": "rust",
+      "component": "agpod-vcs-path",
       "include-component-in-tag": false
     }
   }
