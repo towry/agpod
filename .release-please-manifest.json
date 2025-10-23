@@ -1,7 +1,3 @@
 {
-  "crates/agpod-core": "0.5.0",
-  "crates/agpod-diff": "0.5.0",
-  "crates/agpod-kiro": "0.5.0",
-  "crates/agpod-vcs-path": "0.5.0",
-  "crates/agpod": "0.5.0"
+  ".": "0.5.0"
 }

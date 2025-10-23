@@ -3,11 +3,8 @@
   "plugins": ["cargo-workspace"],
   "release-type": "rust",
   "packages": {
-    "crates/agpod-core": {},
-    "crates/agpod-diff": {},
-    "crates/agpod-kiro": {},
-    "crates/agpod-vcs-path": {},
-    "crates/agpod": {
+    ".": {
+      "component": "agpod",
       "include-component-in-tag": false
     }
   }
