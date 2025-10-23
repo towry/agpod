@@ -135,26 +135,21 @@ fn cmd_pr_new(
     // Render templates
     let mut renderer = TemplateRenderer::new(&config.templates_dir)?;
 
-    // Get files to render
-    let files = if let Some(template_config) = config.templates.get(template_name) {
-        template_config.files.clone()
-    } else {
-        config.rendering.files.clone()
-    };
-
-    let missing_policy = if let Some(template_config) = config.templates.get(template_name) {
-        template_config.missing_policy.clone()
-    } else {
-        config.rendering.missing_policy.clone()
-    };
+    // Get template-specific configuration
+    let template_config = config.templates.get(template_name).ok_or_else(|| {
+        KiroError::Config(format!(
+            "Template '{}' not found in configuration. Please add a [kiro.templates.{}] section to your config file.",
+            template_name, template_name
+        ))
+    })?;
 
     let rendered_files = renderer.render_all(
         template_name,
-        &files,
+        &template_config.files,
         &context,
         config,
         &pr_dir,
-        &missing_policy,
+        &template_config.missing_policy,
     )?;
 
     // Output results (machine-readable format)
