@@ -10,6 +10,7 @@ permissions:
 jobs:
   build_and_upload:
     name: Build and Upload Release Artifacts
+    if: ${{ !contains(github.event.release.tag_name, '-') || startsWith(github.event.release.tag_name, 'agpod-v') }}
     uses: ./.github/workflows/build-artifacts.yml
     with:
       tag_name: ${{ github.event.release.tag_name }}

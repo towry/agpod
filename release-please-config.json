@@ -1,32 +1,24 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "plugins": ["cargo-workspace"],
-  "monorepo-tags": true,
+  "plugins": [
+    {
+      "type": "cargo-workspace",
+      "merge": false
+    }
+  ],
   "packages": {
-    "crates/agpod": {
+    ".": {
       "release-type": "rust",
-      "component": "agpod",
-      "changelog-path": "crates/agpod/CHANGELOG.md"
-    },
-    "crates/agpod-core": {
-      "release-type": "rust",
-      "component": "agpod-core",
-      "changelog-path": "crates/agpod-core/CHANGELOG.md"
-    },
-    "crates/agpod-diff": {
-      "release-type": "rust",
-      "component": "agpod-diff",
-      "changelog-path": "crates/agpod-diff/CHANGELOG.md"
-    },
-    "crates/agpod-kiro": {
-      "release-type": "rust",
-      "component": "agpod-kiro",
-      "changelog-path": "crates/agpod-kiro/CHANGELOG.md"
-    },
-    "crates/agpod-vcs-path": {
-      "release-type": "rust",
-      "component": "agpod-vcs-path",
-      "changelog-path": "crates/agpod-vcs-path/CHANGELOG.md"
+      "package-name": "agpod",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        "Cargo.toml",
+        "crates/agpod/Cargo.toml",
+        "crates/agpod-core/Cargo.toml",
+        "crates/agpod-diff/Cargo.toml",
+        "crates/agpod-kiro/Cargo.toml",
+        "crates/agpod-vcs-path/Cargo.toml"
+      ]
     }
   }
 }
