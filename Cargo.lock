@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agpod"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agpod-core",
  "agpod-diff",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "dirs",
  "serde",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-diff"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agpod-core",
  "anyhow",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-kiro"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agpod-core",
  "anyhow",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-vcs-path"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agpod-core",
  "anyhow",
