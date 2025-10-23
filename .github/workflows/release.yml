@@ -35,8 +35,19 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const releases = JSON.parse(process.env.RELEASES || '[]');
+            const releasesStr = process.env.RELEASES || '[]';
+            console.log('Raw releases_created:', releasesStr);
+            const releases = JSON.parse(releasesStr);
+            console.log('Parsed releases:', JSON.stringify(releases, null, 2));
+            
+            if (!Array.isArray(releases)) {
+              console.log('releases_created is not an array, checking if it is an object');
+              core.setOutput('agpod_tag', '');
+              return;
+            }
+            
             const agpod = releases.find(r => r.path === 'crates/agpod');
+            console.log('Found agpod release:', JSON.stringify(agpod, null, 2));
             core.setOutput('agpod_tag', agpod ? agpod.tag_name : '');
         env:
           RELEASES: ${{ steps.release.outputs.releases_created }}
