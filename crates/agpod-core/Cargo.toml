@@ -1,6 +1,6 @@
 [package]
 name = "agpod-core"
-version = "0.5.3"
+version = "0.8.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
