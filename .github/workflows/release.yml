@@ -24,7 +24,6 @@ jobs:
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: rust
 
   build_artifacts:
     name: Build Artifacts (reusable)
