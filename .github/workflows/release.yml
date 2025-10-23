@@ -21,6 +21,7 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      agpod_tag_name: ${{ steps.pick_agpod.outputs.agpod_tag }}
     steps:
       - name: Run release-please
         id: release
@@ -28,11 +29,23 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Pick agpod tag
+        id: pick_agpod
+        if: steps.release.outputs.releases_created == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releases = JSON.parse(process.env.RELEASES || '[]');
+            const agpod = releases.find(r => r.path === 'crates/agpod');
+            core.setOutput('agpod_tag', agpod ? agpod.tag_name : '');
+        env:
+          RELEASES: ${{ steps.release.outputs.releases_created }}
+
   build_artifacts:
     name: Build Artifacts
     needs: release_please
-    if: ${{ needs.release_please.outputs.release_created == 'true' }}
+    if: ${{ needs.release_please.outputs.agpod_tag_name != '' }}
     uses: ./.github/workflows/build-artifacts.yml
     with:
-      tag_name: ${{ needs.release_please.outputs.tag_name }}
+      tag_name: ${{ needs.release_please.outputs.agpod_tag_name }}
       bin_name: agpod

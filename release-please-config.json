@@ -11,6 +11,30 @@
       "package-name": "agpod",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false
+    },
+    "crates/agpod-core": {
+      "release-type": "rust",
+      "package-name": "agpod-core",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-core"
+    },
+    "crates/agpod-diff": {
+      "release-type": "rust",
+      "package-name": "agpod-diff",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-diff"
+    },
+    "crates/agpod-kiro": {
+      "release-type": "rust",
+      "package-name": "agpod-kiro",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-kiro"
+    },
+    "crates/agpod-vcs-path": {
+      "release-type": "rust",
+      "package-name": "agpod-vcs-path",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-vcs-path"
     }
   }
 }
