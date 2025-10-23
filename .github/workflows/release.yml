@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: release-main
+  cancel-in-progress: true
+
 permissions:
   contents: write
   issues: write
@@ -14,24 +18,9 @@ jobs:
   release_please:
     name: Release Please
     runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      upload_url: ${{ steps.release.outputs.upload_url }}
     steps:
       - name: Run release-please
         id: release
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
-  build_artifacts:
-    name: Build Artifacts (reusable)
-    needs: release_please
-    if: ${{ needs.release_please.outputs.release_created == 'true' }}
-    uses: ./.github/workflows/build-artifacts.yml
-    with:
-      tag_name: ${{ needs.release_please.outputs.tag_name }}
-      bin_name: agpod
-
-  

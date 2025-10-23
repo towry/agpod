@@ -1,0 +1,16 @@
+name: "Release Artifacts"
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build_and_upload:
+    name: Build and Upload Release Artifacts
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      tag_name: ${{ github.event.release.tag_name }}
+      bin_name: agpod
