@@ -237,7 +237,8 @@ impl Config {
             ))
         })?;
 
-        let file_config: Config = toml::from_str(&content).map_err(|e| {
+        // Parse as root config with [kiro] section
+        let root_config = toml::from_str::<agpod_core::Config>(&content).map_err(|e| {
             KiroError::Config(format!(
                 "Failed to parse config from {}: {}",
                 path.display(),
@@ -245,7 +246,53 @@ impl Config {
             ))
         })?;
 
-        Ok(file_config)
+        // Extract kiro section
+        let kiro_config = root_config.kiro.ok_or_else(|| {
+            KiroError::Config(format!(
+                "No [kiro] section found in config file: {}",
+                path.display()
+            ))
+        })?;
+
+        // Convert agpod_core::KiroConfig to our Config
+        Ok(self.merge_with_core_config(kiro_config))
+    }
+
+    fn merge_with_core_config(&self, other: agpod_core::KiroConfig) -> Self {
+        Self {
+            base_dir: other.base_dir,
+            templates_dir: other.templates_dir,
+            plugins_dir: other.plugins_dir,
+            template: other.template,
+            summary_lines: other.summary_lines,
+            plugins: PluginConfig {
+                name: BranchNamePlugin {
+                    enabled: other.plugins.name.enabled,
+                    command: other.plugins.name.command,
+                    timeout_secs: other.plugins.name.timeout_secs,
+                    pass_env: other.plugins.name.pass_env,
+                },
+            },
+            rendering: RenderingConfig {
+                files: other.rendering.files,
+                extra: other.rendering.extra,
+                missing_policy: other.rendering.missing_policy,
+            },
+            templates: other
+                .templates
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        TemplateConfig {
+                            description: v.description,
+                            files: v.files,
+                            missing_policy: v.missing_policy,
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 }
 
@@ -313,5 +360,78 @@ mod tests {
         assert_eq!(expand_path("relative/path"), "relative/path");
 
         std::env::remove_var("TEST_VAR");
+    }
+
+    #[test]
+    fn test_load_config_with_kiro_section() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let config_content = r#"
+version = "1"
+
+[kiro]
+base_dir = "custom/kiro"
+templates_dir = "~/.config/agpod/templates"
+plugins_dir = "~/.config/agpod/plugins"
+template = "vue"
+summary_lines = 5
+
+[kiro.templates.vue]
+description = "Vue.js component template"
+files = ["design.md.j2", "tasks.md.j2", "component.md.j2"]
+missing_policy = "skip"
+
+[kiro.templates.default]
+description = "Default template"
+files = ["design.md.j2", "tasks.md.j2"]
+missing_policy = "error"
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        let default_config = Config::default();
+        let loaded_config = default_config.merge_from_file(temp_file.path()).unwrap();
+
+        assert_eq!(loaded_config.base_dir, "custom/kiro");
+        assert_eq!(loaded_config.template, "vue");
+        assert_eq!(loaded_config.summary_lines, 5);
+        assert_eq!(loaded_config.templates.len(), 2);
+
+        let vue_template = loaded_config.templates.get("vue").unwrap();
+        assert_eq!(vue_template.description, "Vue.js component template");
+        assert_eq!(vue_template.files.len(), 3);
+        assert_eq!(vue_template.files[0], "design.md.j2");
+        assert_eq!(vue_template.files[1], "tasks.md.j2");
+        assert_eq!(vue_template.files[2], "component.md.j2");
+        assert_eq!(vue_template.missing_policy, "skip");
+
+        let default_template = loaded_config.templates.get("default").unwrap();
+        assert_eq!(default_template.files.len(), 2);
+        assert_eq!(default_template.missing_policy, "error");
+    }
+
+    #[test]
+    fn test_template_config_overrides_rendering() {
+        let mut config = Config::default();
+        config.rendering.files = vec!["DESIGN.md.j2".to_string(), "TASK.md.j2".to_string()];
+
+        let mut template_config = HashMap::new();
+        template_config.insert(
+            "custom".to_string(),
+            TemplateConfig {
+                description: "Custom template".to_string(),
+                files: vec!["design.md.j2".to_string(), "tasks.md.j2".to_string()],
+                missing_policy: "error".to_string(),
+            },
+        );
+        config.templates = template_config;
+
+        // Template config should be available
+        let custom = config.templates.get("custom").unwrap();
+        assert_eq!(custom.files[0], "design.md.j2");
+        assert_eq!(custom.files[1], "tasks.md.j2");
     }
 }
