@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/towry/agpod/compare/agpod-kiro-v0.8.1...agpod-kiro-v0.8.2) (2025-10-25)
+
+
+### Bug Fixes
+
+* **kiro:** preserve non-ASCII characters in name plugin and improve permission error handling ([#74](https://github.com/towry/agpod/issues/74)) ([5647aec](https://github.com/towry/agpod/commit/5647aec4283b285c09f3cff458ef3e76b18615af))
+
 ## [0.8.1](https://github.com/towry/agpod/compare/agpod-kiro-v0.8.0...agpod-kiro-v0.8.1) (2025-10-23)
 
 
