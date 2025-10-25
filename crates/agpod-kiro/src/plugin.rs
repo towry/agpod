@@ -240,10 +240,17 @@ mod tests {
     fn test_plugin_executor_with_nonexistent_plugin() {
         use crate::config::Config;
 
-        let mut config = Config::default();
-        config.plugins_dir = "/nonexistent/path".to_string();
-        config.plugins.name.enabled = true;
-        config.plugins.name.command = "nonexistent.sh".to_string();
+        let config = Config {
+            plugins_dir: "/nonexistent/path".to_string(),
+            plugins: crate::config::PluginConfig {
+                name: crate::config::BranchNamePlugin {
+                    enabled: true,
+                    command: "nonexistent.sh".to_string(),
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        };
 
         let executor = PluginExecutor::new(config);
         let result = executor
@@ -282,11 +289,11 @@ pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
         temp_file.flush().unwrap();
 
         // Parse the config directly using toml
-        let root_config: agpod_core::Config = toml::from_str(&config_content).unwrap();
+        let root_config: agpod_core::Config = toml::from_str(config_content).unwrap();
         let kiro_config = root_config.kiro.unwrap();
 
         // Verify the plugin configuration loaded correctly from TOML
-        assert_eq!(kiro_config.plugins.name.enabled, true);
+        assert!(kiro_config.plugins.name.enabled);
         assert_eq!(kiro_config.plugins.name.command, "name.sh");
         assert_eq!(kiro_config.plugins.name.timeout_secs, 3);
         assert_eq!(kiro_config.plugins_dir, "/tmp/test_plugins");

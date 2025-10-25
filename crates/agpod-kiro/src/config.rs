@@ -465,7 +465,7 @@ pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
         let loaded_config = default_config.merge_from_file(temp_file.path()).unwrap();
 
         // Verify plugin configuration was loaded
-        assert_eq!(loaded_config.plugins.name.enabled, true);
+        assert!(loaded_config.plugins.name.enabled);
         assert_eq!(loaded_config.plugins.name.command, "name.sh");
         assert_eq!(loaded_config.plugins.name.timeout_secs, 5);
         assert_eq!(loaded_config.plugins.name.pass_env.len(), 4);
