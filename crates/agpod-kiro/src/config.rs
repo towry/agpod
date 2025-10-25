@@ -434,4 +434,60 @@ missing_policy = "error"
         assert_eq!(custom.files[0], "design.md.j2");
         assert_eq!(custom.files[1], "tasks.md.j2");
     }
+
+    #[test]
+    fn test_load_config_with_plugin_settings() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let config_content = r#"
+version = "1"
+
+[kiro]
+base_dir = "llm/kiro"
+templates_dir = "~/.config/agpod/templates"
+plugins_dir = "~/.config/agpod/plugins"
+template = "default"
+summary_lines = 3
+
+[kiro.plugins.name]
+enabled = true
+command = "name.sh"
+timeout_secs = 5
+pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        let default_config = Config::default();
+        let loaded_config = default_config.merge_from_file(temp_file.path()).unwrap();
+
+        // Verify plugin configuration was loaded
+        assert!(loaded_config.plugins.name.enabled);
+        assert_eq!(loaded_config.plugins.name.command, "name.sh");
+        assert_eq!(loaded_config.plugins.name.timeout_secs, 5);
+        assert_eq!(loaded_config.plugins.name.pass_env.len(), 4);
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"AGPOD_*".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"GIT_*".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"USER".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"HOME".to_string()));
+    }
 }

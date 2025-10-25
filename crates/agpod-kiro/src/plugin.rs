@@ -30,12 +30,31 @@ impl PluginExecutor {
                 .to_string()
         };
 
-        if !Path::new(&plugin_path).exists() {
+        let plugin_path_obj = Path::new(&plugin_path);
+
+        if !plugin_path_obj.exists() {
             eprintln!(
                 "Warning: Plugin not found at {}, using default branch name generation",
                 plugin_path
             );
             return Ok(crate::slug::generate_branch_name(desc));
+        }
+
+        // Check if plugin is executable on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&plugin_path) {
+                let permissions = metadata.permissions();
+                if permissions.mode() & 0o111 == 0 {
+                    eprintln!(
+                        "Warning: Plugin at {} is not executable. Please run: chmod +x {}",
+                        plugin_path, plugin_path
+                    );
+                    eprintln!("Falling back to default branch name generation");
+                    return Ok(crate::slug::generate_branch_name(desc));
+                }
+            }
         }
 
         // Prepare environment variables
@@ -113,8 +132,26 @@ impl PluginExecutor {
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Failed to execute plugin: {}", e);
-                eprintln!("Falling back to default branch name generation");
+                // Provide more specific guidance for permission errors
+                let error_msg = format!("{}", e);
+                if error_msg.contains("Permission denied") || error_msg.contains("os error 13") {
+                    eprintln!("Warning: Failed to execute plugin: {}", e);
+                    eprintln!("The plugin file exists but cannot be executed. This may happen if:");
+                    eprintln!(
+                        "  1. The file is not executable. Run: chmod +x {}",
+                        plugin_path
+                    );
+                    eprintln!(
+                        "  2. The file is a symlink to a non-executable file (e.g., in Nix store)"
+                    );
+                    eprintln!(
+                        "     In this case, ensure the target file has executable permissions."
+                    );
+                    eprintln!("Falling back to default branch name generation");
+                } else {
+                    eprintln!("Warning: Failed to execute plugin: {}", e);
+                    eprintln!("Falling back to default branch name generation");
+                }
                 Ok(crate::slug::generate_branch_name(desc))
             }
         }
@@ -181,5 +218,84 @@ mod tests {
     fn test_sanitize_special_chars() {
         assert_eq!(sanitize_branch_name("test!@#$%"), "test");
         assert_eq!(sanitize_branch_name("test & demo"), "test-demo");
+    }
+
+    #[test]
+    fn test_plugin_executor_with_disabled_plugin() {
+        use crate::config::Config;
+
+        let mut config = Config::default();
+        config.plugins.name.enabled = false;
+
+        let executor = PluginExecutor::new(config);
+        let result = executor
+            .generate_branch_name("Test Description", "default")
+            .unwrap();
+
+        // Should use default slugify since plugin is disabled
+        assert_eq!(result, "test-description");
+    }
+
+    #[test]
+    fn test_plugin_executor_with_nonexistent_plugin() {
+        use crate::config::Config;
+
+        let config = Config {
+            plugins_dir: "/nonexistent/path".to_string(),
+            plugins: crate::config::PluginConfig {
+                name: crate::config::BranchNamePlugin {
+                    enabled: true,
+                    command: "nonexistent.sh".to_string(),
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        };
+
+        let executor = PluginExecutor::new(config);
+        let result = executor
+            .generate_branch_name("Test Description", "default")
+            .unwrap();
+
+        // Should fall back to default slugify when plugin not found
+        assert_eq!(result, "test-description");
+    }
+
+    #[test]
+    fn test_plugin_executor_with_real_config_file() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a config file that matches the user's scenario
+        let config_content = r#"
+version = "1"
+
+[kiro]
+base_dir = "llm/kiro"
+templates_dir = "~/.config/agpod/templates"
+plugins_dir = "/tmp/test_plugins"
+template = "default"
+summary_lines = 3
+
+[kiro.plugins.name]
+enabled = true
+command = "name.sh"
+timeout_secs = 3
+pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Parse the config directly using toml
+        let root_config: agpod_core::Config = toml::from_str(config_content).unwrap();
+        let kiro_config = root_config.kiro.unwrap();
+
+        // Verify the plugin configuration loaded correctly from TOML
+        assert!(kiro_config.plugins.name.enabled);
+        assert_eq!(kiro_config.plugins.name.command, "name.sh");
+        assert_eq!(kiro_config.plugins.name.timeout_secs, 3);
+        assert_eq!(kiro_config.plugins_dir, "/tmp/test_plugins");
     }
 }
