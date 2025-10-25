@@ -30,12 +30,31 @@ impl PluginExecutor {
                 .to_string()
         };
 
-        if !Path::new(&plugin_path).exists() {
+        let plugin_path_obj = Path::new(&plugin_path);
+
+        if !plugin_path_obj.exists() {
             eprintln!(
                 "Warning: Plugin not found at {}, using default branch name generation",
                 plugin_path
             );
             return Ok(crate::slug::generate_branch_name(desc));
+        }
+
+        // Check if plugin is executable on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&plugin_path) {
+                let permissions = metadata.permissions();
+                if permissions.mode() & 0o111 == 0 {
+                    eprintln!(
+                        "Warning: Plugin at {} is not executable. Please run: chmod +x {}",
+                        plugin_path, plugin_path
+                    );
+                    eprintln!("Falling back to default branch name generation");
+                    return Ok(crate::slug::generate_branch_name(desc));
+                }
+            }
         }
 
         // Prepare environment variables
@@ -113,8 +132,26 @@ impl PluginExecutor {
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Failed to execute plugin: {}", e);
-                eprintln!("Falling back to default branch name generation");
+                // Provide more specific guidance for permission errors
+                let error_msg = format!("{}", e);
+                if error_msg.contains("Permission denied") || error_msg.contains("os error 13") {
+                    eprintln!("Warning: Failed to execute plugin: {}", e);
+                    eprintln!("The plugin file exists but cannot be executed. This may happen if:");
+                    eprintln!(
+                        "  1. The file is not executable. Run: chmod +x {}",
+                        plugin_path
+                    );
+                    eprintln!(
+                        "  2. The file is a symlink to a non-executable file (e.g., in Nix store)"
+                    );
+                    eprintln!(
+                        "     In this case, ensure the target file has executable permissions."
+                    );
+                    eprintln!("Falling back to default branch name generation");
+                } else {
+                    eprintln!("Warning: Failed to execute plugin: {}", e);
+                    eprintln!("Falling back to default branch name generation");
+                }
                 Ok(crate::slug::generate_branch_name(desc))
             }
         }
