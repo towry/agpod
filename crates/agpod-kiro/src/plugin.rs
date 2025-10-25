@@ -182,4 +182,72 @@ mod tests {
         assert_eq!(sanitize_branch_name("test!@#$%"), "test");
         assert_eq!(sanitize_branch_name("test & demo"), "test-demo");
     }
+
+    #[test]
+    fn test_plugin_executor_with_disabled_plugin() {
+        use crate::config::Config;
+        
+        let mut config = Config::default();
+        config.plugins.name.enabled = false;
+        
+        let executor = PluginExecutor::new(config);
+        let result = executor.generate_branch_name("Test Description", "default").unwrap();
+        
+        // Should use default slugify since plugin is disabled
+        assert_eq!(result, "test-description");
+    }
+
+    #[test]
+    fn test_plugin_executor_with_nonexistent_plugin() {
+        use crate::config::Config;
+        
+        let mut config = Config::default();
+        config.plugins_dir = "/nonexistent/path".to_string();
+        config.plugins.name.enabled = true;
+        config.plugins.name.command = "nonexistent.sh".to_string();
+        
+        let executor = PluginExecutor::new(config);
+        let result = executor.generate_branch_name("Test Description", "default").unwrap();
+        
+        // Should fall back to default slugify when plugin not found
+        assert_eq!(result, "test-description");
+    }
+
+    #[test]
+    fn test_plugin_executor_with_real_config_file() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a config file that matches the user's scenario
+        let config_content = r#"
+version = "1"
+
+[kiro]
+base_dir = "llm/kiro"
+templates_dir = "~/.config/agpod/templates"
+plugins_dir = "/tmp/test_plugins"
+template = "default"
+summary_lines = 3
+
+[kiro.plugins.name]
+enabled = true
+command = "name.sh"
+timeout_secs = 3
+pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
+"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Parse the config directly using toml
+        let root_config: agpod_core::Config = toml::from_str(&config_content).unwrap();
+        let kiro_config = root_config.kiro.unwrap();
+
+        // Verify the plugin configuration loaded correctly from TOML
+        assert_eq!(kiro_config.plugins.name.enabled, true);
+        assert_eq!(kiro_config.plugins.name.command, "name.sh");
+        assert_eq!(kiro_config.plugins.name.timeout_secs, 3);
+        assert_eq!(kiro_config.plugins_dir, "/tmp/test_plugins");
+    }
 }
