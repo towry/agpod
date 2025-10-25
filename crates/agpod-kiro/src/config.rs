@@ -469,9 +469,25 @@ pass_env = ["AGPOD_*", "GIT_*", "USER", "HOME"]
         assert_eq!(loaded_config.plugins.name.command, "name.sh");
         assert_eq!(loaded_config.plugins.name.timeout_secs, 5);
         assert_eq!(loaded_config.plugins.name.pass_env.len(), 4);
-        assert!(loaded_config.plugins.name.pass_env.contains(&"AGPOD_*".to_string()));
-        assert!(loaded_config.plugins.name.pass_env.contains(&"GIT_*".to_string()));
-        assert!(loaded_config.plugins.name.pass_env.contains(&"USER".to_string()));
-        assert!(loaded_config.plugins.name.pass_env.contains(&"HOME".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"AGPOD_*".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"GIT_*".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"USER".to_string()));
+        assert!(loaded_config
+            .plugins
+            .name
+            .pass_env
+            .contains(&"HOME".to_string()));
     }
 }

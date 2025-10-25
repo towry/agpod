@@ -32,8 +32,9 @@ if [[ -z "$desc" ]]; then
 fi
 
 # Simple slugify: convert to lowercase, replace spaces with hyphens
-# This is a portable version that works on all systems
-slug=$(echo "$desc" | tr '[:upper:]' '[:lower:]' | tr '[:space:]' '-' | tr -cd 'a-z0-9-')
+# Preserves non-ASCII characters (like Chinese, Japanese, Arabic, etc.)
+# Only removes problematic characters for branch names
+slug=$(echo "$desc" | tr '[:upper:]' '[:lower:]' | tr '[:space:]' '-' | sed -e 's/[^[:alnum:]-]//g')
 
 # Remove multiple consecutive hyphens and trim leading/trailing hyphens
 slug=$(echo "$slug" | sed -e 's/-\+/-/g' -e 's/^-//' -e 's/-$//')
@@ -42,6 +43,13 @@ slug=$(echo "$slug" | sed -e 's/-\+/-/g' -e 's/^-//' -e 's/-$//')
 if [[ -z "$slug" ]]; then
   echo ""
   exit 0
+fi
+
+# Limit length to 80 characters for reasonable branch names
+if [ ${#slug} -gt 80 ]; then
+  slug="${slug:0:80}"
+  # Remove trailing hyphen if truncation created one
+  slug=$(echo "$slug" | sed -e 's/-$//')
 fi
 
 # Output branch name (just the slug, no prefix or random suffix)

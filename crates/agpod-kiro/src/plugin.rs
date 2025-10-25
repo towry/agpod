@@ -186,13 +186,15 @@ mod tests {
     #[test]
     fn test_plugin_executor_with_disabled_plugin() {
         use crate::config::Config;
-        
+
         let mut config = Config::default();
         config.plugins.name.enabled = false;
-        
+
         let executor = PluginExecutor::new(config);
-        let result = executor.generate_branch_name("Test Description", "default").unwrap();
-        
+        let result = executor
+            .generate_branch_name("Test Description", "default")
+            .unwrap();
+
         // Should use default slugify since plugin is disabled
         assert_eq!(result, "test-description");
     }
@@ -200,15 +202,17 @@ mod tests {
     #[test]
     fn test_plugin_executor_with_nonexistent_plugin() {
         use crate::config::Config;
-        
+
         let mut config = Config::default();
         config.plugins_dir = "/nonexistent/path".to_string();
         config.plugins.name.enabled = true;
         config.plugins.name.command = "nonexistent.sh".to_string();
-        
+
         let executor = PluginExecutor::new(config);
-        let result = executor.generate_branch_name("Test Description", "default").unwrap();
-        
+        let result = executor
+            .generate_branch_name("Test Description", "default")
+            .unwrap();
+
         // Should fall back to default slugify when plugin not found
         assert_eq!(result, "test-description");
     }
