@@ -19,9 +19,8 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      agpod_tag_name: ${{ steps.pick_agpod.outputs.agpod_tag }}
+      agpod_tag_name: ${{ steps.release.outputs['crates--agpod--tag_name'] }}
+      agpod_release_created: ${{ steps.release.outputs['crates--agpod--release_created'] }}
     steps:
       - name: Run release-please
         id: release
@@ -29,33 +28,16 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pick agpod tag
-        id: pick_agpod
-        if: steps.release.outputs.releases_created == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const releasesStr = process.env.RELEASES || '[]';
-            console.log('Raw releases_created:', releasesStr);
-            const releases = JSON.parse(releasesStr);
-            console.log('Parsed releases:', JSON.stringify(releases, null, 2));
-            
-            if (!Array.isArray(releases)) {
-              console.log('releases_created is not an array, checking if it is an object');
-              core.setOutput('agpod_tag', '');
-              return;
-            }
-            
-            const agpod = releases.find(r => r.path === 'crates/agpod');
-            console.log('Found agpod release:', JSON.stringify(agpod, null, 2));
-            core.setOutput('agpod_tag', agpod ? agpod.tag_name : '');
-        env:
-          RELEASES: ${{ steps.release.outputs.releases_created }}
+      - name: Print release outputs for debugging
+        continue-on-error: true
+        run: |
+          echo "Release outputs:"
+          echo "${{ toJson(steps.release.outputs) }}"
 
   build_artifacts:
     name: Build Artifacts
     needs: release_please
-    if: ${{ needs.release_please.outputs.agpod_tag_name != '' }}
+    if: ${{ needs.release_please.outputs.agpod_release_created == 'true' }}
     uses: ./.github/workflows/build-artifacts.yml
     with:
       tag_name: ${{ needs.release_please.outputs.agpod_tag_name }}
