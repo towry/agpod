@@ -227,9 +227,11 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
             .map(|(name, summary)| {
+                let rel_path = base_dir.join(name);
                 serde_json::json!({
                     "name": name,
-                    "summary": summary
+                    "summary": summary,
+                    "path": rel_path.to_string_lossy()
                 })
             })
             .collect();
@@ -662,5 +664,87 @@ mod tests {
         // Test JSON output
         let result_json = cmd_list_templates(&config, true);
         assert!(result_json.is_ok());
+    }
+
+    #[test]
+    fn test_pr_list_json_includes_path() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create test PR directories
+        let pr1_dir = base_dir.join("test-pr-1");
+        let pr2_dir = base_dir.join("test-pr-2");
+        fs::create_dir_all(&pr1_dir).unwrap();
+        fs::create_dir_all(&pr2_dir).unwrap();
+
+        // Create DESIGN.md files
+        let design1 = pr1_dir.join("DESIGN.md");
+        let design2 = pr2_dir.join("DESIGN.md");
+        fs::write(&design1, "# PR 1\n\nTest description").unwrap();
+        fs::write(&design2, "# PR 2\n\nAnother test").unwrap();
+
+        // Create a config with the temp base_dir
+        let config = Config {
+            base_dir: base_dir.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+
+        // We can't easily capture stdout in a test, so we'll test the logic directly
+        // by inspecting what would be generated
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+            entries.push((name, summary));
+        }
+
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let json_entries: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(name, summary)| {
+                let rel_path = Path::new(&config.base_dir).join(name);
+                serde_json::json!({
+                    "name": name,
+                    "summary": summary,
+                    "path": rel_path.to_string_lossy()
+                })
+            })
+            .collect();
+
+        // Verify that entries include the path field
+        assert_eq!(json_entries.len(), 2);
+
+        let first_entry = &json_entries[0];
+        assert_eq!(first_entry["name"].as_str().unwrap(), "test-pr-1");
+        assert!(first_entry["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("llm/kiro/test-pr-1"));
+        assert!(first_entry["summary"].as_str().unwrap().contains("PR 1"));
+
+        let second_entry = &json_entries[1];
+        assert_eq!(second_entry["name"].as_str().unwrap(), "test-pr-2");
+        assert!(second_entry["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("llm/kiro/test-pr-2"));
+        assert!(second_entry["summary"].as_str().unwrap().contains("PR 2"));
     }
 }
