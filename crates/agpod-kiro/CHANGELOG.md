@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/towry/agpod/compare/agpod-kiro-v0.8.2...agpod-kiro-v0.9.0) (2025-11-24)
+
+
+### Features
+
+* **kiro:** add path field to pr-list JSON output ([#77](https://github.com/towry/agpod/issues/77)) ([f9c196d](https://github.com/towry/agpod/commit/f9c196d56f53c29f160cb5c326fafd621a782453))
+
 ## [0.8.2](https://github.com/towry/agpod/compare/agpod-kiro-v0.8.1...agpod-kiro-v0.8.2) (2025-10-25)
 
 
