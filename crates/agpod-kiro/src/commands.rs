@@ -218,25 +218,13 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         let summary = read_summary(&path, summary_lines);
 
         // Get the modification time of DESIGN.md
-        let design_path = path.join("DESIGN.md");
-        let mtime = if design_path.exists() {
-            fs::metadata(&design_path).and_then(|m| m.modified()).ok()
-        } else {
-            None
-        };
+        let mtime = get_design_mtime(&path);
 
         entries.push((name, summary, mtime));
     }
 
     // Sort by modification time (most recent first), fallback to name
-    entries.sort_by(|a, b| {
-        match (&a.2, &b.2) {
-            (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
-            (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
-            (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
-            (None, None) => a.0.cmp(&b.0),                      // Fallback to name
-        }
-    });
+    entries.sort_by(compare_by_mtime);
 
     if json {
         let json_entries: Vec<serde_json::Value> = entries
@@ -302,12 +290,7 @@ fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
         let summary = read_summary(&path, 1);
 
         // Get the modification time of DESIGN.md
-        let design_path = path.join("DESIGN.md");
-        let mtime = if design_path.exists() {
-            fs::metadata(&design_path).and_then(|m| m.modified()).ok()
-        } else {
-            None
-        };
+        let mtime = get_design_mtime(&path);
 
         entries.push((name, summary, mtime));
     }
@@ -318,14 +301,7 @@ fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
     }
 
     // Sort by modification time (most recent first), fallback to name
-    entries.sort_by(|a, b| {
-        match (&a.2, &b.2) {
-            (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
-            (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
-            (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
-            (None, None) => a.0.cmp(&b.0),                      // Fallback to name
-        }
-    });
+    entries.sort_by(compare_by_mtime);
 
     // Use fzf by default if available
     if is_fzf_available() {
@@ -355,6 +331,31 @@ fn read_summary(dir: &Path, max_lines: usize) -> String {
             lines.join(" ")
         }
         Err(_) => String::new(),
+    }
+}
+
+/// Get the modification time of DESIGN.md in a directory
+fn get_design_mtime(dir: &Path) -> Option<std::time::SystemTime> {
+    let design_path = dir.join("DESIGN.md");
+    if design_path.exists() {
+        fs::metadata(&design_path)
+            .and_then(|m| m.modified())
+            .ok()
+    } else {
+        None
+    }
+}
+
+/// Compare two entries by modification time (most recent first), then by name
+fn compare_by_mtime(
+    a: &(String, String, Option<std::time::SystemTime>),
+    b: &(String, String, Option<std::time::SystemTime>),
+) -> std::cmp::Ordering {
+    match (&a.2, &b.2) {
+        (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
+        (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
+        (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
+        (None, None) => a.0.cmp(&b.0),                      // Fallback to name
     }
 }
 
@@ -752,25 +753,13 @@ mod tests {
             let summary = read_summary(&path, 3);
 
             // Get the modification time of DESIGN.md
-            let design_path = path.join("DESIGN.md");
-            let mtime = if design_path.exists() {
-                fs::metadata(&design_path).and_then(|m| m.modified()).ok()
-            } else {
-                None
-            };
+            let mtime = get_design_mtime(&path);
 
             entries.push((name, summary, mtime));
         }
 
         // Sort by modification time (most recent first), fallback to name
-        entries.sort_by(|a, b| {
-            match (&a.2, &b.2) {
-                (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
-                (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
-                (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
-                (None, None) => a.0.cmp(&b.0),                      // Fallback to name
-            }
-        });
+        entries.sort_by(compare_by_mtime);
 
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
@@ -858,23 +847,13 @@ mod tests {
             }
             let summary = read_summary(&path, 3);
 
-            let design_path = path.join("DESIGN.md");
-            let mtime = if design_path.exists() {
-                fs::metadata(&design_path).and_then(|m| m.modified()).ok()
-            } else {
-                None
-            };
+            let mtime = get_design_mtime(&path);
 
             entries.push((name, summary, mtime));
         }
 
         // Sort by modification time (most recent first)
-        entries.sort_by(|a, b| match (&a.2, &b.2) {
-            (Some(time_a), Some(time_b)) => time_b.cmp(time_a),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.0.cmp(&b.0),
-        });
+        entries.sort_by(compare_by_mtime);
 
         // Verify the order: new-pr, middle-pr, old-pr, no-design-pr
         assert_eq!(entries.len(), 4);
