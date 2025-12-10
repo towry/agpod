@@ -217,16 +217,31 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         // Try to read DESIGN.md for summary
         let summary = read_summary(&path, summary_lines);
 
-        entries.push((name, summary));
+        // Get the modification time of DESIGN.md
+        let design_path = path.join("DESIGN.md");
+        let mtime = if design_path.exists() {
+            fs::metadata(&design_path).and_then(|m| m.modified()).ok()
+        } else {
+            None
+        };
+
+        entries.push((name, summary, mtime));
     }
 
-    // Sort by name
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    // Sort by modification time (most recent first), fallback to name
+    entries.sort_by(|a, b| {
+        match (&a.2, &b.2) {
+            (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
+            (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
+            (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
+            (None, None) => a.0.cmp(&b.0),                      // Fallback to name
+        }
+    });
 
     if json {
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
-            .map(|(name, summary)| {
+            .map(|(name, summary, _)| {
                 let rel_path = base_dir.join(name);
                 serde_json::json!({
                     "name": name,
@@ -240,7 +255,7 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         // Table output
         println!("{:<40} SUMMARY", "NAME");
         println!("{}", "-".repeat(80));
-        for (name, summary) in entries {
+        for (name, summary, _) in entries {
             let summary_display = if summary.is_empty() {
                 "(no DESIGN.md)"
             } else {
@@ -285,7 +300,16 @@ fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
         }
 
         let summary = read_summary(&path, 1);
-        entries.push((name, summary));
+
+        // Get the modification time of DESIGN.md
+        let design_path = path.join("DESIGN.md");
+        let mtime = if design_path.exists() {
+            fs::metadata(&design_path).and_then(|m| m.modified()).ok()
+        } else {
+            None
+        };
+
+        entries.push((name, summary, mtime));
     }
 
     if entries.is_empty() {
@@ -293,7 +317,15 @@ fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
         return Ok(());
     }
 
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    // Sort by modification time (most recent first), fallback to name
+    entries.sort_by(|a, b| {
+        match (&a.2, &b.2) {
+            (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
+            (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
+            (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
+            (None, None) => a.0.cmp(&b.0),                      // Fallback to name
+        }
+    });
 
     // Use fzf by default if available
     if is_fzf_available() {
@@ -334,7 +366,10 @@ fn is_fzf_available() -> bool {
         .unwrap_or(false)
 }
 
-fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<String> {
+fn select_with_fzf(
+    entries: &[(String, String, Option<std::time::SystemTime>)],
+    base_dir: &Path,
+) -> Result<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -361,7 +396,7 @@ fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<Stri
 
     {
         let stdin = child.stdin.as_mut().unwrap();
-        for (name, summary) in entries {
+        for (name, summary, _) in entries {
             let line = if summary.is_empty() {
                 format!("{}\n", name)
             } else {
@@ -382,10 +417,12 @@ fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<Stri
     }
 }
 
-fn select_with_dialoguer(entries: &[(String, String)]) -> Result<String> {
+fn select_with_dialoguer(
+    entries: &[(String, String, Option<std::time::SystemTime>)],
+) -> Result<String> {
     let items: Vec<String> = entries
         .iter()
-        .map(|(name, summary)| {
+        .map(|(name, summary, _)| {
             if summary.is_empty() {
                 name.clone()
             } else {
@@ -685,6 +722,8 @@ mod tests {
         let design1 = pr1_dir.join("DESIGN.md");
         let design2 = pr2_dir.join("DESIGN.md");
         fs::write(&design1, "# PR 1\n\nTest description").unwrap();
+        // Sleep briefly to ensure different mtimes
+        std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(&design2, "# PR 2\n\nAnother test").unwrap();
 
         // Create a config with the temp base_dir
@@ -711,14 +750,31 @@ mod tests {
                 continue;
             }
             let summary = read_summary(&path, 3);
-            entries.push((name, summary));
+
+            // Get the modification time of DESIGN.md
+            let design_path = path.join("DESIGN.md");
+            let mtime = if design_path.exists() {
+                fs::metadata(&design_path).and_then(|m| m.modified()).ok()
+            } else {
+                None
+            };
+
+            entries.push((name, summary, mtime));
         }
 
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort by modification time (most recent first), fallback to name
+        entries.sort_by(|a, b| {
+            match (&a.2, &b.2) {
+                (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
+                (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
+                (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
+                (None, None) => a.0.cmp(&b.0),                      // Fallback to name
+            }
+        });
 
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
-            .map(|(name, summary)| {
+            .map(|(name, summary, _)| {
                 let rel_path = Path::new(&config.base_dir).join(name);
                 serde_json::json!({
                     "name": name,
@@ -731,20 +787,106 @@ mod tests {
         // Verify that entries include the path field
         assert_eq!(json_entries.len(), 2);
 
+        // The first entry should be test-pr-2 (most recently modified)
         let first_entry = &json_entries[0];
-        assert_eq!(first_entry["name"].as_str().unwrap(), "test-pr-1");
+        assert_eq!(first_entry["name"].as_str().unwrap(), "test-pr-2");
         assert!(first_entry["path"]
             .as_str()
             .unwrap()
-            .ends_with("llm/kiro/test-pr-1"));
-        assert!(first_entry["summary"].as_str().unwrap().contains("PR 1"));
+            .ends_with("llm/kiro/test-pr-2"));
+        assert!(first_entry["summary"].as_str().unwrap().contains("PR 2"));
 
+        // The second entry should be test-pr-1
         let second_entry = &json_entries[1];
-        assert_eq!(second_entry["name"].as_str().unwrap(), "test-pr-2");
+        assert_eq!(second_entry["name"].as_str().unwrap(), "test-pr-1");
         assert!(second_entry["path"]
             .as_str()
             .unwrap()
-            .ends_with("llm/kiro/test-pr-2"));
-        assert!(second_entry["summary"].as_str().unwrap().contains("PR 2"));
+            .ends_with("llm/kiro/test-pr-1"));
+        assert!(second_entry["summary"].as_str().unwrap().contains("PR 1"));
+    }
+
+    #[test]
+    fn test_pr_list_sorts_by_mtime() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create test PR directories in specific order
+        let pr_old = base_dir.join("old-pr");
+        let pr_new = base_dir.join("new-pr");
+        let pr_middle = base_dir.join("middle-pr");
+        let pr_no_design = base_dir.join("no-design-pr");
+
+        fs::create_dir_all(&pr_old).unwrap();
+        fs::create_dir_all(&pr_new).unwrap();
+        fs::create_dir_all(&pr_middle).unwrap();
+        fs::create_dir_all(&pr_no_design).unwrap();
+
+        // Create DESIGN.md files with different modification times
+        // Old PR - created first
+        fs::write(pr_old.join("DESIGN.md"), "# Old PR").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Middle PR - created second
+        fs::write(pr_middle.join("DESIGN.md"), "# Middle PR").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // New PR - created last (most recent)
+        fs::write(pr_new.join("DESIGN.md"), "# New PR").unwrap();
+
+        // No DESIGN.md for pr_no_design - should be at the end
+
+        // Test the logic directly
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+
+            let design_path = path.join("DESIGN.md");
+            let mtime = if design_path.exists() {
+                fs::metadata(&design_path).and_then(|m| m.modified()).ok()
+            } else {
+                None
+            };
+
+            entries.push((name, summary, mtime));
+        }
+
+        // Sort by modification time (most recent first)
+        entries.sort_by(|a, b| match (&a.2, &b.2) {
+            (Some(time_a), Some(time_b)) => time_b.cmp(time_a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.0.cmp(&b.0),
+        });
+
+        // Verify the order: new-pr, middle-pr, old-pr, no-design-pr
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].0, "new-pr");
+        assert_eq!(entries[1].0, "middle-pr");
+        assert_eq!(entries[2].0, "old-pr");
+        assert_eq!(entries[3].0, "no-design-pr");
+
+        // Verify that entries with DESIGN.md come before those without
+        assert!(entries[0].2.is_some());
+        assert!(entries[1].2.is_some());
+        assert!(entries[2].2.is_some());
+        assert!(entries[3].2.is_none());
     }
 }
