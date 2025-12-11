@@ -5,8 +5,10 @@ use crate::git::GitHelper;
 use crate::plugin::PluginExecutor;
 use crate::template::{TemplateContext, TemplateRenderer};
 use anyhow::Result;
+use chrono::{DateTime, Local};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub fn execute(args: KiroArgs) -> Result<()> {
     // Check if it's an init command first
@@ -217,16 +219,19 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         // Try to read DESIGN.md for summary
         let summary = read_summary(&path, summary_lines);
 
-        entries.push((name, summary));
+        // Get the modification time of DESIGN.md
+        let mtime = get_design_mtime(&path);
+
+        entries.push((name, summary, mtime));
     }
 
-    // Sort by name
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    // Sort by modification time (most recent first), fallback to name
+    entries.sort_by(compare_by_mtime);
 
     if json {
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
-            .map(|(name, summary)| {
+            .map(|(name, summary, _)| {
                 let rel_path = base_dir.join(name);
                 serde_json::json!({
                     "name": name,
@@ -240,13 +245,22 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         // Table output
         println!("{:<40} SUMMARY", "NAME");
         println!("{}", "-".repeat(80));
-        for (name, summary) in entries {
+        for (name, summary, mtime) in entries {
+            // Format the display name with relative time if available
+            let display_name = if let Some(time) = mtime {
+                let formatted_name = format_name_for_display(&name);
+                let relative_time = format_relative_time(time);
+                format!("{} [{}]", formatted_name, relative_time)
+            } else {
+                format_name_for_display(&name)
+            };
+
             let summary_display = if summary.is_empty() {
                 "(no DESIGN.md)"
             } else {
                 &summary
             };
-            println!("{:<40} {}", name, summary_display);
+            println!("{:<40} {}", display_name, summary_display);
         }
     }
 
@@ -285,7 +299,11 @@ fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
         }
 
         let summary = read_summary(&path, 1);
-        entries.push((name, summary));
+
+        // Get the modification time of DESIGN.md
+        let mtime = get_design_mtime(&path);
+
+        entries.push((name, summary, mtime));
     }
 
     if entries.is_empty() {
@@ -293,7 +311,8 @@ fn cmd_pr(config: &Config, _use_fzf: bool, output_format: &str) -> Result<()> {
         return Ok(());
     }
 
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    // Sort by modification time (most recent first), fallback to name
+    entries.sort_by(compare_by_mtime);
 
     // Use fzf by default if available
     if is_fzf_available() {
@@ -326,6 +345,108 @@ fn read_summary(dir: &Path, max_lines: usize) -> String {
     }
 }
 
+/// Get the modification time of DESIGN.md in a directory
+fn get_design_mtime(dir: &Path) -> Option<std::time::SystemTime> {
+    let design_path = dir.join("DESIGN.md");
+    if design_path.exists() {
+        fs::metadata(&design_path).and_then(|m| m.modified()).ok()
+    } else {
+        None
+    }
+}
+
+/// Compare two entries by modification time (most recent first), then by name
+fn compare_by_mtime(
+    a: &(String, String, Option<std::time::SystemTime>),
+    b: &(String, String, Option<std::time::SystemTime>),
+) -> std::cmp::Ordering {
+    match (&a.2, &b.2) {
+        (Some(time_a), Some(time_b)) => time_b.cmp(time_a), // Most recent first
+        (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
+        (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
+        (None, None) => a.0.cmp(&b.0),                      // Fallback to name
+    }
+}
+
+/// Format a kebab-case name to Title Case with spaces
+/// Example: "recently-modified-pr" -> "Recently modified pr"
+fn format_name_for_display(name: &str) -> String {
+    let words: Vec<&str> = name.split('-').collect();
+    if words.is_empty() {
+        return name.to_string();
+    }
+
+    // Capitalize first word, lowercase rest
+    let mut result = String::new();
+    for (i, word) in words.iter().enumerate() {
+        if i == 0 {
+            // Capitalize first letter of first word
+            result.push_str(
+                &word
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default(),
+            );
+            result.push_str(&word[1..].to_lowercase());
+        } else {
+            result.push(' ');
+            result.push_str(&word.to_lowercase());
+        }
+    }
+    result
+}
+
+/// Format a relative time string from a SystemTime
+/// Example: "3min ago", "2 hours ago", "yesterday", "3 days ago"
+fn format_relative_time(time: SystemTime) -> String {
+    let datetime: DateTime<Local> = time.into();
+    let now = Local::now();
+    let duration = now.signed_duration_since(datetime);
+
+    let seconds = duration.num_seconds();
+    let minutes = duration.num_minutes();
+    let hours = duration.num_hours();
+    let days = duration.num_days();
+
+    if seconds < 60 {
+        "just now".to_string()
+    } else if minutes < 60 {
+        format!("{}min ago", minutes)
+    } else if hours < 24 {
+        if hours == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{} hours ago", hours)
+        }
+    } else if days == 1 {
+        "yesterday".to_string()
+    } else if days < 7 {
+        format!("{} days ago", days)
+    } else if days < 30 {
+        let weeks = days / 7;
+        if weeks == 1 {
+            "1 week ago".to_string()
+        } else {
+            format!("{} weeks ago", weeks)
+        }
+    } else if days < 365 {
+        let months = days / 30;
+        if months == 1 {
+            "1 month ago".to_string()
+        } else {
+            format!("{} months ago", months)
+        }
+    } else {
+        let years = days / 365;
+        if years == 1 {
+            "1 year ago".to_string()
+        } else {
+            format!("{} years ago", years)
+        }
+    }
+}
+
 fn is_fzf_available() -> bool {
     std::process::Command::new("fzf")
         .arg("--version")
@@ -334,7 +455,10 @@ fn is_fzf_available() -> bool {
         .unwrap_or(false)
 }
 
-fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<String> {
+fn select_with_fzf(
+    entries: &[(String, String, Option<std::time::SystemTime>)],
+    base_dir: &Path,
+) -> Result<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -346,9 +470,12 @@ fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<Stri
         .arg("--reverse")
         .arg("--prompt=Select PR: ")
         .arg("--border")
-        .arg("--info=inline");
+        .arg("--info=inline")
+        .arg("--delimiter=\t")
+        .arg("--with-nth=2"); // Show only field 2 (formatted name)
 
     // Add preview to show DESIGN.md content from the selected PR directory
+    // {1} refers to the first field (original directory name)
     let preview_cmd = format!(
         "test -f {}/{{1}}/DESIGN.md && cat {}/{{1}}/DESIGN.md || echo 'No DESIGN.md found'",
         base_dir.display(),
@@ -361,12 +488,19 @@ fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<Stri
 
     {
         let stdin = child.stdin.as_mut().unwrap();
-        for (name, summary) in entries {
-            let line = if summary.is_empty() {
-                format!("{}\n", name)
+        for (name, _summary, mtime) in entries {
+            // Format: "original-name<TAB>Formatted name [timestamp]"
+            // Field 1 (original name) is hidden but used for preview and selection
+            // Field 2 (formatted name) is displayed
+            let formatted_name = if let Some(time) = mtime {
+                let display = format_name_for_display(name);
+                let relative_time = format_relative_time(*time);
+                format!("{} [{}]", display, relative_time)
             } else {
-                format!("{} - {}\n", name, summary)
+                format_name_for_display(name)
             };
+
+            let line = format!("{}\t{}\n", name, formatted_name);
             stdin.write_all(line.as_bytes())?;
         }
     }
@@ -375,21 +509,28 @@ fn select_with_fzf(entries: &[(String, String)], base_dir: &Path) -> Result<Stri
 
     if output.status.success() {
         let selected = String::from_utf8_lossy(&output.stdout);
-        let name = selected.split_whitespace().next().unwrap_or("").trim();
+        // fzf returns the full line, extract the first field (original name)
+        let name = selected.split('\t').next().unwrap_or("").trim();
         Ok(name.to_string())
     } else {
         std::process::exit(1);
     }
 }
 
-fn select_with_dialoguer(entries: &[(String, String)]) -> Result<String> {
+fn select_with_dialoguer(
+    entries: &[(String, String, Option<std::time::SystemTime>)],
+) -> Result<String> {
     let items: Vec<String> = entries
         .iter()
-        .map(|(name, summary)| {
-            if summary.is_empty() {
-                name.clone()
+        .map(|(name, _summary, mtime)| {
+            // Format same as pr-list and fzf: "Formatted name [timestamp]"
+            // No summary shown here to match fzf behavior
+            if let Some(time) = mtime {
+                let display = format_name_for_display(name);
+                let relative_time = format_relative_time(*time);
+                format!("{} [{}]", display, relative_time)
             } else {
-                format!("{} - {}", name, summary)
+                format_name_for_display(name)
             }
         })
         .collect();
@@ -685,6 +826,8 @@ mod tests {
         let design1 = pr1_dir.join("DESIGN.md");
         let design2 = pr2_dir.join("DESIGN.md");
         fs::write(&design1, "# PR 1\n\nTest description").unwrap();
+        // Sleep briefly to ensure different mtimes
+        std::thread::sleep(std::time::Duration::from_millis(10));
         fs::write(&design2, "# PR 2\n\nAnother test").unwrap();
 
         // Create a config with the temp base_dir
@@ -711,14 +854,19 @@ mod tests {
                 continue;
             }
             let summary = read_summary(&path, 3);
-            entries.push((name, summary));
+
+            // Get the modification time of DESIGN.md
+            let mtime = get_design_mtime(&path);
+
+            entries.push((name, summary, mtime));
         }
 
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort by modification time (most recent first), fallback to name
+        entries.sort_by(compare_by_mtime);
 
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
-            .map(|(name, summary)| {
+            .map(|(name, summary, _)| {
                 let rel_path = Path::new(&config.base_dir).join(name);
                 serde_json::json!({
                     "name": name,
@@ -731,20 +879,142 @@ mod tests {
         // Verify that entries include the path field
         assert_eq!(json_entries.len(), 2);
 
+        // The first entry should be test-pr-2 (most recently modified)
         let first_entry = &json_entries[0];
-        assert_eq!(first_entry["name"].as_str().unwrap(), "test-pr-1");
+        assert_eq!(first_entry["name"].as_str().unwrap(), "test-pr-2");
         assert!(first_entry["path"]
             .as_str()
             .unwrap()
-            .ends_with("llm/kiro/test-pr-1"));
-        assert!(first_entry["summary"].as_str().unwrap().contains("PR 1"));
+            .ends_with("llm/kiro/test-pr-2"));
+        assert!(first_entry["summary"].as_str().unwrap().contains("PR 2"));
 
+        // The second entry should be test-pr-1
         let second_entry = &json_entries[1];
-        assert_eq!(second_entry["name"].as_str().unwrap(), "test-pr-2");
+        assert_eq!(second_entry["name"].as_str().unwrap(), "test-pr-1");
         assert!(second_entry["path"]
             .as_str()
             .unwrap()
-            .ends_with("llm/kiro/test-pr-2"));
-        assert!(second_entry["summary"].as_str().unwrap().contains("PR 2"));
+            .ends_with("llm/kiro/test-pr-1"));
+        assert!(second_entry["summary"].as_str().unwrap().contains("PR 1"));
+    }
+
+    #[test]
+    fn test_pr_list_sorts_by_mtime() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create test PR directories in specific order
+        let pr_old = base_dir.join("old-pr");
+        let pr_new = base_dir.join("new-pr");
+        let pr_middle = base_dir.join("middle-pr");
+        let pr_no_design = base_dir.join("no-design-pr");
+
+        fs::create_dir_all(&pr_old).unwrap();
+        fs::create_dir_all(&pr_new).unwrap();
+        fs::create_dir_all(&pr_middle).unwrap();
+        fs::create_dir_all(&pr_no_design).unwrap();
+
+        // Create DESIGN.md files with different modification times
+        // Old PR - created first
+        fs::write(pr_old.join("DESIGN.md"), "# Old PR").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Middle PR - created second
+        fs::write(pr_middle.join("DESIGN.md"), "# Middle PR").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // New PR - created last (most recent)
+        fs::write(pr_new.join("DESIGN.md"), "# New PR").unwrap();
+
+        // No DESIGN.md for pr_no_design - should be at the end
+
+        // Test the logic directly
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+
+            let mtime = get_design_mtime(&path);
+
+            entries.push((name, summary, mtime));
+        }
+
+        // Sort by modification time (most recent first)
+        entries.sort_by(compare_by_mtime);
+
+        // Verify the order: new-pr, middle-pr, old-pr, no-design-pr
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].0, "new-pr");
+        assert_eq!(entries[1].0, "middle-pr");
+        assert_eq!(entries[2].0, "old-pr");
+        assert_eq!(entries[3].0, "no-design-pr");
+
+        // Verify that entries with DESIGN.md come before those without
+        assert!(entries[0].2.is_some());
+        assert!(entries[1].2.is_some());
+        assert!(entries[2].2.is_some());
+        assert!(entries[3].2.is_none());
+    }
+
+    #[test]
+    fn test_format_name_for_display() {
+        assert_eq!(
+            format_name_for_display("recently-modified-pr"),
+            "Recently modified pr"
+        );
+        assert_eq!(format_name_for_display("pr-5-days-ago"), "Pr 5 days ago");
+        assert_eq!(format_name_for_display("single"), "Single");
+        assert_eq!(
+            format_name_for_display("multiple-word-name-here"),
+            "Multiple word name here"
+        );
+    }
+
+    #[test]
+    fn test_format_relative_time() {
+        use std::time::Duration;
+
+        let now = SystemTime::now();
+
+        // Just now
+        let time = now - Duration::from_secs(30);
+        assert_eq!(format_relative_time(time), "just now");
+
+        // Minutes ago
+        let time = now - Duration::from_secs(3 * 60);
+        assert_eq!(format_relative_time(time), "3min ago");
+
+        let time = now - Duration::from_secs(30 * 60);
+        assert_eq!(format_relative_time(time), "30min ago");
+
+        // Hours ago
+        let time = now - Duration::from_secs(2 * 3600);
+        assert_eq!(format_relative_time(time), "2 hours ago");
+
+        let time = now - Duration::from_secs(3600);
+        assert_eq!(format_relative_time(time), "1 hour ago");
+
+        // Days ago
+        let time = now - Duration::from_secs(25 * 3600);
+        assert_eq!(format_relative_time(time), "yesterday");
+
+        let time = now - Duration::from_secs(5 * 24 * 3600);
+        assert_eq!(format_relative_time(time), "5 days ago");
     }
 }
