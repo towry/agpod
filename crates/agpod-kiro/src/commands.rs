@@ -1012,7 +1012,7 @@ mod tests {
         let time = now - Duration::from_secs(2 * 3600);
         assert_eq!(format_relative_time(time), "2 hours ago");
 
-        let time = now - Duration::from_secs(1 * 3600);
+        let time = now - Duration::from_secs(3600);
         assert_eq!(format_relative_time(time), "1 hour ago");
 
         // Days ago
