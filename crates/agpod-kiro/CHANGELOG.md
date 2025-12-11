@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/towry/agpod/compare/agpod-kiro-v0.9.0...agpod-kiro-v0.10.0) (2025-12-11)
+
+
+### Features
+
+* Sort PR list by DESIGN.md modification time with humanized display ([#82](https://github.com/towry/agpod/issues/82)) ([44de91f](https://github.com/towry/agpod/commit/44de91f78f6cbdb50c81912de0bcce62b6898807))
+
 ## [0.9.0](https://github.com/towry/agpod/compare/agpod-kiro-v0.8.2...agpod-kiro-v0.9.0) (2025-11-24)
 
 
