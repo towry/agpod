@@ -5,8 +5,10 @@ use crate::git::GitHelper;
 use crate::plugin::PluginExecutor;
 use crate::template::{TemplateContext, TemplateRenderer};
 use anyhow::Result;
+use chrono::{DateTime, Local};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub fn execute(args: KiroArgs) -> Result<()> {
     // Check if it's an init command first
@@ -243,13 +245,22 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
         // Table output
         println!("{:<40} SUMMARY", "NAME");
         println!("{}", "-".repeat(80));
-        for (name, summary, _) in entries {
+        for (name, summary, mtime) in entries {
+            // Format the display name with relative time if available
+            let display_name = if let Some(time) = mtime {
+                let formatted_name = format_name_for_display(&name);
+                let relative_time = format_relative_time(time);
+                format!("{} [{}]", formatted_name, relative_time)
+            } else {
+                format_name_for_display(&name)
+            };
+
             let summary_display = if summary.is_empty() {
                 "(no DESIGN.md)"
             } else {
                 &summary
             };
-            println!("{:<40} {}", name, summary_display);
+            println!("{:<40} {}", display_name, summary_display);
         }
     }
 
@@ -338,9 +349,7 @@ fn read_summary(dir: &Path, max_lines: usize) -> String {
 fn get_design_mtime(dir: &Path) -> Option<std::time::SystemTime> {
     let design_path = dir.join("DESIGN.md");
     if design_path.exists() {
-        fs::metadata(&design_path)
-            .and_then(|m| m.modified())
-            .ok()
+        fs::metadata(&design_path).and_then(|m| m.modified()).ok()
     } else {
         None
     }
@@ -356,6 +365,85 @@ fn compare_by_mtime(
         (Some(_), None) => std::cmp::Ordering::Less,        // Files with mtime first
         (None, Some(_)) => std::cmp::Ordering::Greater,     // Files without mtime last
         (None, None) => a.0.cmp(&b.0),                      // Fallback to name
+    }
+}
+
+/// Format a kebab-case name to Title Case with spaces
+/// Example: "recently-modified-pr" -> "Recently modified pr"
+fn format_name_for_display(name: &str) -> String {
+    let words: Vec<&str> = name.split('-').collect();
+    if words.is_empty() {
+        return name.to_string();
+    }
+
+    // Capitalize first word, lowercase rest
+    let mut result = String::new();
+    for (i, word) in words.iter().enumerate() {
+        if i == 0 {
+            // Capitalize first letter of first word
+            result.push_str(
+                &word
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default(),
+            );
+            result.push_str(&word[1..].to_lowercase());
+        } else {
+            result.push(' ');
+            result.push_str(&word.to_lowercase());
+        }
+    }
+    result
+}
+
+/// Format a relative time string from a SystemTime
+/// Example: "3min ago", "2 hours ago", "yesterday", "3 days ago"
+fn format_relative_time(time: SystemTime) -> String {
+    let datetime: DateTime<Local> = time.into();
+    let now = Local::now();
+    let duration = now.signed_duration_since(datetime);
+
+    let seconds = duration.num_seconds();
+    let minutes = duration.num_minutes();
+    let hours = duration.num_hours();
+    let days = duration.num_days();
+
+    if seconds < 60 {
+        "just now".to_string()
+    } else if minutes < 60 {
+        format!("{}min ago", minutes)
+    } else if hours < 24 {
+        if hours == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{} hours ago", hours)
+        }
+    } else if days == 1 {
+        "yesterday".to_string()
+    } else if days < 7 {
+        format!("{} days ago", days)
+    } else if days < 30 {
+        let weeks = days / 7;
+        if weeks == 1 {
+            "1 week ago".to_string()
+        } else {
+            format!("{} weeks ago", weeks)
+        }
+    } else if days < 365 {
+        let months = days / 30;
+        if months == 1 {
+            "1 month ago".to_string()
+        } else {
+            format!("{} months ago", months)
+        }
+    } else {
+        let years = days / 365;
+        if years == 1 {
+            "1 year ago".to_string()
+        } else {
+            format!("{} years ago", years)
+        }
     }
 }
 
@@ -397,11 +485,22 @@ fn select_with_fzf(
 
     {
         let stdin = child.stdin.as_mut().unwrap();
-        for (name, summary, _) in entries {
-            let line = if summary.is_empty() {
-                format!("{}\n", name)
+        for (name, summary, mtime) in entries {
+            // For fzf, we need to keep the original name as the first word for parsing
+            // but show the formatted display name
+            let formatted_name = if let Some(time) = mtime {
+                let display = format_name_for_display(name);
+                let relative_time = format_relative_time(*time);
+                format!("{} [{}]", display, relative_time)
             } else {
-                format!("{} - {}\n", name, summary)
+                format_name_for_display(name)
+            };
+
+            let line = if summary.is_empty() {
+                // Keep original name first for parsing, then show formatted version
+                format!("{} {}\n", name, formatted_name)
+            } else {
+                format!("{} {} - {}\n", name, formatted_name, summary)
             };
             stdin.write_all(line.as_bytes())?;
         }
@@ -411,6 +510,7 @@ fn select_with_fzf(
 
     if output.status.success() {
         let selected = String::from_utf8_lossy(&output.stdout);
+        // Extract the original directory name (first word)
         let name = selected.split_whitespace().next().unwrap_or("").trim();
         Ok(name.to_string())
     } else {
@@ -423,11 +523,19 @@ fn select_with_dialoguer(
 ) -> Result<String> {
     let items: Vec<String> = entries
         .iter()
-        .map(|(name, summary, _)| {
-            if summary.is_empty() {
-                name.clone()
+        .map(|(name, summary, mtime)| {
+            let formatted_name = if let Some(time) = mtime {
+                let display = format_name_for_display(name);
+                let relative_time = format_relative_time(*time);
+                format!("{} [{}]", display, relative_time)
             } else {
-                format!("{} - {}", name, summary)
+                format_name_for_display(name)
+            };
+
+            if summary.is_empty() {
+                formatted_name
+            } else {
+                format!("{} - {}", formatted_name, summary)
             }
         })
         .collect();
@@ -867,5 +975,51 @@ mod tests {
         assert!(entries[1].2.is_some());
         assert!(entries[2].2.is_some());
         assert!(entries[3].2.is_none());
+    }
+
+    #[test]
+    fn test_format_name_for_display() {
+        assert_eq!(
+            format_name_for_display("recently-modified-pr"),
+            "Recently modified pr"
+        );
+        assert_eq!(format_name_for_display("pr-5-days-ago"), "Pr 5 days ago");
+        assert_eq!(format_name_for_display("single"), "Single");
+        assert_eq!(
+            format_name_for_display("multiple-word-name-here"),
+            "Multiple word name here"
+        );
+    }
+
+    #[test]
+    fn test_format_relative_time() {
+        use std::time::Duration;
+
+        let now = SystemTime::now();
+
+        // Just now
+        let time = now - Duration::from_secs(30);
+        assert_eq!(format_relative_time(time), "just now");
+
+        // Minutes ago
+        let time = now - Duration::from_secs(3 * 60);
+        assert_eq!(format_relative_time(time), "3min ago");
+
+        let time = now - Duration::from_secs(30 * 60);
+        assert_eq!(format_relative_time(time), "30min ago");
+
+        // Hours ago
+        let time = now - Duration::from_secs(2 * 3600);
+        assert_eq!(format_relative_time(time), "2 hours ago");
+
+        let time = now - Duration::from_secs(1 * 3600);
+        assert_eq!(format_relative_time(time), "1 hour ago");
+
+        // Days ago
+        let time = now - Duration::from_secs(25 * 3600);
+        assert_eq!(format_relative_time(time), "yesterday");
+
+        let time = now - Duration::from_secs(5 * 24 * 3600);
+        assert_eq!(format_relative_time(time), "5 days ago");
     }
 }
