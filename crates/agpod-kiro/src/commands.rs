@@ -485,9 +485,9 @@ fn select_with_fzf(
 
     {
         let stdin = child.stdin.as_mut().unwrap();
-        for (name, summary, mtime) in entries {
+        for (name, _summary, mtime) in entries {
             // For fzf, we need to keep the original name as the first word for parsing
-            // but show the formatted display name
+            // but show the formatted display name (without summary, since preview shows full content)
             let formatted_name = if let Some(time) = mtime {
                 let display = format_name_for_display(name);
                 let relative_time = format_relative_time(*time);
@@ -496,12 +496,9 @@ fn select_with_fzf(
                 format_name_for_display(name)
             };
 
-            let line = if summary.is_empty() {
-                // Keep original name first for parsing, then show formatted version
-                format!("{} {}\n", name, formatted_name)
-            } else {
-                format!("{} {} - {}\n", name, formatted_name, summary)
-            };
+            // Format: "original-name Formatted name [timestamp]"
+            // No summary shown here since fzf preview shows full DESIGN.md
+            let line = format!("{} {}\n", name, formatted_name);
             stdin.write_all(line.as_bytes())?;
         }
     }
@@ -523,19 +520,15 @@ fn select_with_dialoguer(
 ) -> Result<String> {
     let items: Vec<String> = entries
         .iter()
-        .map(|(name, summary, mtime)| {
-            let formatted_name = if let Some(time) = mtime {
+        .map(|(name, _summary, mtime)| {
+            // Format same as pr-list and fzf: "Formatted name [timestamp]"
+            // No summary shown here to match fzf behavior
+            if let Some(time) = mtime {
                 let display = format_name_for_display(name);
                 let relative_time = format_relative_time(*time);
                 format!("{} [{}]", display, relative_time)
             } else {
                 format_name_for_display(name)
-            };
-
-            if summary.is_empty() {
-                formatted_name
-            } else {
-                format!("{} - {}", formatted_name, summary)
             }
         })
         .collect();
