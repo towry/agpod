@@ -470,9 +470,12 @@ fn select_with_fzf(
         .arg("--reverse")
         .arg("--prompt=Select PR: ")
         .arg("--border")
-        .arg("--info=inline");
+        .arg("--info=inline")
+        .arg("--delimiter=\t")
+        .arg("--with-nth=2"); // Show only field 2 (formatted name)
 
     // Add preview to show DESIGN.md content from the selected PR directory
+    // {1} refers to the first field (original directory name)
     let preview_cmd = format!(
         "test -f {}/{{1}}/DESIGN.md && cat {}/{{1}}/DESIGN.md || echo 'No DESIGN.md found'",
         base_dir.display(),
@@ -486,8 +489,9 @@ fn select_with_fzf(
     {
         let stdin = child.stdin.as_mut().unwrap();
         for (name, _summary, mtime) in entries {
-            // For fzf, we need to keep the original name as the first word for parsing
-            // but show the formatted display name (without summary, since preview shows full content)
+            // Format: "original-name<TAB>Formatted name [timestamp]"
+            // Field 1 (original name) is hidden but used for preview and selection
+            // Field 2 (formatted name) is displayed
             let formatted_name = if let Some(time) = mtime {
                 let display = format_name_for_display(name);
                 let relative_time = format_relative_time(*time);
@@ -496,9 +500,7 @@ fn select_with_fzf(
                 format_name_for_display(name)
             };
 
-            // Format: "original-name Formatted name [timestamp]"
-            // No summary shown here since fzf preview shows full DESIGN.md
-            let line = format!("{} {}\n", name, formatted_name);
+            let line = format!("{}\t{}\n", name, formatted_name);
             stdin.write_all(line.as_bytes())?;
         }
     }
@@ -507,8 +509,8 @@ fn select_with_fzf(
 
     if output.status.success() {
         let selected = String::from_utf8_lossy(&output.stdout);
-        // Extract the original directory name (first word)
-        let name = selected.split_whitespace().next().unwrap_or("").trim();
+        // fzf returns the full line, extract the first field (original name)
+        let name = selected.split('\t').next().unwrap_or("").trim();
         Ok(name.to_string())
     } else {
         std::process::exit(1);
