@@ -231,13 +231,20 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
     if json {
         let json_entries: Vec<serde_json::Value> = entries
             .iter()
-            .map(|(name, summary, _)| {
+            .map(|(name, summary, mtime)| {
                 let rel_path = base_dir.join(name);
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "name": name,
                     "summary": summary,
                     "path": rel_path.to_string_lossy()
-                })
+                });
+
+                // Add date field if modification time is available
+                if let Some(time) = mtime {
+                    entry["date"] = serde_json::json!(format_datetime(*time));
+                }
+
+                entry
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json_entries)?);
@@ -445,6 +452,13 @@ fn format_relative_time(time: SystemTime) -> String {
             format!("{} years ago", years)
         }
     }
+}
+
+/// Format a SystemTime to "YYYY-MM-DD HH:MM" format
+/// Example: "2025-10-10 10:10"
+fn format_datetime(time: SystemTime) -> String {
+    let datetime: DateTime<Local> = time.into();
+    datetime.format("%Y-%m-%d %H:%M").to_string()
 }
 
 fn is_fzf_available() -> bool {
@@ -1016,5 +1030,125 @@ mod tests {
 
         let time = now - Duration::from_secs(5 * 24 * 3600);
         assert_eq!(format_relative_time(time), "5 days ago");
+    }
+
+    #[test]
+    fn test_format_datetime() {
+        use std::time::Duration;
+
+        let now = SystemTime::now();
+        let formatted = format_datetime(now);
+
+        // Verify format matches "YYYY-MM-DD HH:MM" pattern
+        assert!(formatted.len() == 16, "Expected format: YYYY-MM-DD HH:MM");
+        assert_eq!(&formatted[4..5], "-");
+        assert_eq!(&formatted[7..8], "-");
+        assert_eq!(&formatted[10..11], " ");
+        assert_eq!(&formatted[13..14], ":");
+
+        // Test with a specific known time
+        let specific_time = now - Duration::from_secs(3600); // 1 hour ago
+        let formatted_specific = format_datetime(specific_time);
+        assert!(formatted_specific.len() == 16);
+    }
+
+    #[test]
+    fn test_pr_list_json_includes_date() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create test PR directories
+        let pr1_dir = base_dir.join("test-pr-with-date");
+        let pr2_dir = base_dir.join("test-pr-no-design");
+        fs::create_dir_all(&pr1_dir).unwrap();
+        fs::create_dir_all(&pr2_dir).unwrap();
+
+        // Create DESIGN.md for first PR only
+        let design1 = pr1_dir.join("DESIGN.md");
+        fs::write(&design1, "# PR with date\n\nTest description").unwrap();
+
+        // Create a config with the temp base_dir
+        let config = Config {
+            base_dir: base_dir.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+
+        // Test the logic directly by replicating cmd_pr_list JSON generation
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+            let mtime = get_design_mtime(&path);
+            entries.push((name, summary, mtime));
+        }
+
+        entries.sort_by(compare_by_mtime);
+
+        let json_entries: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(name, summary, mtime)| {
+                let rel_path = Path::new(&config.base_dir).join(name);
+                let mut entry = serde_json::json!({
+                    "name": name,
+                    "summary": summary,
+                    "path": rel_path.to_string_lossy()
+                });
+
+                if let Some(time) = mtime {
+                    entry["date"] = serde_json::json!(format_datetime(*time));
+                }
+
+                entry
+            })
+            .collect();
+
+        // Verify entries structure
+        assert_eq!(json_entries.len(), 2);
+
+        // Find the entry with DESIGN.md
+        let pr_with_date = json_entries
+            .iter()
+            .find(|e| e["name"].as_str().unwrap() == "test-pr-with-date")
+            .unwrap();
+
+        // Verify it has the date field
+        assert!(
+            pr_with_date.get("date").is_some(),
+            "Date field should be present"
+        );
+        let date_str = pr_with_date["date"].as_str().unwrap();
+        assert_eq!(date_str.len(), 16, "Date format should be YYYY-MM-DD HH:MM");
+        assert_eq!(&date_str[4..5], "-");
+        assert_eq!(&date_str[7..8], "-");
+        assert_eq!(&date_str[10..11], " ");
+        assert_eq!(&date_str[13..14], ":");
+
+        // Find the entry without DESIGN.md
+        let pr_no_design = json_entries
+            .iter()
+            .find(|e| e["name"].as_str().unwrap() == "test-pr-no-design")
+            .unwrap();
+
+        // Verify it does NOT have the date field
+        assert!(
+            pr_no_design.get("date").is_none(),
+            "Date field should be absent when no DESIGN.md"
+        );
     }
 }
