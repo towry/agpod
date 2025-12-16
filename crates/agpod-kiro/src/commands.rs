@@ -229,24 +229,7 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
     entries.sort_by(compare_by_mtime);
 
     if json {
-        let json_entries: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|(name, summary, mtime)| {
-                let rel_path = base_dir.join(name);
-                let mut entry = serde_json::json!({
-                    "name": name,
-                    "summary": summary,
-                    "path": rel_path.to_string_lossy()
-                });
-
-                // Add date field if modification time is available
-                if let Some(time) = mtime {
-                    entry["date"] = serde_json::json!(format_datetime(*time));
-                }
-
-                entry
-            })
-            .collect();
+        let json_entries = create_json_entries(&entries, base_dir);
         println!("{}", serde_json::to_string_pretty(&json_entries)?);
     } else {
         // Table output
@@ -459,6 +442,31 @@ fn format_relative_time(time: SystemTime) -> String {
 fn format_datetime(time: SystemTime) -> String {
     let datetime: DateTime<Local> = time.into();
     datetime.format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// Create JSON entries from PR list entries
+fn create_json_entries(
+    entries: &[(String, String, Option<SystemTime>)],
+    base_dir: &Path,
+) -> Vec<serde_json::Value> {
+    entries
+        .iter()
+        .map(|(name, summary, mtime)| {
+            let rel_path = base_dir.join(name);
+            let mut entry = serde_json::json!({
+                "name": name,
+                "summary": summary,
+                "path": rel_path.to_string_lossy()
+            });
+
+            // Add date field if modification time is available
+            if let Some(time) = mtime {
+                entry["date"] = serde_json::json!(format_datetime(*time));
+            }
+
+            entry
+        })
+        .collect()
 }
 
 fn is_fzf_available() -> bool {
@@ -1071,12 +1079,6 @@ mod tests {
         let design1 = pr1_dir.join("DESIGN.md");
         fs::write(&design1, "# PR with date\n\nTest description").unwrap();
 
-        // Create a config with the temp base_dir
-        let config = Config {
-            base_dir: base_dir.to_string_lossy().to_string(),
-            ..Default::default()
-        };
-
         // Test the logic directly by replicating cmd_pr_list JSON generation
         let mut entries = Vec::new();
         for entry in fs::read_dir(&base_dir).unwrap() {
@@ -1100,23 +1102,7 @@ mod tests {
 
         entries.sort_by(compare_by_mtime);
 
-        let json_entries: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|(name, summary, mtime)| {
-                let rel_path = Path::new(&config.base_dir).join(name);
-                let mut entry = serde_json::json!({
-                    "name": name,
-                    "summary": summary,
-                    "path": rel_path.to_string_lossy()
-                });
-
-                if let Some(time) = mtime {
-                    entry["date"] = serde_json::json!(format_datetime(*time));
-                }
-
-                entry
-            })
-            .collect();
+        let json_entries = create_json_entries(&entries, &base_dir);
 
         // Verify entries structure
         assert_eq!(json_entries.len(), 2);
