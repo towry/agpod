@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/towry/agpod/compare/agpod-kiro-v0.10.0...agpod-kiro-v0.10.1) (2025-12-16)
+
+
+### Bug Fixes
+
+* Add date field to JSON output for kiro pr-list command ([#85](https://github.com/towry/agpod/issues/85)) ([4a56c10](https://github.com/towry/agpod/commit/4a56c10fa7b708cd59e5364bd27f27607460eb2f))
+
 ## [0.10.0](https://github.com/towry/agpod/compare/agpod-kiro-v0.9.0...agpod-kiro-v0.10.0) (2025-12-11)
 
 
