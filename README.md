@@ -83,6 +83,15 @@ agpod kiro pr-new --desc "add JWT module" --template rust --git-branch
 # List PR drafts
 agpod kiro pr-list
 
+# List with time-range filter (show PRs modified in last 2 days)
+agpod kiro pr-list --since "2 days"
+
+# List with limit (show only 5 most recent PRs)
+agpod kiro pr-list -n 5
+
+# Combine filters (show top 3 PRs from last week)
+agpod kiro pr-list --since "1 week" -n 3
+
 # Interactive PR selection
 agpod kiro pr
 ```

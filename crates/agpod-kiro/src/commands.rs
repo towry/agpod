@@ -53,8 +53,8 @@ pub fn execute(args: KiroArgs) -> Result<()> {
     } else if args.pr_list {
         KiroCommand::PrList {
             summary_lines: config.summary_lines,
-            since: None,
-            limit: None,
+            since: args.since.clone(),
+            limit: args.limit,
         }
     } else if args.pr {
         KiroCommand::Pr {
@@ -225,7 +225,7 @@ fn parse_time_expression(expr: &str) -> Result<std::time::Duration> {
         "year" | "years" | "y" => SECONDS_PER_YEAR,
         _ => {
             return Err(anyhow::anyhow!(
-                "Unknown time unit '{}'. Supported units: seconds, minutes, hours, days, weeks, months (30 days), years (365 days)",
+                "Unknown time unit '{}'. Supported units: seconds (s, sec, secs), minutes (m, min, mins), hours (h, hr, hrs), days (d), weeks (w), months (30 days), years (y, 365 days)",
                 unit
             ));
         }
@@ -1397,5 +1397,76 @@ mod tests {
         entries.truncate(limit_count);
 
         assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_pr_list_with_combined_since_and_limit() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with multiple PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create 5 PR directories with different modification times
+        for i in 1..=5 {
+            let pr_dir = base_dir.join(format!("pr-{}", i));
+            fs::create_dir_all(&pr_dir).unwrap();
+            fs::write(pr_dir.join("DESIGN.md"), format!("# PR {}", i)).unwrap();
+            // Sleep briefly to ensure different mtimes
+            if i < 5 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        // Get entries
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+            let mtime = get_design_mtime(&path);
+            entries.push((name, summary, mtime));
+        }
+
+        entries.sort_by(compare_by_mtime);
+
+        // Apply time filter first - entries created in last 1 day (should include all 5)
+        let duration = parse_time_expression("1 day").unwrap();
+        let cutoff_time = SystemTime::now().checked_sub(duration).unwrap();
+
+        entries.retain(|(_, _, mtime)| {
+            if let Some(time) = mtime {
+                time >= &cutoff_time
+            } else {
+                false
+            }
+        });
+
+        // Verify all 5 entries are within time range
+        assert_eq!(entries.len(), 5);
+
+        // Apply limit after time filter
+        let limit_count = 3;
+        entries.truncate(limit_count);
+
+        // Verify only 3 entries remain after limit
+        assert_eq!(entries.len(), 3);
+
+        // Verify the order is maintained (most recent first)
+        assert_eq!(entries[0].0, "pr-5");
+        assert_eq!(entries[1].0, "pr-4");
+        assert_eq!(entries[2].0, "pr-3");
     }
 }

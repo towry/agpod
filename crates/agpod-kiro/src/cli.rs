@@ -45,6 +45,15 @@ pub struct KiroArgs {
     /// Interactive PR selection (equivalent to pr)
     #[arg(long, conflicts_with = "command")]
     pub pr: bool,
+
+    // Filter options for pr-list (work with both --pr-list and pr-list subcommand)
+    /// Filter by time range (e.g., "2 days", "1 week", "3 hours"). Works with --pr-list or pr-list subcommand
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Limit the number of results. Works with --pr-list or pr-list subcommand
+    #[arg(short = 'n', long)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Subcommand)]

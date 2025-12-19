@@ -91,6 +91,15 @@ agpod kiro pr-list
 
 # JSON format
 agpod kiro --json pr-list
+
+# Filter by time range (PRs modified in last 2 days)
+agpod kiro pr-list --since "2 days"
+
+# Limit results (show 5 most recent PRs)
+agpod kiro pr-list -n 5
+
+# Combine filters (top 3 from last week)
+agpod kiro pr-list --since "1 week" -n 3
 ```
 
 ### Interactive selection
@@ -116,8 +125,9 @@ cd llm/kiro/$selected
 # Equivalent to pr-new
 agpod kiro --pr-new "添加新功能"
 
-# Equivalent to pr-list
+# Equivalent to pr-list (supports filters)
 agpod kiro --pr-list
+agpod kiro --pr-list --since "2 days" -n 5
 
 # Equivalent to pr
 agpod kiro --pr
