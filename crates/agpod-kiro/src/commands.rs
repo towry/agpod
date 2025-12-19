@@ -1225,19 +1225,19 @@ mod tests {
         // Test various time expressions
         assert_eq!(
             parse_time_expression("2 days").unwrap(),
-            std::time::Duration::from_secs(2 * 86400)
+            std::time::Duration::from_secs(2 * SECONDS_PER_DAY)
         );
         assert_eq!(
             parse_time_expression("1 week").unwrap(),
-            std::time::Duration::from_secs(604800)
+            std::time::Duration::from_secs(SECONDS_PER_WEEK)
         );
         assert_eq!(
             parse_time_expression("3 hours").unwrap(),
-            std::time::Duration::from_secs(3 * 3600)
+            std::time::Duration::from_secs(3 * SECONDS_PER_HOUR)
         );
         assert_eq!(
             parse_time_expression("5 minutes").unwrap(),
-            std::time::Duration::from_secs(5 * 60)
+            std::time::Duration::from_secs(5 * SECONDS_PER_MINUTE)
         );
         assert_eq!(
             parse_time_expression("30 seconds").unwrap(),
@@ -1247,25 +1247,25 @@ mod tests {
         // Test abbreviations
         assert_eq!(
             parse_time_expression("2 d").unwrap(),
-            std::time::Duration::from_secs(2 * 86400)
+            std::time::Duration::from_secs(2 * SECONDS_PER_DAY)
         );
         assert_eq!(
             parse_time_expression("1 w").unwrap(),
-            std::time::Duration::from_secs(604800)
+            std::time::Duration::from_secs(SECONDS_PER_WEEK)
         );
         assert_eq!(
             parse_time_expression("3 h").unwrap(),
-            std::time::Duration::from_secs(3 * 3600)
+            std::time::Duration::from_secs(3 * SECONDS_PER_HOUR)
         );
 
         // Test case insensitivity
         assert_eq!(
             parse_time_expression("2 DAYS").unwrap(),
-            std::time::Duration::from_secs(2 * 86400)
+            std::time::Duration::from_secs(2 * SECONDS_PER_DAY)
         );
         assert_eq!(
             parse_time_expression("1 Week").unwrap(),
-            std::time::Duration::from_secs(604800)
+            std::time::Duration::from_secs(SECONDS_PER_WEEK)
         );
 
         // Test invalid expressions
