@@ -77,6 +77,14 @@ pub enum KiroCommand {
         /// Number of summary lines to extract
         #[arg(long, default_value = "3")]
         summary_lines: usize,
+
+        /// Filter by time range (e.g., "2 days", "1 week", "3 hours")
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Limit the number of results
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
     },
 
     /// Interactive PR draft selection

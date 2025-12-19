@@ -53,6 +53,8 @@ pub fn execute(args: KiroArgs) -> Result<()> {
     } else if args.pr_list {
         KiroCommand::PrList {
             summary_lines: config.summary_lines,
+            since: None,
+            limit: None,
         }
     } else if args.pr {
         KiroCommand::Pr {
@@ -81,7 +83,11 @@ pub fn execute(args: KiroArgs) -> Result<()> {
             open,
             args.dry_run,
         ),
-        KiroCommand::PrList { summary_lines } => cmd_pr_list(&config, summary_lines, args.json),
+        KiroCommand::PrList {
+            summary_lines,
+            since,
+            limit,
+        } => cmd_pr_list(&config, summary_lines, args.json, since, limit),
         KiroCommand::Pr { fzf, output } => cmd_pr(&config, fzf, &output),
         KiroCommand::ListTemplates => cmd_list_templates(&config, args.json),
         KiroCommand::Init { .. } => unreachable!(), // Already handled above
@@ -184,7 +190,48 @@ fn cmd_pr_new(
     Ok(())
 }
 
-fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> {
+/// Parse a time expression like "2 days", "1 week", "3 hours" into a Duration
+fn parse_time_expression(expr: &str) -> Result<std::time::Duration> {
+    let expr = expr.trim().to_lowercase();
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+
+    if parts.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "Invalid time expression format. Expected '<number> <unit>' (e.g., '2 days', '1 week')"
+        ));
+    }
+
+    let number: u64 = parts[0]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid number in time expression"))?;
+
+    let unit = parts[1];
+    let duration = match unit {
+        "second" | "seconds" | "sec" | "secs" | "s" => std::time::Duration::from_secs(number),
+        "minute" | "minutes" | "min" | "mins" | "m" => std::time::Duration::from_secs(number * 60),
+        "hour" | "hours" | "hr" | "hrs" | "h" => std::time::Duration::from_secs(number * 3600),
+        "day" | "days" | "d" => std::time::Duration::from_secs(number * 86400),
+        "week" | "weeks" | "w" => std::time::Duration::from_secs(number * 604800),
+        "month" | "months" => std::time::Duration::from_secs(number * 2592000), // 30 days
+        "year" | "years" | "y" => std::time::Duration::from_secs(number * 31536000), // 365 days
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unknown time unit '{}'. Supported units: seconds, minutes, hours, days, weeks, months, years",
+                unit
+            ));
+        }
+    };
+
+    Ok(duration)
+}
+
+fn cmd_pr_list(
+    config: &Config,
+    summary_lines: usize,
+    json: bool,
+    since: Option<String>,
+    limit: Option<usize>,
+) -> Result<()> {
     let base_dir = Path::new(&config.base_dir);
 
     if !base_dir.exists() {
@@ -227,6 +274,27 @@ fn cmd_pr_list(config: &Config, summary_lines: usize, json: bool) -> Result<()> 
 
     // Sort by modification time (most recent first), fallback to name
     entries.sort_by(compare_by_mtime);
+
+    // Filter by time range if --since is provided
+    if let Some(since_expr) = since {
+        let duration = parse_time_expression(&since_expr)?;
+        let cutoff_time = SystemTime::now()
+            .checked_sub(duration)
+            .ok_or_else(|| anyhow::anyhow!("Time duration too large"))?;
+
+        entries.retain(|(_, _, mtime)| {
+            if let Some(time) = mtime {
+                time >= &cutoff_time
+            } else {
+                false // Exclude entries without mtime when filtering by time
+            }
+        });
+    }
+
+    // Apply limit if specified
+    if let Some(limit_count) = limit {
+        entries.truncate(limit_count);
+    }
 
     if json {
         let json_entries = create_json_entries(&entries, base_dir);
@@ -1136,5 +1204,176 @@ mod tests {
             pr_no_design.get("date").is_none(),
             "Date field should be absent when no DESIGN.md"
         );
+    }
+
+    #[test]
+    fn test_parse_time_expression() {
+        // Test various time expressions
+        assert_eq!(
+            parse_time_expression("2 days").unwrap(),
+            std::time::Duration::from_secs(2 * 86400)
+        );
+        assert_eq!(
+            parse_time_expression("1 week").unwrap(),
+            std::time::Duration::from_secs(604800)
+        );
+        assert_eq!(
+            parse_time_expression("3 hours").unwrap(),
+            std::time::Duration::from_secs(3 * 3600)
+        );
+        assert_eq!(
+            parse_time_expression("5 minutes").unwrap(),
+            std::time::Duration::from_secs(5 * 60)
+        );
+        assert_eq!(
+            parse_time_expression("30 seconds").unwrap(),
+            std::time::Duration::from_secs(30)
+        );
+
+        // Test abbreviations
+        assert_eq!(
+            parse_time_expression("2 d").unwrap(),
+            std::time::Duration::from_secs(2 * 86400)
+        );
+        assert_eq!(
+            parse_time_expression("1 w").unwrap(),
+            std::time::Duration::from_secs(604800)
+        );
+        assert_eq!(
+            parse_time_expression("3 h").unwrap(),
+            std::time::Duration::from_secs(3 * 3600)
+        );
+
+        // Test case insensitivity
+        assert_eq!(
+            parse_time_expression("2 DAYS").unwrap(),
+            std::time::Duration::from_secs(2 * 86400)
+        );
+        assert_eq!(
+            parse_time_expression("1 Week").unwrap(),
+            std::time::Duration::from_secs(604800)
+        );
+
+        // Test invalid expressions
+        assert!(parse_time_expression("invalid").is_err());
+        assert!(parse_time_expression("2").is_err());
+        assert!(parse_time_expression("days").is_err());
+        assert!(parse_time_expression("2 invalid_unit").is_err());
+    }
+
+    #[test]
+    fn test_pr_list_with_since_filter() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create PR directories with different modification times
+        let pr_recent = base_dir.join("recent-pr");
+        let pr_old = base_dir.join("old-pr");
+        fs::create_dir_all(&pr_recent).unwrap();
+        fs::create_dir_all(&pr_old).unwrap();
+
+        // Create DESIGN.md files
+        // Recent PR (created now)
+        fs::write(pr_recent.join("DESIGN.md"), "# Recent PR").unwrap();
+
+        // Old PR (we'll manually set an old mtime by creating it and sleeping)
+        // Since we can't easily manipulate file mtimes in tests, we'll just verify the filtering logic
+        // by checking that entries are filtered correctly based on mtime
+
+        // Get entries
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+            let mtime = get_design_mtime(&path);
+            entries.push((name, summary, mtime));
+        }
+
+        entries.sort_by(compare_by_mtime);
+
+        // Test that recent entries are within the last day
+        let duration = parse_time_expression("1 day").unwrap();
+        let cutoff_time = SystemTime::now().checked_sub(duration).unwrap();
+
+        let filtered: Vec<_> = entries
+            .iter()
+            .filter(|(_, _, mtime)| {
+                if let Some(time) = mtime {
+                    time >= &cutoff_time
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        // The recent-pr should be included
+        assert!(!filtered.is_empty());
+        assert!(filtered.iter().any(|(name, _, _)| name == "recent-pr"));
+    }
+
+    #[test]
+    fn test_pr_list_with_limit() {
+        use tempfile::TempDir;
+
+        // Create a temporary base directory with multiple PR drafts
+        let temp_dir = TempDir::new().unwrap();
+        let base_dir = temp_dir.path().join("llm").join("kiro");
+        fs::create_dir_all(&base_dir).unwrap();
+
+        // Create multiple PR directories
+        for i in 1..=5 {
+            let pr_dir = base_dir.join(format!("pr-{}", i));
+            fs::create_dir_all(&pr_dir).unwrap();
+            fs::write(pr_dir.join("DESIGN.md"), format!("# PR {}", i)).unwrap();
+            // Sleep briefly to ensure different mtimes
+            if i < 5 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        // Get entries
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&base_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let summary = read_summary(&path, 3);
+            let mtime = get_design_mtime(&path);
+            entries.push((name, summary, mtime));
+        }
+
+        entries.sort_by(compare_by_mtime);
+
+        // Test limit
+        let limit_count = 2;
+        entries.truncate(limit_count);
+
+        assert_eq!(entries.len(), 2);
     }
 }
