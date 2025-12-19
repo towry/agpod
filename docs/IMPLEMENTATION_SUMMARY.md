@@ -64,6 +64,9 @@ Successfully implemented the complete `kiro` workflow subcommand for agpod, prov
 - Extracts summary from DESIGN.md
 - Supports table and JSON output
 - Configurable summary lines
+- Time-range filtering via `--since` (e.g., "2 days", "1 week")
+- Result limiting via `-n/--limit` (show top N most recent)
+- Filters work with both `pr-list` subcommand and `--pr-list` shortcut
 
 **pr (interactive)**:
 - Built-in dialoguer-based selector

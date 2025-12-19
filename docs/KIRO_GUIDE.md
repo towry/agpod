@@ -69,13 +69,30 @@ agpod kiro pr-list
 # JSON format (for scripting)
 agpod kiro --json pr-list
 
-# Shortcut flag
-agpod kiro --pr-list
+# Filter by time range (show PRs modified in last 2 days)
+agpod kiro pr-list --since "2 days"
+
+# Limit number of results (show 5 most recent)
+agpod kiro pr-list -n 5
+
+# Combine filters (top 3 PRs from last week)
+agpod kiro pr-list --since "1 week" -n 3
+
+# Shortcut flag (supports all filters)
+agpod kiro --pr-list --since "4 days" -n 10
 ```
+
+**Time Range Options:**
+- Supports natural language expressions: "2 days", "1 week", "3 hours"
+- Units: seconds (s), minutes (m), hours (h), days (d), weeks (w), months (30 days), years (y, 365 days)
+- Filters based on DESIGN.md modification time
+- Case-insensitive and supports abbreviations
 
 **Output:**
 - Shows directory name and summary from DESIGN.md
+- Displays relative time (e.g., "2 days ago", "just now")
 - Supports both human-readable and JSON formats
+- Sorted by modification time (most recent first)
 
 ### Interactive Selection
 
