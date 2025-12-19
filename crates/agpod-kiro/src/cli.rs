@@ -78,7 +78,7 @@ pub enum KiroCommand {
         #[arg(long, default_value = "3")]
         summary_lines: usize,
 
-        /// Filter by time range (e.g., "2 days", "1 week", "3 hours")
+        /// Filter by time range (e.g., "2 days", "1 week", "3 hours"). Months are approximated as 30 days, years as 365 days
         #[arg(long)]
         since: Option<String>,
 

@@ -190,7 +190,16 @@ fn cmd_pr_new(
     Ok(())
 }
 
+// Time conversion constants
+const SECONDS_PER_MINUTE: u64 = 60;
+const SECONDS_PER_HOUR: u64 = 3600;
+const SECONDS_PER_DAY: u64 = 86400;
+const SECONDS_PER_WEEK: u64 = 604800;
+const SECONDS_PER_MONTH: u64 = 2592000; // Approximated as 30 days
+const SECONDS_PER_YEAR: u64 = 31536000; // Approximated as 365 days
+
 /// Parse a time expression like "2 days", "1 week", "3 hours" into a Duration
+/// Note: Months are approximated as 30 days and years as 365 days
 fn parse_time_expression(expr: &str) -> Result<std::time::Duration> {
     let expr = expr.trim().to_lowercase();
     let parts: Vec<&str> = expr.split_whitespace().collect();
@@ -206,23 +215,28 @@ fn parse_time_expression(expr: &str) -> Result<std::time::Duration> {
         .map_err(|_| anyhow::anyhow!("Invalid number in time expression"))?;
 
     let unit = parts[1];
-    let duration = match unit {
-        "second" | "seconds" | "sec" | "secs" | "s" => std::time::Duration::from_secs(number),
-        "minute" | "minutes" | "min" | "mins" | "m" => std::time::Duration::from_secs(number * 60),
-        "hour" | "hours" | "hr" | "hrs" | "h" => std::time::Duration::from_secs(number * 3600),
-        "day" | "days" | "d" => std::time::Duration::from_secs(number * 86400),
-        "week" | "weeks" | "w" => std::time::Duration::from_secs(number * 604800),
-        "month" | "months" => std::time::Duration::from_secs(number * 2592000), // 30 days
-        "year" | "years" | "y" => std::time::Duration::from_secs(number * 31536000), // 365 days
+    let multiplier = match unit {
+        "second" | "seconds" | "sec" | "secs" | "s" => 1,
+        "minute" | "minutes" | "min" | "mins" | "m" => SECONDS_PER_MINUTE,
+        "hour" | "hours" | "hr" | "hrs" | "h" => SECONDS_PER_HOUR,
+        "day" | "days" | "d" => SECONDS_PER_DAY,
+        "week" | "weeks" | "w" => SECONDS_PER_WEEK,
+        "month" | "months" => SECONDS_PER_MONTH,
+        "year" | "years" | "y" => SECONDS_PER_YEAR,
         _ => {
             return Err(anyhow::anyhow!(
-                "Unknown time unit '{}'. Supported units: seconds, minutes, hours, days, weeks, months, years",
+                "Unknown time unit '{}'. Supported units: seconds, minutes, hours, days, weeks, months (30 days), years (365 days)",
                 unit
             ));
         }
     };
 
-    Ok(duration)
+    // Check for overflow before multiplication
+    let seconds = number
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow::anyhow!("Time duration value too large"))?;
+
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 fn cmd_pr_list(
@@ -1259,6 +1273,14 @@ mod tests {
         assert!(parse_time_expression("2").is_err());
         assert!(parse_time_expression("days").is_err());
         assert!(parse_time_expression("2 invalid_unit").is_err());
+
+        // Test overflow protection
+        let result = parse_time_expression("999999999999999 years");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Time duration value too large"));
     }
 
     #[test]
