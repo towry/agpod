@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/towry/agpod/compare/agpod-kiro-v0.10.1...agpod-kiro-v0.11.0) (2025-12-19)
+
+
+### Features
+
+* **kiro:** add time-range and limit filters to pr-list with shortcut flag support ([#88](https://github.com/towry/agpod/issues/88)) ([5c55110](https://github.com/towry/agpod/commit/5c551108bd69705ea2f4a78584f0e5a6ebdd7d6e))
+
 ## [0.10.1](https://github.com/towry/agpod/compare/agpod-kiro-v0.10.0...agpod-kiro-v0.10.1) (2025-12-16)
 
 
