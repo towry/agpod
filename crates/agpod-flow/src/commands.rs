@@ -24,10 +24,10 @@ pub fn execute(args: FlowArgs) -> Result<()> {
         FlowCommand::Status => cmd_status(args.session, args.json),
         FlowCommand::Focus { task } => cmd_focus(args.session, &task),
         FlowCommand::Fork {
-            to,
             from,
+            checkpoint,
             no_switch,
-        } => cmd_fork(args.session, &to, from.as_deref(), no_switch),
+        } => cmd_fork(args.session, from.as_deref(), &checkpoint, no_switch),
         FlowCommand::Parent => cmd_parent(args.session),
         FlowCommand::Doc { command } => cmd_doc(command, args.session, args.json),
     }
@@ -345,8 +345,8 @@ fn cmd_focus(session_arg: Option<String>, task_id: &str) -> Result<()> {
 
 fn cmd_fork(
     session_arg: Option<String>,
-    new_task_id: &str,
     from: Option<&str>,
+    checkpoint: &str,
     no_switch: bool,
 ) -> Result<()> {
     let sid = require_session(session_arg)?;
@@ -360,15 +360,17 @@ fn cmd_fork(
 
     let repo_root = get_repo_root()?;
     let identity = RepoIdentity::resolve_from(&repo_root)?;
-    graph::add_fork_task(&identity, &parent_task, new_task_id)?;
+    let new_task_id = graph::add_fork_task(&identity, &parent_task)?;
 
     println!("Created {} (parent: {})", new_task_id, parent_task);
+    println!("Checkpoint: {checkpoint}");
 
     if no_switch {
         let current = s.active_task_id.as_deref().unwrap_or("(none)");
         println!("Staying on: {current}");
     } else {
-        session::transition(&sid, new_task_id, "fork")?;
+        let action = format!("fork[{checkpoint}]");
+        session::transition(&sid, &new_task_id, &action)?;
         println!("Switched to: {new_task_id}");
     }
 
@@ -411,6 +413,7 @@ fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Res
             path,
             task,
             doc_type,
+            content,
             force,
         } => {
             let task_id = resolve_or_init_task(task, session_arg.clone())?;
@@ -423,7 +426,7 @@ fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Res
                 );
             }
             let fm = frontmatter::upsert_frontmatter(existing, &task_id, Some(&doc_type));
-            frontmatter::write_frontmatter(&file_path, &fm)?;
+            frontmatter::write_document(&file_path, &fm, &content)?;
             println!("Initialized frontmatter in: {}", file_path.display());
             println!("  doc_id:  {}", fm.doc_id.as_deref().unwrap_or("?"));
             println!("  task_id: {task_id}");
@@ -433,6 +436,7 @@ fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Res
             path,
             task,
             doc_type,
+            content,
         } => {
             let task_id = resolve_or_init_task(task, session_arg)?;
 
@@ -440,7 +444,7 @@ fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Res
             let existing = frontmatter::read_existing_frontmatter(&file_path)?;
             let dtype = doc_type.as_deref();
             let fm = frontmatter::upsert_frontmatter(existing, &task_id, dtype);
-            frontmatter::write_frontmatter(&file_path, &fm)?;
+            frontmatter::write_document(&file_path, &fm, &content)?;
             println!(
                 "Added document: {} -> task {}",
                 file_path.display(),

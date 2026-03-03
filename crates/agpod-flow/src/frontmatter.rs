@@ -229,27 +229,45 @@ fn infer_task_hierarchy(task_id: &str) -> (String, Option<String>) {
     (root, parent)
 }
 
-/// Write frontmatter into a markdown file (prepend or replace).
-pub fn write_frontmatter(file_path: &Path, fm: &DocFrontmatter) -> FlowResult<()> {
-    let content = if file_path.exists() {
-        std::fs::read_to_string(file_path)?
-    } else {
-        String::new()
-    };
+/// Validate markdown body format for flow docs.
+pub fn validate_doc_body_format(body: &str, file_path: &str) -> FlowResult<()> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err(FlowError::InvalidFrontmatter {
+            path: file_path.to_string(),
+            detail: "document content is required".into(),
+        });
+    }
+
+    let has_h1 = trimmed
+        .lines()
+        .any(|line| line.trim_start().starts_with("# "));
+    if !has_h1 {
+        return Err(FlowError::InvalidFrontmatter {
+            path: file_path.to_string(),
+            detail: "document body must contain an H1 heading starting with '# '".into(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Write full document (frontmatter + body) and enforce format validation.
+pub fn write_document(file_path: &Path, fm: &DocFrontmatter, body: &str) -> FlowResult<()> {
+    let path_str = file_path.to_string_lossy().to_string();
+    validate_frontmatter(fm, &path_str)?;
+    validate_doc_body_format(body, &path_str)?;
 
     let yaml = render_yaml(fm);
+    let normalized_body = body.trim_end_matches('\n');
+    let content = format!("---\n{yaml}\n---\n\n{normalized_body}\n");
+    std::fs::write(file_path, content)?;
 
-    let new_content = if has_frontmatter(&content) {
-        // Replace existing frontmatter
-        let body = strip_frontmatter(&content);
-        format!("---\n{yaml}\n---\n{body}")
-    } else if content.is_empty() {
-        format!("---\n{yaml}\n---\n")
-    } else {
-        format!("---\n{yaml}\n---\n\n{content}")
-    };
+    // Re-parse after write to ensure persisted format is valid.
+    let persisted = std::fs::read_to_string(file_path)?;
+    let parsed = parse_frontmatter(&persisted, &path_str)?;
+    validate_frontmatter(&parsed, &path_str)?;
 
-    std::fs::write(file_path, new_content)?;
     Ok(())
 }
 
@@ -435,5 +453,32 @@ updated_at: "2026-03-03T12:05:00Z"
 
         assert!(!removed);
         assert_eq!(content, "# Body only\n");
+    }
+
+    #[test]
+    fn validate_doc_body_format_rejects_empty() {
+        let err = validate_doc_body_format("   \n", "doc.md").unwrap_err();
+        assert!(err.to_string().contains("document content is required"));
+    }
+
+    #[test]
+    fn validate_doc_body_format_rejects_missing_h1() {
+        let err = validate_doc_body_format("## Title\nBody", "doc.md").unwrap_err();
+        assert!(err.to_string().contains("must contain an H1"));
+    }
+
+    #[test]
+    fn write_document_persists_frontmatter_and_body() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("doc.md");
+        let fm = upsert_frontmatter(None, "T-001.2", Some("impl"));
+        let body = "# Plan\n- item";
+
+        write_document(&file_path, &fm, body).unwrap();
+        let persisted = fs::read_to_string(&file_path).unwrap();
+
+        assert!(persisted.starts_with("---\n"));
+        assert!(persisted.contains("\ntask_id: T-001.2\n"));
+        assert!(persisted.contains("\n# Plan\n"));
     }
 }

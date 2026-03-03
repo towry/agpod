@@ -49,20 +49,20 @@ agpod flow -s <session-id> session close        # Close session
 ```bash
 agpod flow -s <id> status                                       # Show active task
 agpod flow -s <id> focus --task T-001.2                         # Focus on task
-agpod flow -s <id> fork --to T-001.2.1                          # Fork sub-task
-agpod flow -s <id> fork --to T-001.2.1 --from T-001.2 --no-switch
+agpod flow -s <id> fork --checkpoint "doc updated"              # Fork sub-task (auto allocates task id)
+agpod flow -s <id> fork --from T-001.2 --checkpoint "doc updated" --no-switch
 agpod flow -s <id> parent                                       # Navigate to parent
 ```
 
 ### Document Operations
 
 ```bash
-# Initialize frontmatter (--doc-type required, --task optional)
-agpod flow doc init --path docs/design.md --doc-type design --task T-001.2
+# Initialize frontmatter + write content (--doc-type / --content required, --task optional)
+agpod flow doc init --path docs/design.md --doc-type design --task T-001.2 --content "# Design\n\nDetails"
 
-# Mount doc to task (requires -s, --task defaults to active task)
-agpod flow -s <id> doc add --path docs/impl.md
-agpod flow -s <id> doc add --path docs/note.md --task T-001.3 --doc-type note
+# Mount doc to task + write content (requires -s, --task defaults to active task)
+agpod flow -s <id> doc add --path docs/impl.md --content "# Impl\n\nDetails"
+agpod flow -s <id> doc add --path docs/note.md --task T-001.3 --doc-type note --content "# Note\n\nDetails"
 
 # Unmount doc from flow graph (strip frontmatter, keep file body)
 agpod flow doc remove --path docs/note.md
@@ -74,7 +74,7 @@ agpod flow doc remove --path docs/note.md
 2. `agpod flow recent -n 5` — identify target tasks
 3. `agpod flow session new` — create session
 4. `agpod flow -s <id> focus --task <task>` — focus
-5. `agpod flow -s <id> fork --to <sub-task>` — fork if needed
+5. `agpod flow -s <id> fork --checkpoint "<summary>"` — fork if needed (CLI allocates child task id)
 6. `agpod flow doc init ...` — attach docs
 
 ## Troubleshooting
