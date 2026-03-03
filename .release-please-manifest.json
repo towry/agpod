@@ -1,5 +1,5 @@
 {
-  "crates/agpod": "0.8.6",
+  "crates/agpod": "0.9.0",
   "crates/agpod-core": "0.8.1",
   "crates/agpod-diff": "0.8.1",
   "crates/agpod-kiro": "0.11.0",
