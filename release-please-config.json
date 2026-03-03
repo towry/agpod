@@ -24,6 +24,12 @@
       "changelog-path": "CHANGELOG.md",
       "component": "agpod-diff"
     },
+    "crates/agpod-flow": {
+      "release-type": "rust",
+      "package-name": "agpod-flow",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-flow"
+    },
     "crates/agpod-vcs-path": {
       "release-type": "rust",
       "package-name": "agpod-vcs-path",
