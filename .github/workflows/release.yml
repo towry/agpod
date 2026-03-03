@@ -19,8 +19,8 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     outputs:
-      agpod_tag_name: ${{ steps.release.outputs['crates--agpod--tag_name'] }}
-      agpod_release_created: ${{ steps.release.outputs['crates--agpod--release_created'] }}
+      agpod_tag_name: ${{ steps.release.outputs['crates/agpod--tag_name'] }}
+      agpod_release_created: ${{ steps.release.outputs['crates/agpod--release_created'] }}
     steps:
       - name: Run release-please
         id: release
