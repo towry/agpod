@@ -24,12 +24,6 @@
       "changelog-path": "CHANGELOG.md",
       "component": "agpod-diff"
     },
-    "crates/agpod-kiro": {
-      "release-type": "rust",
-      "package-name": "agpod-kiro",
-      "changelog-path": "CHANGELOG.md",
-      "component": "agpod-kiro"
-    },
     "crates/agpod-vcs-path": {
       "release-type": "rust",
       "package-name": "agpod-vcs-path",

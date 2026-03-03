@@ -2,7 +2,7 @@
 members = [
     "crates/agpod-core",
     "crates/agpod-diff",
-    "crates/agpod-kiro",
+    "crates/agpod-flow",
     "crates/agpod-vcs-path",
     "crates/agpod",
 ]
@@ -19,7 +19,7 @@ repository = "https://github.com/towry/agpod"
 # Workspace crates
 agpod-core = { path = "crates/agpod-core" }
 agpod-diff = { path = "crates/agpod-diff" }
-agpod-kiro = { path = "crates/agpod-kiro" }
+agpod-flow = { path = "crates/agpod-flow" }
 agpod-vcs-path = { path = "crates/agpod-vcs-path" }
 
 # External dependencies
@@ -41,3 +41,4 @@ tempfile = "3.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
 tokio-stream = { version = "0.1", features = ["io-util"] }
 git2 = { version = "0.19", default-features = false }
+termtree = "0.4"
