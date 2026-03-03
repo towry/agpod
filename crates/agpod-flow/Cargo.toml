@@ -1,0 +1,27 @@
+[package]
+name = "agpod-flow"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Document-driven task graph for agpod flow workflow"
+
+[dependencies]
+agpod-core = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+walkdir = { workspace = true }
+sha2 = "0.10"
+globset = "0.4"
+gray_matter = "0.2"
+termtree = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
