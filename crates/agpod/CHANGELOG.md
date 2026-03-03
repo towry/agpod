@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/towry/agpod/compare/v0.8.6...v0.9.0) (2026-03-03)
+
+
+### Features
+
+* agpod flow ([#90](https://github.com/towry/agpod/issues/90)) ([827efdb](https://github.com/towry/agpod/commit/827efdb19c0950bc6687f45db6b26285b645c32b))
+
 ## [0.8.6](https://github.com/towry/agpod/compare/v0.8.5...v0.8.6) (2025-12-19)
 
 ## [0.8.5](https://github.com/towry/agpod/compare/v0.8.4...v0.8.5) (2025-12-16)
