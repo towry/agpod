@@ -22,7 +22,7 @@ pub fn execute(args: FlowArgs) -> Result<()> {
         FlowCommand::Tree { root } => cmd_tree(root, args.json),
         FlowCommand::Session { command } => cmd_session(command, args.session, args.json),
         FlowCommand::Status => cmd_status(args.session, args.json),
-        FlowCommand::Focus { task } => cmd_focus(args.session, &task),
+        FlowCommand::Focus { task } => cmd_focus(args.session, &task, args.json),
         FlowCommand::Fork {
             from,
             checkpoint,
@@ -31,6 +31,45 @@ pub fn execute(args: FlowArgs) -> Result<()> {
         FlowCommand::Parent => cmd_parent(args.session),
         FlowCommand::Doc { command } => cmd_doc(command, args.session, args.json),
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct TaskDocSummary {
+    doc_id: String,
+    path: String,
+    doc_type: String,
+}
+
+fn load_task_docs(identity: &RepoIdentity, task_id: &str) -> Result<Vec<TaskDocSummary>> {
+    let task_graph = match graph::load(identity) {
+        Ok(g) => g,
+        Err(FlowError::Other(msg)) if msg.contains("graph.json not found") => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut docs: Vec<TaskDocSummary> = task_graph
+        .docs
+        .values()
+        .filter(|d| d.task_id == task_id)
+        .map(|d| TaskDocSummary {
+            doc_id: d.doc_id.clone(),
+            path: d.path.clone(),
+            doc_type: d.doc_type.clone(),
+        })
+        .collect();
+    docs.sort_by(|a, b| a.path.cmp(&b.path).then(a.doc_id.cmp(&b.doc_id)));
+    Ok(docs)
+}
+
+fn session_json_with_docs(
+    session: &session::Session,
+    docs: &[TaskDocSummary],
+) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(session)?;
+    if let serde_json::Value::Object(ref mut map) = value {
+        map.insert("docs".to_string(), serde_json::to_value(docs)?);
+    }
+    Ok(value)
 }
 
 fn get_repo_root() -> Result<PathBuf> {
@@ -306,9 +345,17 @@ fn cmd_session(command: SessionCommand, session_arg: Option<String>, json: bool)
 fn cmd_status(session_arg: Option<String>, json: bool) -> Result<()> {
     let sid = require_session(session_arg)?;
     let s = session::load(&sid)?;
+    let docs = if let Some(active_task) = s.active_task_id.as_deref() {
+        let repo_root = get_repo_root()?;
+        let identity = RepoIdentity::resolve_from(&repo_root)?;
+        load_task_docs(&identity, active_task)?
+    } else {
+        Vec::new()
+    };
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&s)?);
+        let payload = session_json_with_docs(&s, &docs)?;
+        println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         let task = s.active_task_id.as_deref().unwrap_or("(none)");
         println!("Session:     {}", s.session_id);
@@ -328,18 +375,41 @@ fn cmd_status(session_arg: Option<String>, json: bool) -> Result<()> {
                 println!("  - {} -> {} ({}) @ {}", from, h.to_task_id, h.action, h.at);
             }
         }
+        println!("Docs:");
+        if docs.is_empty() {
+            println!("  - (none)");
+        } else {
+            for d in &docs {
+                println!("  - {} ({}) [{}]", d.doc_id, d.path, d.doc_type);
+            }
+        }
     }
 
     Ok(())
 }
 
-fn cmd_focus(session_arg: Option<String>, task_id: &str) -> Result<()> {
+fn cmd_focus(session_arg: Option<String>, task_id: &str, json: bool) -> Result<()> {
     let sid = require_session(session_arg)?;
     let s = session::focus(&sid, task_id)?;
-    println!(
-        "Focused on task: {}",
-        s.active_task_id.as_deref().unwrap_or("?")
-    );
+    let active_task = s.active_task_id.as_deref().unwrap_or("?");
+    let repo_root = get_repo_root()?;
+    let identity = RepoIdentity::resolve_from(&repo_root)?;
+    let docs = load_task_docs(&identity, active_task)?;
+
+    if json {
+        let payload = session_json_with_docs(&s, &docs)?;
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("Focused on task: {}", active_task);
+        println!("Docs:");
+        if docs.is_empty() {
+            println!("  - (none)");
+        } else {
+            for d in &docs {
+                println!("  - {} ({}) [{}]", d.doc_id, d.path, d.doc_type);
+            }
+        }
+    }
     Ok(())
 }
 
