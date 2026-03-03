@@ -99,7 +99,7 @@ pub enum SessionCommand {
 pub enum DocCommand {
     /// Add/mount a document to a task (requires -s)
     Add {
-        /// Path to document file
+        /// Relative path to document file (from repo root), absolute paths are not allowed
         #[arg(long)]
         path: String,
 
@@ -114,7 +114,7 @@ pub enum DocCommand {
 
     /// Initialize frontmatter in a document
     Init {
-        /// Path to document file
+        /// Relative path to document file (from repo root), absolute paths are not allowed
         #[arg(long)]
         path: String,
 
@@ -129,5 +129,12 @@ pub enum DocCommand {
         /// Overwrite existing frontmatter in target file
         #[arg(long)]
         force: bool,
+    },
+
+    /// Remove/unmount a document from flow graph by stripping frontmatter
+    Remove {
+        /// Relative path to document file (from repo root), absolute paths are not allowed
+        #[arg(long)]
+        path: String,
     },
 }

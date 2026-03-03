@@ -447,6 +447,15 @@ fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Res
                 task_id
             );
         }
+        DocCommand::Remove { path } => {
+            let file_path = resolve_doc_path(&repo_root, &config, &flow_root, &path)?;
+            let removed = frontmatter::remove_frontmatter(&file_path)?;
+            if removed {
+                println!("Removed flow frontmatter: {}", file_path.display());
+            } else {
+                println!("No frontmatter found: {}", file_path.display());
+            }
+        }
     }
 
     Ok(())
@@ -488,12 +497,11 @@ fn resolve_doc_path(
 ) -> Result<PathBuf> {
     let input = PathBuf::from(input_path);
     if input.is_absolute() {
-        if input.starts_with(flow_root) {
-            return Ok(input);
-        }
         anyhow::bail!(
-            "Document path must be under '{}', got '{}'",
-            flow_root.display(),
+            "Document path must be relative to repo root (for example '{}'), absolute path is not allowed: '{}'",
+            Path::new(&config.root)
+                .join(FlowDocsConfig::FLOW_SUBDIR)
+                .display(),
             input.display()
         );
     }

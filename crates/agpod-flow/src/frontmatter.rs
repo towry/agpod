@@ -253,6 +253,23 @@ pub fn write_frontmatter(file_path: &Path, fm: &DocFrontmatter) -> FlowResult<()
     Ok(())
 }
 
+/// Remove frontmatter from a markdown file while preserving body.
+/// Returns true if frontmatter existed and was removed.
+pub fn remove_frontmatter(file_path: &Path) -> FlowResult<bool> {
+    if !file_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(file_path)?;
+    if !has_frontmatter(&content) {
+        return Ok(false);
+    }
+
+    let body = strip_frontmatter(&content);
+    std::fs::write(file_path, body)?;
+    Ok(true)
+}
+
 fn has_frontmatter(content: &str) -> bool {
     content.trim_start().starts_with("---")
 }
@@ -305,6 +322,8 @@ fn render_yaml(fm: &DocFrontmatter) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn parse_valid_frontmatter() {
@@ -386,5 +405,35 @@ updated_at: "2026-03-03T12:05:00Z"
         assert_eq!(merged.parent_task_id.as_deref(), Some("T-000"));
         assert_eq!(merged.task_id.as_deref(), Some("T-001.2"));
         assert_eq!(merged.doc_type.as_deref(), Some("impl"));
+    }
+
+    #[test]
+    fn remove_frontmatter_keeps_body() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("doc.md");
+        fs::write(
+            &file_path,
+            "---\ndoc_id: D-1\ndoc_type: note\ntask_id: T-001\nstatus: todo\ncreated_at: \"2026-03-03T00:00:00Z\"\nupdated_at: \"2026-03-03T00:00:00Z\"\n---\n\n# Body\n",
+        )
+        .unwrap();
+
+        let removed = remove_frontmatter(&file_path).unwrap();
+        let content = fs::read_to_string(&file_path).unwrap();
+
+        assert!(removed);
+        assert_eq!(content, "\n# Body\n");
+    }
+
+    #[test]
+    fn remove_frontmatter_returns_false_when_missing() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("doc.md");
+        fs::write(&file_path, "# Body only\n").unwrap();
+
+        let removed = remove_frontmatter(&file_path).unwrap();
+        let content = fs::read_to_string(&file_path).unwrap();
+
+        assert!(!removed);
+        assert_eq!(content, "# Body only\n");
     }
 }
