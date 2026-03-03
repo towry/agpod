@@ -12,10 +12,11 @@ use crate::repo_id::RepoIdentity;
 use crate::session;
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn execute(args: FlowArgs) -> Result<()> {
     match args.command {
+        FlowCommand::Init => cmd_init(args.json),
         FlowCommand::Rebuild => cmd_rebuild(args.json),
         FlowCommand::Recent { limit, days } => cmd_recent(limit, days, args.json),
         FlowCommand::Tree { root } => cmd_tree(root, args.json),
@@ -50,10 +51,59 @@ fn require_session(session: Option<String>) -> Result<String> {
 
 // --- Stateless commands ---
 
+fn cmd_init(json: bool) -> Result<()> {
+    let repo_root = get_repo_root()?;
+    let config_path = repo_root.join(".agpod.flow.toml");
+    if config_path.exists() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "initialized": true,
+                    "created": false,
+                    "config_path": config_path,
+                }))?
+            );
+        } else {
+            println!("Already initialized: {}", config_path.display());
+        }
+    } else {
+        let content = r#"[flow.docs]
+root = "docs"
+include_globs = ["**/*.md", "**/*.mdx"]
+exclude_globs = ["**/node_modules/**", "**/.git/**", "**/dist/**"]
+frontmatter_required = true
+follow_symlinks = false
+"#;
+        std::fs::write(&config_path, content)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "initialized": true,
+                    "created": true,
+                    "config_path": config_path,
+                }))?
+            );
+        } else {
+            println!("Created: {}", config_path.display());
+        }
+    }
+
+    let config = FlowDocsConfig::load(&repo_root)?;
+    let flow_root = config.ensure_flow_root(&repo_root)?;
+    if !json {
+        println!("Flow docs root: {}", flow_root.display());
+    }
+
+    Ok(())
+}
+
 fn cmd_rebuild(json: bool) -> Result<()> {
     let repo_root = get_repo_root()?;
     let identity = RepoIdentity::resolve_from(&repo_root)?;
     let config = FlowDocsConfig::load(&repo_root)?;
+    let _ = config.ensure_flow_root(&repo_root)?;
 
     let (task_graph, diagnostics) = graph::rebuild(&repo_root, &identity, &config)?;
     graph::save(&identity, &task_graph, &diagnostics)?;
@@ -82,6 +132,7 @@ fn cmd_rebuild(json: bool) -> Result<()> {
 fn cmd_recent(limit: usize, days: u32, json: bool) -> Result<()> {
     let repo_root = get_repo_root()?;
     let config = FlowDocsConfig::load(&repo_root)?;
+    let _ = config.ensure_flow_root(&repo_root)?;
 
     let results = recent::recent_tasks(&repo_root, &config, limit, days)?;
 
@@ -160,10 +211,19 @@ fn build_termtree(
     docs_by_task: &HashMap<&str, Vec<&graph::DocNode>>,
     task_id: &str,
 ) -> termtree::Tree<String> {
+    let mut task_docs: Vec<&graph::DocNode> =
+        docs_by_task.get(task_id).cloned().unwrap_or_default();
+    task_docs.sort_by(|a, b| a.path.cmp(&b.path));
+    let doc_hint = task_hint(&task_docs);
+
     let label = if let Some(task) = g.tasks.get(task_id) {
         let icon = status_icon(task.status.as_deref());
         let status = task.status.as_deref().unwrap_or("unknown");
-        format!("{icon} {} [{status}]", task.task_id)
+        if let Some(hint) = doc_hint {
+            format!("{icon} {} [{status}] - {hint}", task.task_id)
+        } else {
+            format!("{icon} {} [{status}]", task.task_id)
+        }
     } else {
         format!("? {task_id} [not found]")
     };
@@ -171,13 +231,11 @@ fn build_termtree(
     let mut tree = termtree::Tree::new(label);
 
     // Attach docs as leaves
-    if let Some(docs) = docs_by_task.get(task_id) {
-        for doc in docs {
-            tree.push(termtree::Tree::new(format!(
-                "📄 {} ({}) [{}]",
-                doc.doc_id, doc.path, doc.doc_type
-            )));
-        }
+    for doc in task_docs {
+        tree.push(termtree::Tree::new(format!(
+            "📄 {} ({}) [{}]",
+            doc.doc_id, doc.path, doc.doc_type
+        )));
     }
 
     // Recurse into children
@@ -190,6 +248,15 @@ fn build_termtree(
     }
 
     tree
+}
+
+fn task_hint(docs: &[&graph::DocNode]) -> Option<String> {
+    let first = docs.first()?;
+    let stem = Path::new(&first.path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("doc");
+    Some(format!("{stem} ({} doc)", docs.len()))
 }
 
 // --- Session commands ---
@@ -247,6 +314,20 @@ fn cmd_status(session_arg: Option<String>, json: bool) -> Result<()> {
         println!("Session:     {}", s.session_id);
         println!("Active task: {task}");
         println!("Updated:     {}", s.updated_at);
+        if s.history.is_empty() {
+            println!("History:");
+            if let Some(active) = &s.active_task_id {
+                println!("  - (none) -> {} (resume) @ {}", active, s.updated_at);
+            } else {
+                println!("  - (empty)");
+            }
+        } else {
+            println!("History:");
+            for h in s.history.iter().rev().take(5) {
+                let from = h.from_task_id.as_deref().unwrap_or("(none)");
+                println!("  - {} -> {} ({}) @ {}", from, h.to_task_id, h.action, h.at);
+            }
+        }
     }
 
     Ok(())
@@ -287,7 +368,7 @@ fn cmd_fork(
         let current = s.active_task_id.as_deref().unwrap_or("(none)");
         println!("Staying on: {current}");
     } else {
-        session::focus(&sid, new_task_id)?;
+        session::transition(&sid, new_task_id, "fork")?;
         println!("Switched to: {new_task_id}");
     }
 
@@ -306,7 +387,7 @@ fn cmd_parent(session_arg: Option<String>) -> Result<()> {
 
     if let Some(task) = task_graph.tasks.get(current) {
         if let Some(parent_id) = &task.parent_task_id {
-            session::focus(&sid, parent_id)?;
+            session::transition(&sid, parent_id, "parent")?;
             println!("Moved to parent task: {parent_id}");
         } else {
             eprintln!("Task '{current}' has no parent");
@@ -321,19 +402,31 @@ fn cmd_parent(session_arg: Option<String>) -> Result<()> {
 // --- Doc commands ---
 
 fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Result<()> {
+    let repo_root = get_repo_root()?;
+    let config = FlowDocsConfig::load(&repo_root)?;
+    let flow_root = config.ensure_flow_root(&repo_root)?;
+
     match command {
         DocCommand::Init {
             path,
             task,
             doc_type,
+            force,
         } => {
-            let file_path = PathBuf::from(&path);
+            let task_id = resolve_or_init_task(task, session_arg.clone())?;
+            let file_path = resolve_doc_path(&repo_root, &config, &flow_root, &path)?;
             let existing = frontmatter::read_existing_frontmatter(&file_path)?;
-            let fm = frontmatter::upsert_frontmatter(existing, &task, Some(&doc_type));
+            if existing.is_some() && !force {
+                anyhow::bail!(
+                    "Frontmatter already exists in '{}'. Re-run with --force to overwrite.",
+                    file_path.display()
+                );
+            }
+            let fm = frontmatter::upsert_frontmatter(existing, &task_id, Some(&doc_type));
             frontmatter::write_frontmatter(&file_path, &fm)?;
-            println!("Initialized frontmatter in: {path}");
+            println!("Initialized frontmatter in: {}", file_path.display());
             println!("  doc_id:  {}", fm.doc_id.as_deref().unwrap_or("?"));
-            println!("  task_id: {task}");
+            println!("  task_id: {task_id}");
             println!("  type:    {doc_type}");
         }
         DocCommand::Add {
@@ -341,23 +434,91 @@ fn cmd_doc(command: DocCommand, session_arg: Option<String>, _json: bool) -> Res
             task,
             doc_type,
         } => {
-            let sid = require_session(session_arg)?;
-            let s = session::load(&sid)?;
-            let task_id = task
-                .as_deref()
-                .or(s.active_task_id.as_deref())
-                .ok_or_else(|| FlowError::NoActiveTask {
-                    session_id: sid.clone(),
-                })?;
+            let task_id = resolve_or_init_task(task, session_arg)?;
 
-            let file_path = PathBuf::from(&path);
+            let file_path = resolve_doc_path(&repo_root, &config, &flow_root, &path)?;
             let existing = frontmatter::read_existing_frontmatter(&file_path)?;
             let dtype = doc_type.as_deref();
-            let fm = frontmatter::upsert_frontmatter(existing, task_id, dtype);
+            let fm = frontmatter::upsert_frontmatter(existing, &task_id, dtype);
             frontmatter::write_frontmatter(&file_path, &fm)?;
-            println!("Added document: {path} -> task {task_id}");
+            println!(
+                "Added document: {} -> task {}",
+                file_path.display(),
+                task_id
+            );
         }
     }
 
     Ok(())
+}
+
+fn resolve_or_init_task(task: Option<String>, session_arg: Option<String>) -> Result<String> {
+    if let Some(task_id) = task {
+        let repo_root = get_repo_root()?;
+        let identity = RepoIdentity::resolve_from(&repo_root)?;
+        graph::ensure_task_exists(&identity, &task_id)?;
+        return Ok(task_id);
+    }
+
+    if let Some(sid) = session_arg {
+        let s = session::load(&sid)?;
+        if let Some(active) = s.active_task_id {
+            let repo_root = get_repo_root()?;
+            let identity = RepoIdentity::resolve_from(&repo_root)?;
+            graph::ensure_task_exists(&identity, &active)?;
+            return Ok(active);
+        }
+    }
+
+    let repo_root = get_repo_root()?;
+    let identity = RepoIdentity::resolve_from(&repo_root)?;
+    graph::ensure_task_exists(&identity, graph::BOOTSTRAP_TASK_ID)?;
+    eprintln!(
+        "No task provided; bootstrapped default task {}",
+        graph::BOOTSTRAP_TASK_ID
+    );
+    Ok(graph::BOOTSTRAP_TASK_ID.to_string())
+}
+
+fn resolve_doc_path(
+    _repo_root: &Path,
+    config: &FlowDocsConfig,
+    flow_root: &Path,
+    input_path: &str,
+) -> Result<PathBuf> {
+    let input = PathBuf::from(input_path);
+    if input.is_absolute() {
+        if input.starts_with(flow_root) {
+            return Ok(input);
+        }
+        anyhow::bail!(
+            "Document path must be under '{}', got '{}'",
+            flow_root.display(),
+            input.display()
+        );
+    }
+
+    let root_prefix = PathBuf::from(&config.root);
+    let flow_prefix = root_prefix.join(FlowDocsConfig::FLOW_SUBDIR);
+
+    let normalized_relative = if input.starts_with(&flow_prefix) {
+        input
+            .strip_prefix(&flow_prefix)
+            .unwrap_or(&input)
+            .to_path_buf()
+    } else if input.starts_with(&root_prefix) {
+        input
+            .strip_prefix(&root_prefix)
+            .unwrap_or(&input)
+            .to_path_buf()
+    } else if input.starts_with(FlowDocsConfig::FLOW_SUBDIR) {
+        input
+            .strip_prefix(FlowDocsConfig::FLOW_SUBDIR)
+            .unwrap_or(&input)
+            .to_path_buf()
+    } else {
+        input
+    };
+
+    Ok(flow_root.join(normalized_relative))
 }

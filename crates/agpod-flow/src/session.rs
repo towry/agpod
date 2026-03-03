@@ -6,6 +6,16 @@ use crate::error::{FlowError, FlowResult};
 use crate::storage;
 use serde::{Deserialize, Serialize};
 
+const MAX_HISTORY: usize = 50;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionHistoryEntry {
+    pub from_task_id: Option<String>,
+    pub to_task_id: String,
+    pub action: String,
+    pub at: String,
+}
+
 /// Session state (stored in runtime directory).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -15,6 +25,8 @@ pub struct Session {
     pub active_task_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub history: Vec<SessionHistoryEntry>,
 }
 
 /// Create a new session. Returns session_id.
@@ -29,6 +41,7 @@ pub fn create(repo_id: &str) -> FlowResult<Session> {
         active_task_id: None,
         created_at: now.clone(),
         updated_at: now,
+        history: Vec::new(),
     };
 
     save_session(&session)?;
@@ -74,9 +87,26 @@ pub fn list(repo_id: &str) -> FlowResult<Vec<Session>> {
 
 /// Set focus to a task.
 pub fn focus(session_id: &str, task_id: &str) -> FlowResult<Session> {
+    transition(session_id, task_id, "focus")
+}
+
+/// Transition active task with an action marker and record history.
+pub fn transition(session_id: &str, task_id: &str, action: &str) -> FlowResult<Session> {
     let mut session = load(session_id)?;
+    let prev_task = session.active_task_id.clone();
     session.active_task_id = Some(task_id.to_string());
-    session.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    session.updated_at = now.clone();
+    session.history.push(SessionHistoryEntry {
+        from_task_id: prev_task,
+        to_task_id: task_id.to_string(),
+        action: action.to_string(),
+        at: now,
+    });
+    if session.history.len() > MAX_HISTORY {
+        let overflow = session.history.len() - MAX_HISTORY;
+        session.history.drain(0..overflow);
+    }
     save_session(&session)?;
     Ok(session)
 }

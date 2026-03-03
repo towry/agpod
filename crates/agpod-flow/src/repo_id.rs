@@ -109,8 +109,7 @@ pub fn normalize_git_url(raw: &str) -> String {
 
     // Protocol URLs: ssh://git@host/path, https://host/path
     for scheme in &["ssh://", "https://", "http://"] {
-        if s.starts_with(scheme) {
-            let without_scheme = &s[scheme.len()..];
+        if let Some(without_scheme) = s.strip_prefix(scheme) {
             // Strip optional user@ prefix
             let without_user = match without_scheme.find('@') {
                 Some(pos) => &without_scheme[pos + 1..],

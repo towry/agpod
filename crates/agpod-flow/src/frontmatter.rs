@@ -194,6 +194,13 @@ pub fn upsert_frontmatter(
         fm.doc_id = Some(generate_doc_id());
     }
     fm.task_id = Some(task_id.to_string());
+    let (inferred_root, inferred_parent) = infer_task_hierarchy(task_id);
+    if fm.root_task_id.is_none() {
+        fm.root_task_id = Some(inferred_root);
+    }
+    if fm.parent_task_id.is_none() {
+        fm.parent_task_id = inferred_parent;
+    }
 
     if let Some(dtype) = doc_type {
         fm.doc_type = Some(dtype.to_string());
@@ -211,6 +218,15 @@ pub fn upsert_frontmatter(
     }
 
     fm
+}
+
+fn infer_task_hierarchy(task_id: &str) -> (String, Option<String>) {
+    let parent = task_id.rsplit_once('.').map(|(p, _)| p.to_string());
+    let root = task_id
+        .split_once('.')
+        .map(|(r, _)| r.to_string())
+        .unwrap_or_else(|| task_id.to_string());
+    (root, parent)
 }
 
 /// Write frontmatter into a markdown file (prepend or replace).

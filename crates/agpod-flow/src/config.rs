@@ -1,6 +1,6 @@
 //! Flow configuration from `.agpod.flow.toml`.
 //!
-//! Keywords: flow config, doc roots, include globs, exclude globs
+//! Keywords: flow config, doc root, include globs, exclude globs
 
 use crate::error::FlowResult;
 use serde::{Deserialize, Serialize};
@@ -22,8 +22,8 @@ pub struct FlowSection {
 /// Configuration for document scanning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowDocsConfig {
-    #[serde(default = "default_roots")]
-    pub roots: Vec<String>,
+    #[serde(default = "default_root")]
+    pub root: String,
 
     #[serde(default = "default_include_globs")]
     pub include_globs: Vec<String>,
@@ -41,7 +41,7 @@ pub struct FlowDocsConfig {
 impl Default for FlowDocsConfig {
     fn default() -> Self {
         Self {
-            roots: default_roots(),
+            root: default_root(),
             include_globs: default_include_globs(),
             exclude_globs: default_exclude_globs(),
             frontmatter_required: true,
@@ -50,8 +50,8 @@ impl Default for FlowDocsConfig {
     }
 }
 
-fn default_roots() -> Vec<String> {
-    vec!["llm".into(), "docs".into(), "notes".into()]
+fn default_root() -> String {
+    "docs".into()
 }
 
 fn default_include_globs() -> Vec<String> {
@@ -71,6 +71,8 @@ fn default_true() -> bool {
 }
 
 impl FlowDocsConfig {
+    pub const FLOW_SUBDIR: &'static str = "agpod-flow";
+
     /// Load from repo root. Falls back to defaults if file absent.
     pub fn load(repo_root: &Path) -> FlowResult<Self> {
         let path = repo_root.join(".agpod.flow.toml");
@@ -83,13 +85,26 @@ impl FlowDocsConfig {
         }
     }
 
-    /// Absolute root directories that actually exist.
-    pub fn absolute_roots(&self, repo_root: &Path) -> Vec<PathBuf> {
-        self.roots
-            .iter()
-            .map(|r| repo_root.join(r))
-            .filter(|p| p.is_dir())
-            .collect()
+    /// Absolute flow docs directory if it exists.
+    pub fn absolute_root(&self, repo_root: &Path) -> Option<PathBuf> {
+        let path = repo_root.join(&self.root).join(Self::FLOW_SUBDIR);
+        if path.is_dir() {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    /// Ensure flow docs root exists.
+    /// If missing, initialize `<root>/agpod-flow`.
+    pub fn ensure_flow_root(&self, repo_root: &Path) -> FlowResult<PathBuf> {
+        if let Some(existing) = self.absolute_root(repo_root) {
+            return Ok(existing);
+        }
+
+        let path = repo_root.join(&self.root).join(Self::FLOW_SUBDIR);
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
     }
 }
 
@@ -100,7 +115,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let c = FlowDocsConfig::default();
-        assert_eq!(c.roots, vec!["llm", "docs", "notes"]);
+        assert_eq!(c.root, "docs");
         assert!(c.frontmatter_required);
         assert!(!c.follow_symlinks);
     }
@@ -109,11 +124,11 @@ mod tests {
     fn test_parse_toml() {
         let s = r#"
 [flow.docs]
-roots = ["docs", "specs"]
+root = "docs"
 include_globs = ["**/*.md"]
 frontmatter_required = true
 "#;
         let f: FlowConfigFile = toml::from_str(s).unwrap();
-        assert_eq!(f.flow.docs.roots, vec!["docs", "specs"]);
+        assert_eq!(f.flow.docs.root, "docs");
     }
 }

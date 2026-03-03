@@ -4,12 +4,14 @@
 
 use crate::config::FlowDocsConfig;
 use crate::error::{FlowError, FlowResult};
-use crate::frontmatter::{parse_frontmatter, validate_frontmatter, DocFrontmatter};
+use crate::frontmatter::{parse_frontmatter, validate_frontmatter};
 use crate::repo_id::RepoIdentity;
 use crate::scanner;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+
+pub const BOOTSTRAP_TASK_ID: &str = "T-001";
 
 /// The full graph cache structure (graph.json).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,9 +118,7 @@ pub fn rebuild(
         };
 
         // Validate (fail-fast on doc_id missing)
-        if let Err(e) = validate_frontmatter(&fm, &rel_path) {
-            return Err(e);
-        }
+        validate_frontmatter(&fm, &rel_path)?;
 
         let doc_id = fm.doc_id.as_ref().unwrap().clone();
         let task_id = fm.task_id.as_ref().unwrap().clone();
@@ -156,8 +156,18 @@ pub fn rebuild(
             },
         );
 
+        let (inferred_root, inferred_parent) = infer_task_hierarchy(&task_id);
+        let effective_root = fm.root_task_id.clone().or(Some(inferred_root));
+        let effective_parent = fm.parent_task_id.clone().or(inferred_parent);
+
         // Ensure task node exists
-        ensure_task(&mut tasks, &task_id, &fm);
+        ensure_task(
+            &mut tasks,
+            &task_id,
+            effective_root.clone(),
+            effective_parent.clone(),
+            fm.status.clone(),
+        );
 
         // Build edges
         edges.push(Edge {
@@ -167,7 +177,7 @@ pub fn rebuild(
         });
 
         // Parent-child edge
-        if let Some(parent_id) = &fm.parent_task_id {
+        if let Some(parent_id) = &effective_parent {
             ensure_task_minimal(&mut tasks, parent_id);
 
             // Add child to parent
@@ -182,7 +192,7 @@ pub fn rebuild(
                 from: parent_id.clone(),
                 to: task_id.clone(),
             });
-        } else if let Some(root_id) = &fm.root_task_id {
+        } else if let Some(root_id) = &effective_root {
             // If no explicit parent but has root, and task != root, mark as child of root
             if root_id != &task_id {
                 ensure_task_minimal(&mut tasks, root_id);
@@ -238,7 +248,13 @@ pub fn rebuild(
     Ok((graph, report))
 }
 
-fn ensure_task(tasks: &mut HashMap<String, TaskNode>, task_id: &str, fm: &DocFrontmatter) {
+fn ensure_task(
+    tasks: &mut HashMap<String, TaskNode>,
+    task_id: &str,
+    root_task_id: Option<String>,
+    parent_task_id: Option<String>,
+    status: Option<String>,
+) {
     let entry = tasks
         .entry(task_id.to_string())
         .or_insert_with(|| TaskNode {
@@ -250,14 +266,14 @@ fn ensure_task(tasks: &mut HashMap<String, TaskNode>, task_id: &str, fm: &DocFro
         });
 
     // Update with frontmatter data (later doc wins)
-    if fm.root_task_id.is_some() {
-        entry.root_task_id = fm.root_task_id.clone();
+    if root_task_id.is_some() {
+        entry.root_task_id = root_task_id;
     }
-    if fm.parent_task_id.is_some() {
-        entry.parent_task_id = fm.parent_task_id.clone();
+    if parent_task_id.is_some() {
+        entry.parent_task_id = parent_task_id;
     }
-    if fm.status.is_some() {
-        entry.status = fm.status.clone();
+    if status.is_some() {
+        entry.status = status;
     }
 }
 
@@ -319,6 +335,58 @@ pub fn load(identity: &RepoIdentity) -> FlowResult<TaskGraph> {
     })?;
     let graph: TaskGraph = serde_json::from_str(&content)?;
     Ok(graph)
+}
+
+/// Load graph if present; otherwise initialize an empty graph cache.
+pub fn load_or_init(identity: &RepoIdentity) -> FlowResult<TaskGraph> {
+    match load(identity) {
+        Ok(graph) => Ok(graph),
+        Err(FlowError::Other(msg)) if msg.contains("graph.json not found") => {
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            let graph = TaskGraph {
+                version: 1,
+                repo_id: identity.repo_id.clone(),
+                generated_at: now.clone(),
+                tasks: HashMap::new(),
+                docs: HashMap::new(),
+                edges: Vec::new(),
+            };
+            let diagnostics = DiagnosticsReport {
+                version: 1,
+                generated_at: now,
+                items: Vec::new(),
+            };
+            save(identity, &graph, &diagnostics)?;
+            Ok(graph)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Ensure a task exists in graph. If missing, initialize it as a root-level task.
+pub fn ensure_task_exists(identity: &RepoIdentity, task_id: &str) -> FlowResult<()> {
+    let mut graph = load_or_init(identity)?;
+    if graph.tasks.contains_key(task_id) {
+        return Ok(());
+    }
+
+    graph.tasks.insert(
+        task_id.to_string(),
+        TaskNode {
+            task_id: task_id.to_string(),
+            root_task_id: Some(task_id.to_string()),
+            parent_task_id: None,
+            children: Vec::new(),
+            status: Some("todo".to_string()),
+        },
+    );
+    graph.generated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let diagnostics = DiagnosticsReport {
+        version: 1,
+        generated_at: graph.generated_at.clone(),
+        items: Vec::new(),
+    };
+    save(identity, &graph, &diagnostics)
 }
 
 /// Add a forked task to existing graph and persist.
@@ -403,4 +471,13 @@ fn infer_root_task_id(graph: &TaskGraph, start_task_id: &str) -> String {
 
         return node.task_id.clone();
     }
+}
+
+fn infer_task_hierarchy(task_id: &str) -> (String, Option<String>) {
+    let parent = task_id.rsplit_once('.').map(|(p, _)| p.to_string());
+    let root = task_id
+        .split_once('.')
+        .map(|(r, _)| r.to_string())
+        .unwrap_or_else(|| task_id.to_string());
+    (root, parent)
 }

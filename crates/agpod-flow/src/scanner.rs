@@ -1,4 +1,4 @@
-//! Document scanner: walks configured roots and collects candidate files.
+//! Document scanner: walks configured root and collects candidate files.
 //!
 //! Keywords: document scanner, walk directory, glob match, scan documents
 
@@ -22,35 +22,32 @@ fn build_globset(patterns: &[String]) -> FlowResult<GlobSet> {
         .map_err(|e| crate::error::FlowError::Config(format!("Failed to build glob set: {e}")))
 }
 
-/// Scan configured roots and return candidate document paths.
+/// Scan configured root and return candidate document paths.
 pub fn scan_documents(repo_root: &Path, config: &FlowDocsConfig) -> FlowResult<Vec<PathBuf>> {
-    let roots = config.absolute_roots(repo_root);
+    let root = config.ensure_flow_root(repo_root)?;
     let include_set = build_globset(&config.include_globs)?;
     let exclude_set = build_globset(&config.exclude_globs)?;
 
     let mut results = Vec::new();
 
-    for root in &roots {
-        let walker = WalkDir::new(root).follow_links(config.follow_symlinks);
-
-        for entry in walker.into_iter().filter_map(|e| e.ok()) {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-
-            let path = entry.path();
-            let rel = path.strip_prefix(repo_root).unwrap_or(path);
-            let rel_str = rel.to_string_lossy();
-
-            if exclude_set.is_match(rel_str.as_ref()) {
-                continue;
-            }
-            if !include_set.is_match(rel_str.as_ref()) {
-                continue;
-            }
-
-            results.push(path.to_path_buf());
+    let walker = WalkDir::new(root).follow_links(config.follow_symlinks);
+    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
         }
+
+        let path = entry.path();
+        let rel = path.strip_prefix(repo_root).unwrap_or(path);
+        let rel_str = rel.to_string_lossy();
+
+        if exclude_set.is_match(rel_str.as_ref()) {
+            continue;
+        }
+        if !include_set.is_match(rel_str.as_ref()) {
+            continue;
+        }
+
+        results.push(path.to_path_buf());
     }
 
     results.sort();

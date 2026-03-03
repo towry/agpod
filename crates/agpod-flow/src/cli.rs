@@ -20,6 +20,9 @@ pub struct FlowArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum FlowCommand {
+    /// Initialize .agpod.flow.toml in repo root (idempotent)
+    Init,
+
     /// Rebuild graph.json from documents
     Rebuild,
 
@@ -115,12 +118,16 @@ pub enum DocCommand {
         #[arg(long)]
         path: String,
 
-        /// Task ID
+        /// Task ID (optional; auto-bootstraps T-001 if omitted)
         #[arg(long)]
-        task: String,
+        task: Option<String>,
 
         /// Document type
         #[arg(long, alias = "type")]
         doc_type: String,
+
+        /// Overwrite existing frontmatter in target file
+        #[arg(long)]
+        force: bool,
     },
 }

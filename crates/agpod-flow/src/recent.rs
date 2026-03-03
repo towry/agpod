@@ -48,39 +48,39 @@ const TAG_TRAILER: u8 = 0;
 const TAG_DOC: u8 = 1;
 const TAG_MTIME: u8 = 2;
 
+struct EvidenceInput {
+    tag: u8,
+    task_id: String,
+    ts: DateTime<Utc>,
+    dedup_key: String,
+    summary: String,
+    weight: f64,
+}
+
 impl Scorer {
-    fn add(
-        &mut self,
-        tag: u8,
-        task_id: &str,
-        ts: DateTime<Utc>,
-        dedup_key: &str,
-        summary: String,
-        weight: f64,
-        now: DateTime<Utc>,
-    ) {
+    fn add(&mut self, input: EvidenceInput, now: DateTime<Utc>) {
         if !self
             .seen
-            .insert((tag, task_id.to_string(), dedup_key.to_string()))
+            .insert((input.tag, input.task_id.clone(), input.dedup_key.clone()))
         {
             return;
         }
 
-        let decay = time_decay(now, ts);
-        *self.scores.entry(task_id.to_string()).or_default() += weight * decay;
+        let decay = time_decay(now, input.ts);
+        *self.scores.entry(input.task_id.clone()).or_default() += input.weight * decay;
 
         self.last_seen
-            .entry(task_id.to_string())
+            .entry(input.task_id.clone())
             .and_modify(|prev| {
-                if ts > *prev {
-                    *prev = ts;
+                if input.ts > *prev {
+                    *prev = input.ts;
                 }
             })
-            .or_insert(ts);
+            .or_insert(input.ts);
 
-        let ev = self.evidence.entry(task_id.to_string()).or_default();
+        let ev = self.evidence.entry(input.task_id).or_default();
         if ev.len() < MAX_EVIDENCE_PER_TASK {
-            ev.push(summary);
+            ev.push(input.summary);
         }
     }
 
@@ -171,12 +171,14 @@ pub fn recent_tasks(
                 let ts = parsed.with_timezone(&Utc);
                 if ts >= cutoff {
                     scorer.add(
-                        TAG_DOC,
-                        &task_id,
-                        ts,
-                        &rel,
-                        format!("doc updated_at in {rel}"),
-                        WEIGHT_DOC_UPDATED_AT,
+                        EvidenceInput {
+                            tag: TAG_DOC,
+                            task_id: task_id.clone(),
+                            ts,
+                            dedup_key: rel.clone(),
+                            summary: format!("doc updated_at in {rel}"),
+                            weight: WEIGHT_DOC_UPDATED_AT,
+                        },
                         now,
                     );
                 }
@@ -232,12 +234,14 @@ fn collect_trailer_evidence(
             .filter(|s| !s.is_empty())
         {
             scorer.add(
-                TAG_TRAILER,
-                task_id,
-                ts,
-                sha,
-                format!("commit {short_sha} trailer Task-Id"),
-                WEIGHT_COMMIT_TRAILER,
+                EvidenceInput {
+                    tag: TAG_TRAILER,
+                    task_id: task_id.to_string(),
+                    ts,
+                    dedup_key: sha.to_string(),
+                    summary: format!("commit {short_sha} trailer Task-Id"),
+                    weight: WEIGHT_COMMIT_TRAILER,
+                },
                 now,
             );
         }
@@ -249,12 +253,14 @@ fn collect_trailer_evidence(
             .filter(|s| !s.is_empty())
         {
             scorer.add(
-                TAG_TRAILER,
-                root_id,
-                ts,
-                sha,
-                format!("commit {short_sha} trailer Root-Task-Id"),
-                WEIGHT_COMMIT_TRAILER,
+                EvidenceInput {
+                    tag: TAG_TRAILER,
+                    task_id: root_id.to_string(),
+                    ts,
+                    dedup_key: sha.to_string(),
+                    summary: format!("commit {short_sha} trailer Root-Task-Id"),
+                    weight: WEIGHT_COMMIT_TRAILER,
+                },
                 now,
             );
         }
@@ -320,12 +326,14 @@ fn collect_batch_mtime_evidence(
         };
 
         scorer.add(
-            TAG_MTIME,
-            task_id,
-            ts,
-            line,
-            format!("git modified {line}"),
-            WEIGHT_GIT_FILE_MTIME,
+            EvidenceInput {
+                tag: TAG_MTIME,
+                task_id: task_id.to_string(),
+                ts,
+                dedup_key: line.to_string(),
+                summary: format!("git modified {line}"),
+                weight: WEIGHT_GIT_FILE_MTIME,
+            },
             now,
         );
     }
@@ -359,8 +367,28 @@ mod tests {
     fn scorer_dedup_same_evidence() {
         let now = Utc::now();
         let mut scorer = Scorer::default();
-        scorer.add(TAG_DOC, "T-001", now, "doc.md", "test".into(), 60.0, now);
-        scorer.add(TAG_DOC, "T-001", now, "doc.md", "test".into(), 60.0, now);
+        scorer.add(
+            EvidenceInput {
+                tag: TAG_DOC,
+                task_id: "T-001".into(),
+                ts: now,
+                dedup_key: "doc.md".into(),
+                summary: "test".into(),
+                weight: 60.0,
+            },
+            now,
+        );
+        scorer.add(
+            EvidenceInput {
+                tag: TAG_DOC,
+                task_id: "T-001".into(),
+                ts: now,
+                dedup_key: "doc.md".into(),
+                summary: "test".into(),
+                weight: 60.0,
+            },
+            now,
+        );
         let results = scorer.into_results(10);
         assert_eq!(results.len(), 1);
         // Only counted once
@@ -371,8 +399,28 @@ mod tests {
     fn scorer_sorts_by_score_desc() {
         let now = Utc::now();
         let mut scorer = Scorer::default();
-        scorer.add(TAG_DOC, "T-low", now, "a", "a".into(), 10.0, now);
-        scorer.add(TAG_DOC, "T-high", now, "b", "b".into(), 100.0, now);
+        scorer.add(
+            EvidenceInput {
+                tag: TAG_DOC,
+                task_id: "T-low".into(),
+                ts: now,
+                dedup_key: "a".into(),
+                summary: "a".into(),
+                weight: 10.0,
+            },
+            now,
+        );
+        scorer.add(
+            EvidenceInput {
+                tag: TAG_DOC,
+                task_id: "T-high".into(),
+                ts: now,
+                dedup_key: "b".into(),
+                summary: "b".into(),
+                weight: 100.0,
+            },
+            now,
+        );
         let results = scorer.into_results(10);
         assert_eq!(results[0].task_id, "T-high");
         assert_eq!(results[1].task_id, "T-low");
