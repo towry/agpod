@@ -62,13 +62,16 @@ pub enum FlowCommand {
 
     /// Fork a sub-task (requires -s)
     Fork {
-        /// New task ID
-        #[arg(long)]
-        to: String,
-
         /// Parent task ID (defaults to session active task)
         #[arg(long)]
         from: Option<String>,
+
+        /// Required checkpoint note before forking (for example, summary of updated task doc)
+        #[arg(
+            long,
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
+        checkpoint: String,
 
         /// Don't switch focus to the new task
         #[arg(long)]
@@ -110,6 +113,13 @@ pub enum DocCommand {
         /// Document type
         #[arg(long, alias = "type")]
         doc_type: Option<String>,
+
+        /// Document markdown content (required, non-empty)
+        #[arg(
+            long,
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
+        content: String,
     },
 
     /// Initialize frontmatter in a document
@@ -125,6 +135,13 @@ pub enum DocCommand {
         /// Document type
         #[arg(long, alias = "type")]
         doc_type: String,
+
+        /// Document markdown content (required, non-empty)
+        #[arg(
+            long,
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
+        content: String,
 
         /// Overwrite existing frontmatter in target file
         #[arg(long)]

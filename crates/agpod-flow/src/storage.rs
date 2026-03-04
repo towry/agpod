@@ -6,6 +6,7 @@ use crate::error::{FlowError, FlowResult};
 use crate::repo_id::RepoIdentity;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Base data directory: $XDG_DATA_HOME/agpod/flow
@@ -29,6 +30,44 @@ pub fn ensure_repo_data_dir(identity: &RepoIdentity) -> FlowResult<PathBuf> {
     let dir = repo_data_dir(identity)?;
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Repo-scoped lock guard for graph mutation commands.
+pub struct RepoLockGuard {
+    lock_path: PathBuf,
+}
+
+impl Drop for RepoLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
+/// Acquire repo mutation lock. This prevents concurrent agents from allocating the same task id.
+pub fn acquire_repo_lock(identity: &RepoIdentity) -> FlowResult<RepoLockGuard> {
+    let dir = ensure_repo_data_dir(identity)?;
+    let lock_path = dir.join(".graph.lock");
+    let mut retries = 0u32;
+    loop {
+        let open_result = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&lock_path);
+        match open_result {
+            Ok(_) => return Ok(RepoLockGuard { lock_path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if retries >= 200 {
+                    return Err(FlowError::Other(format!(
+                        "Timed out waiting for repo graph lock: {}",
+                        lock_path.display()
+                    )));
+                }
+                retries += 1;
+                thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(e) => return Err(FlowError::Io(e)),
+        }
+    }
 }
 
 /// Sessions runtime directory.

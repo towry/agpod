@@ -390,22 +390,15 @@ pub fn ensure_task_exists(identity: &RepoIdentity, task_id: &str) -> FlowResult<
 }
 
 /// Add a forked task to existing graph and persist.
-pub fn add_fork_task(
-    identity: &RepoIdentity,
-    parent_task_id: &str,
-    new_task_id: &str,
-) -> FlowResult<()> {
+pub fn add_fork_task(identity: &RepoIdentity, parent_task_id: &str) -> FlowResult<String> {
+    let _lock = crate::storage::acquire_repo_lock(identity)?;
     let mut graph = load(identity)?;
-
-    if graph.tasks.contains_key(new_task_id) {
-        return Err(FlowError::Other(format!(
-            "Task already exists: {new_task_id}"
-        )));
-    }
 
     if !graph.tasks.contains_key(parent_task_id) {
         return Err(FlowError::TaskNotFound(parent_task_id.to_string()));
     }
+
+    let new_task_id = allocate_next_child_task_id(&graph, parent_task_id);
 
     let root_task_id = infer_root_task_id(&graph, parent_task_id);
     graph.tasks.insert(
@@ -428,7 +421,7 @@ pub fn add_fork_task(
     let edge = Edge {
         edge_type: "parent_child".to_string(),
         from: parent_task_id.to_string(),
-        to: new_task_id.to_string(),
+        to: new_task_id.clone(),
     };
     if !graph
         .edges
@@ -444,7 +437,33 @@ pub fn add_fork_task(
         generated_at: graph.generated_at.clone(),
         items: Vec::new(),
     };
-    save(identity, &graph, &diagnostics)
+    save(identity, &graph, &diagnostics)?;
+    Ok(new_task_id)
+}
+
+fn allocate_next_child_task_id(graph: &TaskGraph, parent_task_id: &str) -> String {
+    // Use max(existing direct child numeric suffix) + 1 to keep IDs monotonic.
+    let mut max_child_index: u32 = 0;
+    for task in graph.tasks.values() {
+        if task.parent_task_id.as_deref() != Some(parent_task_id) {
+            continue;
+        }
+        let Some(suffix) = task.task_id.strip_prefix(&format!("{parent_task_id}.")) else {
+            continue;
+        };
+        // Only count direct children like T-001.2, not deeper descendants like T-001.2.1
+        if suffix.contains('.') {
+            continue;
+        }
+        let Ok(index) = suffix.parse::<u32>() else {
+            continue;
+        };
+        if index > max_child_index {
+            max_child_index = index;
+        }
+    }
+
+    format!("{parent_task_id}.{}", max_child_index + 1)
 }
 
 fn infer_root_task_id(graph: &TaskGraph, start_task_id: &str) -> String {
@@ -480,4 +499,66 @@ fn infer_task_hierarchy(task_id: &str) -> (String, Option<String>) {
         .map(|(r, _)| r.to_string())
         .unwrap_or_else(|| task_id.to_string());
     (root, parent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocate_next_child_task_id_uses_max_plus_one() {
+        let mut tasks = HashMap::new();
+        tasks.insert(
+            "T-001".to_string(),
+            TaskNode {
+                task_id: "T-001".to_string(),
+                root_task_id: Some("T-001".to_string()),
+                parent_task_id: None,
+                children: vec!["T-001.1".to_string(), "T-001.3".to_string()],
+                status: Some("todo".to_string()),
+            },
+        );
+        tasks.insert(
+            "T-001.1".to_string(),
+            TaskNode {
+                task_id: "T-001.1".to_string(),
+                root_task_id: Some("T-001".to_string()),
+                parent_task_id: Some("T-001".to_string()),
+                children: vec![],
+                status: Some("todo".to_string()),
+            },
+        );
+        tasks.insert(
+            "T-001.3".to_string(),
+            TaskNode {
+                task_id: "T-001.3".to_string(),
+                root_task_id: Some("T-001".to_string()),
+                parent_task_id: Some("T-001".to_string()),
+                children: vec!["T-001.3.1".to_string()],
+                status: Some("todo".to_string()),
+            },
+        );
+        tasks.insert(
+            "T-001.3.1".to_string(),
+            TaskNode {
+                task_id: "T-001.3.1".to_string(),
+                root_task_id: Some("T-001".to_string()),
+                parent_task_id: Some("T-001.3".to_string()),
+                children: vec![],
+                status: Some("todo".to_string()),
+            },
+        );
+
+        let graph = TaskGraph {
+            version: 1,
+            repo_id: "repo".to_string(),
+            generated_at: "2026-03-03T00:00:00Z".to_string(),
+            tasks,
+            docs: HashMap::new(),
+            edges: Vec::new(),
+        };
+
+        let next = allocate_next_child_task_id(&graph, "T-001");
+        assert_eq!(next, "T-001.4");
+    }
 }
