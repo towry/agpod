@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.9.2](https://github.com/towry/agpod/compare/v0.9.1...v0.9.2) (2026-03-04)
+
 ## [0.9.1](https://github.com/towry/agpod/compare/v0.9.0...v0.9.1) (2026-03-03)
 
 ## [0.9.0](https://github.com/towry/agpod/compare/v0.8.6...v0.9.0) (2026-03-03)

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/towry/agpod/compare/agpod-flow-v0.2.0...agpod-flow-v0.2.1) (2026-03-04)
+
+
+### Bug Fixes
+
+* cli content validation ([#93](https://github.com/towry/agpod/issues/93)) ([432fc7e](https://github.com/towry/agpod/commit/432fc7ed4c4da6b5d70ff7fcd9c37b4bef9aaf68))
+
 ## [0.2.0](https://github.com/towry/agpod/compare/agpod-flow-v0.1.0...agpod-flow-v0.2.0) (2026-03-03)
 
 
