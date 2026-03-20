@@ -34,6 +34,11 @@ fn render_text(value: &Value) {
         return;
     }
 
+    // Case list (list / recall)
+    if let Some(cases) = value.get("cases").and_then(|v| v.as_array()) {
+        render_case_list(cases, value.get("query").and_then(|v| v.as_str()));
+    }
+
     // Case info header
     if let Some(case) = value.get("case") {
         render_case_header(case);
@@ -91,6 +96,23 @@ fn render_text(value: &Value) {
     // Next
     if let Some(next) = value.get("next") {
         render_next_text(next);
+    }
+}
+
+fn render_case_list(cases: &[Value], query: Option<&str>) {
+    if cases.is_empty() {
+        if let Some(q) = query {
+            println!("No cases matching \"{q}\".");
+        } else {
+            println!("No cases.");
+        }
+        return;
+    }
+    for case in cases {
+        let id = case.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let status = case.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+        let goal = case.get("goal").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("{id}  [{status}]  {goal}");
     }
 }
 

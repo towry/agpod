@@ -522,7 +522,7 @@ impl CaseClient {
     pub async fn search_cases(&self, query: &str) -> CaseResult<Vec<Case>> {
         let results = self
             .query_raw(
-                "SELECT * FROM case WHERE repo_id = $repo_id AND goal CONTAINS $query",
+                "SELECT * FROM case WHERE repo_id = $repo_id AND string::lowercase(goal) CONTAINS string::lowercase($query)",
                 json!({ "repo_id": self.repo_id, "query": query }),
             )
             .await?;
