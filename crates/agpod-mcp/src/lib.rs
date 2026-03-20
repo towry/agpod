@@ -11,7 +11,13 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
+use tokio::process::Command;
+use uuid::Uuid;
+
+const AGENT_OPUS_SYSTEM_PROMPT: &str = include_str!("../prompts/agent_opus.md");
+const AGENT_OPUS_ALLOWED_TOOLS: &str = "Read,Bash(rg:*),Bash(fd:*)";
 
 #[derive(Debug, Clone)]
 pub struct AgpodMcpServer {
@@ -58,6 +64,87 @@ impl AgpodMcpServer {
         Ok(Json(ToolResponse {
             result: ToolEnvelope::from_raw(kind, case_id_hint, result),
         }))
+    }
+
+    async fn run_agent_opus_tool(
+        &self,
+        prompt: String,
+        resume_id: Option<String>,
+    ) -> Result<Json<AgentTextToolResponse>, ErrorData> {
+        let is_resume = resume_id.is_some();
+        let resume_id = match resolve_resume_id(resume_id) {
+            Ok(resume_id) => resume_id,
+            Err(message) => {
+                return Ok(Json(AgentTextToolResponse {
+                    result: AgentTextEnvelope {
+                        ok: false,
+                        kind: "agent_opus".to_string(),
+                        text: None,
+                        message: Some(message),
+                        resume_id: Uuid::new_v4().to_string(),
+                    },
+                }));
+            }
+        };
+
+        let mut command = Command::new("claude");
+        command
+            .arg("-p")
+            .arg("--model")
+            .arg("opus")
+            .arg("--effort")
+            .arg("high")
+            .arg("--strict-mcp-config")
+            .arg("--system-prompt")
+            .arg(AGENT_OPUS_SYSTEM_PROMPT)
+            .arg("--allowed-tools")
+            .arg(AGENT_OPUS_ALLOWED_TOOLS)
+            .arg("--")
+            .arg(prompt)
+            .stdin(Stdio::null());
+
+        if is_resume {
+            command.arg("--resume").arg(&resume_id);
+        } else {
+            command.arg("--session-id").arg(&resume_id);
+        }
+
+        let output = command.output().await;
+
+        let result = match output {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                AgentTextEnvelope {
+                    ok: true,
+                    kind: "agent_opus".to_string(),
+                    text: Some(text),
+                    message: None,
+                    resume_id,
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let message = if !stderr.is_empty() { stderr } else { stdout };
+
+                AgentTextEnvelope {
+                    ok: false,
+                    kind: "agent_opus".to_string(),
+                    text: None,
+                    message: Some(message),
+                    resume_id,
+                }
+            }
+            Err(err) => AgentTextEnvelope {
+                ok: false,
+                kind: "agent_opus".to_string(),
+                text: None,
+                message: Some(format!("failed to execute claude: {err}")),
+                resume_id,
+            },
+        };
+
+        Ok(Json(AgentTextToolResponse { result }))
     }
 }
 
@@ -120,6 +207,54 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
         .clone()
 }
 
+fn agent_text_output_schema() -> Arc<JsonObject> {
+    static SCHEMA: OnceLock<Arc<JsonObject>> = OnceLock::new();
+
+    SCHEMA
+        .get_or_init(|| {
+            Arc::new(
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "result": {
+                            "type": "object",
+                            "properties": {
+                                "ok": {
+                                    "type": "boolean",
+                                    "description": "Whether the Claude Opus invocation succeeded."
+                                },
+                                "kind": {
+                                    "type": "string",
+                                    "description": "Stable result kind. Always `agent_opus`."
+                                },
+                                "text": {
+                                    "type": ["string", "null"],
+                                    "description": "Claude Opus text output on success."
+                                },
+                                "message": {
+                                    "type": ["string", "null"],
+                                    "description": "Failure message when the invocation did not succeed."
+                                },
+                                "resume_id": {
+                                    "type": "string",
+                                    "description": "Stable Claude session ID. Reuse it in later calls to continue the same discussion."
+                                }
+                            },
+                            "required": ["ok", "kind", "resume_id"]
+                        }
+                    },
+                    "required": ["result"],
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "title": "AgentTextToolResponse"
+                })
+                .as_object()
+                .expect("output schema should be an object")
+                .clone(),
+            )
+        })
+        .clone()
+}
+
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
@@ -131,6 +266,18 @@ impl ServerHandler for AgpodMcpServer {
 
 #[tool_router]
 impl AgpodMcpServer {
+    #[tool(
+        name = "agent_opus",
+        description = "Read-only second opinion via Claude Opus. Input a prompt, output text.",
+        output_schema = agent_text_output_schema()
+    )]
+    async fn agent_opus(
+        &self,
+        Parameters(req): Parameters<AgentTextRequest>,
+    ) -> Result<Json<AgentTextToolResponse>, ErrorData> {
+        self.run_agent_opus_tool(req.prompt, req.resume_id).await
+    }
+
     #[tool(
         name = "case_current",
         description = "Read active case state. Safe first call.",
@@ -454,6 +601,15 @@ fn encode_constraints(constraints: Vec<ConstraintInput>) -> Vec<String> {
         .collect()
 }
 
+fn resolve_resume_id(resume_id: Option<String>) -> Result<String, String> {
+    match resume_id {
+        Some(resume_id) => Uuid::parse_str(&resume_id)
+            .map(|uuid| uuid.to_string())
+            .map_err(|err| format!("resume_id must be a valid UUID: {err}")),
+        None => Ok(Uuid::new_v4().to_string()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ConstraintInput {
     /// Constraint text.
@@ -681,6 +837,30 @@ pub struct CaseStepBlockRequest {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentTextRequest {
+    /// Prompt sent to the read-only Claude Opus second-opinion agent.
+    pub prompt: String,
+    /// Optional Claude session ID to continue a previous discussion.
+    pub resume_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentTextToolResponse {
+    pub result: AgentTextEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentTextEnvelope {
+    pub ok: bool,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub resume_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,6 +874,7 @@ mod tests {
         assert!(tool_names.contains(&"case_current"));
         assert!(tool_names.contains(&"case_open"));
         assert!(tool_names.contains(&"case_step_add"));
+        assert!(tool_names.contains(&"agent_opus"));
 
         let current_tool = tools
             .iter()
@@ -718,14 +899,22 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "case_open")
             .expect("case_open tool should exist");
+        let agent_tool = tools
+            .iter()
+            .find(|tool| tool.name == "agent_opus")
+            .expect("agent_opus tool should exist");
 
         let current_schema =
             serde_json::to_value(&current_tool.input_schema).expect("schema should serialize");
         let open_schema =
             serde_json::to_value(&open_tool.input_schema).expect("schema should serialize");
+        let agent_schema =
+            serde_json::to_value(&agent_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
+        assert!(agent_schema.to_string().contains("prompt"));
+        assert!(agent_schema.to_string().contains("resume_id"));
     }
 
     #[test]
@@ -773,5 +962,24 @@ mod tests {
             envelope.message.as_deref(),
             Some("no open case in this repository")
         );
+    }
+
+    #[test]
+    fn agent_opus_prompt_is_loaded_from_markdown() {
+        assert!(AGENT_OPUS_SYSTEM_PROMPT.contains("第二意见代理"));
+        assert!(AGENT_OPUS_SYSTEM_PROMPT.contains("只读"));
+    }
+
+    #[test]
+    fn resolve_resume_id_reuses_valid_uuid() {
+        let input = "123e4567-e89b-12d3-a456-426614174000".to_string();
+        let result = resolve_resume_id(Some(input.clone())).expect("uuid should be valid");
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn resolve_resume_id_rejects_invalid_uuid() {
+        let err = resolve_resume_id(Some("not-a-uuid".to_string())).expect_err("uuid invalid");
+        assert!(err.contains("resume_id must be a valid UUID"));
     }
 }
