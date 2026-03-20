@@ -31,14 +31,8 @@ pub enum CaseError {
     #[error("case is not open: {0}")]
     CaseNotOpen(String),
 
-    #[error("missing required field: {0}")]
-    MissingField(String),
-
     #[error("redirect requires both success_condition and abort_condition")]
     MissingDirectionExitConditions,
-
-    #[error("redirect requires both reason and context")]
-    MissingRedirectContext,
 
     #[error("step not found: {0}")]
     StepNotFound(String),

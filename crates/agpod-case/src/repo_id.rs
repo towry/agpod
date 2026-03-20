@@ -13,6 +13,7 @@ pub struct RepoIdentity {
     /// Stable hex hash: hex(sha256("v1:" + normalized))[0..16]
     pub repo_id: String,
     /// Human-readable label, e.g. "github.com/towry/agpod"
+    #[allow(dead_code)]
     pub repo_label: String,
 }
 

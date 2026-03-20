@@ -367,7 +367,7 @@ pub fn direction_json(dir: &Direction) -> Value {
 
 pub fn steps_json(current: Option<&Step>, pending: &[Step]) -> Value {
     json!({
-        "current": current.map(|s| step_json(s)),
+        "current": current.map(step_json),
         "pending": pending.iter().map(step_json).collect::<Vec<_>>()
     })
 }

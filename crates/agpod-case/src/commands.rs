@@ -350,6 +350,7 @@ async fn cmd_decide(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_redirect(
     client: &CaseClient,
     case_id: &str,
@@ -442,7 +443,7 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
         let dir_steps: Vec<_> = all_steps
             .iter()
             .filter(|s| s.direction_seq == dir.seq)
-            .map(|s| output::step_json(s))
+            .map(output::step_json)
             .collect();
         if !dir_steps.is_empty() {
             steps_by_dir.insert(dir.seq.to_string(), json!(dir_steps));
@@ -451,7 +452,7 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
 
     let dir_history: Vec<_> = directions
         .iter()
-        .map(|d| output::direction_json(d))
+        .map(output::direction_json)
         .collect();
 
     Ok(json!({
@@ -761,7 +762,7 @@ async fn cmd_step_block(
 async fn cmd_recall(client: &CaseClient, query: &str) -> CaseResult<serde_json::Value> {
     let cases = client.search_cases(query).await?;
 
-    let case_list: Vec<_> = cases.iter().map(|c| output::case_json(c)).collect();
+    let case_list: Vec<_> = cases.iter().map(output::case_json).collect();
 
     Ok(json!({
         "ok": true,
@@ -773,7 +774,7 @@ async fn cmd_recall(client: &CaseClient, query: &str) -> CaseResult<serde_json::
 async fn cmd_list(client: &CaseClient) -> CaseResult<serde_json::Value> {
     let cases = client.list_cases().await?;
 
-    let case_list: Vec<_> = cases.iter().map(|c| output::case_json(c)).collect();
+    let case_list: Vec<_> = cases.iter().map(output::case_json).collect();
 
     Ok(json!({
         "ok": true,

@@ -104,6 +104,7 @@ impl CaseClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn repo_id(&self) -> &str {
         &self.repo_id
     }
@@ -254,6 +255,7 @@ impl CaseClient {
 
     // ── Direction operations ──
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_direction(
         &self,
         case_id: &str,
@@ -423,6 +425,7 @@ impl CaseClient {
 
     // ── Entry operations ──
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_entry(
         &self,
         case_id: &str,
