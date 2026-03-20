@@ -1,5 +1,5 @@
+use agpod_case as case;
 use agpod_diff as diff;
-use agpod_flow as flow;
 use agpod_vcs_path as vcs_path;
 use clap::{Parser, Subcommand};
 
@@ -28,8 +28,8 @@ enum Commands {
         #[arg(long)]
         context: Option<String>,
     },
-    /// Document-driven task graph workflow
-    Flow(flow::FlowArgs),
+    /// Exploration case tracker backed by helix-db
+    Case(case::CaseArgs),
     /// Format paths with VCS (Git/Jujutsu) branch/bookmark information
     VcsPathInfo(vcs_path::VcsPathInfoArgs),
 }
@@ -53,8 +53,8 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::Flow(args)) => {
-            if let Err(e) = flow::run(args) {
+        Some(Commands::Case(args)) => {
+            if let Err(e) = case::run(args).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
