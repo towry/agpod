@@ -33,6 +33,18 @@ fn render_text(value: &Value) {
         if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
             eprintln!("Error: {msg}");
         }
+        if let Some(case) = value.get("case") {
+            render_case_header(case);
+        }
+        if let Some(dir) = value.get("direction") {
+            render_direction(dir);
+        }
+        if let Some(steps) = value.get("steps") {
+            render_steps(steps, false);
+        }
+        if let Some(cases) = value.get("cases").and_then(|v| v.as_array()) {
+            render_case_list(cases, value.get("query").and_then(|v| v.as_str()));
+        }
         if let Some(next) = value.get("next") {
             render_next_text(next);
         }
@@ -60,11 +72,12 @@ fn render_text(value: &Value) {
     }
 
     // Direction history + steps (show command) — unified tree
-    if let (Some(history), Some(sbd)) = (
+    let rendered_direction_tree = if let (Some(history), Some(sbd)) = (
         value.get("direction_history").and_then(|v| v.as_array()),
         value.get("steps_by_direction"),
     ) {
         render_direction_tree(history, sbd);
+        true
     } else {
         // Standalone direction history (non-show contexts)
         if let Some(history) = value.get("direction_history") {
@@ -74,11 +87,12 @@ fn render_text(value: &Value) {
         if let Some(sbd) = value.get("steps_by_direction") {
             render_steps_by_direction(sbd);
         }
-    }
+        false
+    };
 
     // Steps
     if let Some(steps) = value.get("steps") {
-        render_steps(steps);
+        render_steps(steps, rendered_direction_tree);
     }
 
     // Step (single, for step add)
@@ -193,7 +207,25 @@ fn render_direction_history(history: &Value) {
     }
 }
 
-fn render_steps(steps: &Value) {
+fn render_steps(steps: &Value, current_only: bool) {
+    if let Some(ordered) = steps.get("ordered").and_then(|v| v.as_array()) {
+        if !ordered.is_empty() {
+            if current_only {
+                println!("current_steps:");
+            } else {
+                println!("steps:");
+            }
+            for step in ordered {
+                let order = step.get("order").and_then(|v| v.as_u64()).unwrap_or(0);
+                let id = step.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let status = step.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                let title = step.get("title").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  {order}. {id}  [{status}]  {title}");
+            }
+            return;
+        }
+    }
+
     if let Some(current) = steps.get("current") {
         if !current.is_null() {
             let id = current.get("id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -224,23 +256,16 @@ fn render_direction_tree(history: &[Value], sbd: &Value) {
             .get("is_current")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let step_count = steps_map
+            .and_then(|obj| obj.get(&seq.to_string()))
+            .and_then(|v| v.as_array())
+            .map_or(0, Vec::len);
         let label = if is_current {
-            format!("[{seq}] {summary} (current)")
+            format!("[{seq}] {summary} (current) ({step_count} steps)")
         } else {
-            format!("[{seq}] {summary}")
+            format!("[{seq}] {summary} ({step_count} steps)")
         };
-        let mut dir_node = Tree::new(label);
-
-        if let Some(obj) = steps_map {
-            if let Some(steps) = obj.get(&seq.to_string()).and_then(|v| v.as_array()) {
-                for s in steps {
-                    let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("?");
-                    let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    dir_node.push(Tree::new(format!("{id}  [{status}]  {title}")));
-                }
-            }
-        }
+        let dir_node = Tree::new(label);
 
         root.push(dir_node);
     }
@@ -426,10 +451,24 @@ pub fn direction_json(dir: &Direction) -> Value {
     v
 }
 
-pub fn steps_json(current: Option<&Step>, pending: &[Step]) -> Value {
+pub fn steps_json(steps: &[Step]) -> Value {
+    let mut ordered: Vec<&Step> = steps.iter().collect();
+    ordered.sort_by_key(|step| step.order_index);
+
+    let current = ordered
+        .iter()
+        .find(|step| step.status == StepStatus::Active)
+        .copied();
+    let pending: Vec<&Step> = ordered
+        .iter()
+        .copied()
+        .filter(|step| step.status == StepStatus::Pending)
+        .collect();
+
     json!({
+        "ordered": ordered.iter().map(|step| step_json(step)).collect::<Vec<_>>(),
         "current": current.map(step_json),
-        "pending": pending.iter().map(step_json).collect::<Vec<_>>()
+        "pending": pending.iter().map(|step| step_json(step)).collect::<Vec<_>>()
     })
 }
 
@@ -458,4 +497,44 @@ pub fn context_json(case_id: &str, direction_seq: u32) -> Value {
         "active_case_id": case_id,
         "current_direction_seq": direction_seq
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_step(id: &str, order: u32, status: StepStatus, title: &str) -> Step {
+        Step {
+            id: id.to_string(),
+            case_id: "case-1".to_string(),
+            direction_seq: 1,
+            order_index: order,
+            title: title.to_string(),
+            status,
+            reason: None,
+            created_at: "2026-03-21T00:00:00Z".to_string(),
+            updated_at: "2026-03-21T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn steps_json_returns_ordered_full_state() {
+        let steps = vec![
+            make_step("step-2", 2, StepStatus::Pending, "Second"),
+            make_step("step-3", 3, StepStatus::Done, "Third"),
+            make_step("step-1", 1, StepStatus::Active, "First"),
+        ];
+
+        let result = steps_json(&steps);
+        let ordered = result["ordered"].as_array().expect("ordered steps");
+        let pending = result["pending"].as_array().expect("pending steps");
+
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0]["id"], "step-1");
+        assert_eq!(ordered[1]["id"], "step-2");
+        assert_eq!(ordered[2]["id"], "step-3");
+        assert_eq!(result["current"]["id"], "step-1");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["id"], "step-2");
+    }
 }

@@ -96,16 +96,18 @@ agpod case step start --id C-YYYYMMDD-NN --step-id C-YYYYMMDD-NN/S-001
 agpod case step done --id C-YYYYMMDD-NN --step-id C-YYYYMMDD-NN/S-001
 
 # Mark step blocked
-agpod case step block --id C-YYYYMMDD-NN --step-id C-YYYYMMDD-NN/S-001
+agpod case step block --id C-YYYYMMDD-NN --step-id C-YYYYMMDD-NN/S-001 \
+  --reason "Blocked by dependency X"
 
 # Reorder a step
-agpod case step move --id C-YYYYMMDD-NN --step-id C-YYYYMMDD-NN/S-001 --position 3
+agpod case step move --id C-YYYYMMDD-NN --step-id C-YYYYMMDD-NN/S-001 \
+  --before C-YYYYMMDD-NN/S-003
 ```
 
 ### Search & Handoff
 
 ```bash
-# Search past cases (case-insensitive)
+# Search past cases by goal text (case-insensitive)
 agpod case recall "search query"
 
 # List all cases in this repo

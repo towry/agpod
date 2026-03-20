@@ -49,7 +49,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
         }
     };
 
-    let result = match args.command {
+    let result = match &args.command {
         CaseCommand::Open {
             goal,
             direction,
@@ -60,10 +60,10 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
         } => {
             cmd_open(
                 &client,
-                &goal,
-                &direction,
-                &goal_constraints,
-                &constraints,
+                goal,
+                direction,
+                goal_constraints,
+                constraints,
                 success_condition.as_deref(),
                 abort_condition.as_deref(),
             )
@@ -78,23 +78,16 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             context,
         } => {
             let file_list: Vec<String> = files
+                .as_ref()
                 .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            cmd_record(
-                &client,
-                &id,
-                &summary,
-                &kind,
-                &file_list,
-                context.as_deref(),
-            )
-            .await
+            cmd_record(&client, id, summary, kind, &file_list, context.as_deref()).await
         }
         CaseCommand::Decide {
             id,
             summary,
             reason,
-        } => cmd_decide(&client, &id, &summary, &reason).await,
+        } => cmd_decide(&client, id, summary, reason).await,
         CaseCommand::Redirect {
             id,
             direction,
@@ -106,21 +99,21 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
         } => {
             cmd_redirect(
                 &client,
-                &id,
-                &direction,
-                &reason,
-                &context,
-                &constraints,
-                &success_condition,
-                &abort_condition,
+                id,
+                direction,
+                reason,
+                context,
+                constraints,
+                success_condition,
+                abort_condition,
             )
             .await
         }
         CaseCommand::Show { id } => cmd_show(&client, id.as_deref()).await,
-        CaseCommand::Close { id, summary } => cmd_close(&client, &id, &summary).await,
-        CaseCommand::Abandon { id, summary } => cmd_abandon(&client, &id, &summary).await,
+        CaseCommand::Close { id, summary } => cmd_close(&client, id, summary).await,
+        CaseCommand::Abandon { id, summary } => cmd_abandon(&client, id, summary).await,
         CaseCommand::Step { command } => cmd_step(&client, command).await,
-        CaseCommand::Recall { query } => cmd_recall(&client, &query).await,
+        CaseCommand::Recall { query } => cmd_recall(&client, query).await,
         CaseCommand::List => cmd_list(&client).await,
         CaseCommand::Resume { id } => cmd_resume(&client, id.as_deref()).await,
     };
@@ -131,10 +124,155 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             value
         }
         Err(e) => {
-            let mut err_value = output::error_json("error", &e.to_string(), None);
+            let mut err_value = build_error_value(&client, &args.command, &e).await;
             err_value["_meta"] = json!({ "json_mode": json_mode });
             err_value
         }
+    }
+}
+
+async fn build_error_value(
+    client: &CaseClient,
+    command: &CaseCommand,
+    error: &CaseError,
+) -> serde_json::Value {
+    let mut err_value = output::error_json("error", &error.to_string(), error_next_action(error));
+    err_value["state"] = json!(error_state(error));
+
+    if let Some(case_id) = command_case_id(command) {
+        err_value["requested_case_id"] = json!(case_id);
+    }
+    if let Some(step_id) = command_step_id(command) {
+        err_value["requested_step_id"] = json!(step_id);
+    }
+    if let Some(before_id) = command_before_step_id(command) {
+        err_value["requested_before_step_id"] = json!(before_id);
+    }
+
+    if let Ok(cases) = client.list_cases().await {
+        if !cases.is_empty() {
+            err_value["cases"] = json!(cases.iter().map(output::case_json).collect::<Vec<_>>());
+        }
+    }
+
+    if let Some(case) = load_context_case(client, command, error).await {
+        err_value["case"] = output::case_json(&case);
+        err_value["context"] = output::context_json(&case.id, case.current_direction_seq);
+
+        if let Ok(direction) = client
+            .get_current_direction(&case.id, case.current_direction_seq)
+            .await
+        {
+            err_value["direction"] = output::direction_json(&direction);
+        }
+
+        if let Ok(steps) = client.get_steps(&case.id, case.current_direction_seq).await {
+            err_value["steps"] = output::steps_json(&steps);
+        }
+    }
+
+    err_value
+}
+
+fn error_state(error: &CaseError) -> &'static str {
+    match error {
+        CaseError::RepoHasOpenCase(_) => "conflict",
+        CaseError::NoOpenCase => "none",
+        CaseError::CaseNotFound(_) | CaseError::StepNotFound(_) => "missing",
+        CaseError::CaseNotOpen(_) => "not_open",
+        _ => "error",
+    }
+}
+
+fn error_next_action(error: &CaseError) -> Option<NextAction> {
+    match error {
+        CaseError::RepoHasOpenCase(_) => Some(NextAction {
+            suggested_command: "resume".to_string(),
+            why: "an open case already exists for this repository".to_string(),
+        }),
+        CaseError::NoOpenCase => Some(NextAction {
+            suggested_command: "open".to_string(),
+            why: "there is no active case yet for this repository".to_string(),
+        }),
+        CaseError::CaseNotFound(_) => Some(NextAction {
+            suggested_command: "list".to_string(),
+            why: "inspect available case IDs before retrying".to_string(),
+        }),
+        CaseError::StepNotFound(_) => Some(NextAction {
+            suggested_command: "current".to_string(),
+            why: "inspect the latest ordered steps before retrying".to_string(),
+        }),
+        _ => None,
+    }
+}
+
+async fn load_context_case(
+    client: &CaseClient,
+    command: &CaseCommand,
+    error: &CaseError,
+) -> Option<Case> {
+    if let Some(case_id) = command_case_id(command) {
+        if let Ok(case) = client.get_case(case_id).await {
+            return Some(case);
+        }
+    }
+
+    if matches!(error, CaseError::RepoHasOpenCase(_) | CaseError::NoOpenCase)
+        || matches!(
+            command,
+            CaseCommand::Open { .. }
+                | CaseCommand::Current
+                | CaseCommand::Show { id: None }
+                | CaseCommand::Resume { id: None }
+        )
+    {
+        return client.find_open_case().await.ok().flatten();
+    }
+
+    None
+}
+
+fn command_case_id(command: &CaseCommand) -> Option<&str> {
+    match command {
+        CaseCommand::Record { id, .. }
+        | CaseCommand::Decide { id, .. }
+        | CaseCommand::Redirect { id, .. }
+        | CaseCommand::Close { id, .. }
+        | CaseCommand::Abandon { id, .. } => Some(id.as_str()),
+        CaseCommand::Show { id } | CaseCommand::Resume { id } => id.as_deref(),
+        CaseCommand::Step { command } => match command {
+            StepCommand::Add { id, .. }
+            | StepCommand::Start { id, .. }
+            | StepCommand::Done { id, .. }
+            | StepCommand::Move { id, .. }
+            | StepCommand::Block { id, .. } => Some(id.as_str()),
+        },
+        CaseCommand::Open { .. }
+        | CaseCommand::Current
+        | CaseCommand::Recall { .. }
+        | CaseCommand::List => None,
+    }
+}
+
+fn command_step_id(command: &CaseCommand) -> Option<&str> {
+    match command {
+        CaseCommand::Step { command } => match command {
+            StepCommand::Start { step_id, .. }
+            | StepCommand::Done { step_id, .. }
+            | StepCommand::Move { step_id, .. }
+            | StepCommand::Block { step_id, .. } => Some(step_id.as_str()),
+            StepCommand::Add { .. } => None,
+        },
+        _ => None,
+    }
+}
+
+fn command_before_step_id(command: &CaseCommand) -> Option<&str> {
+    match command {
+        CaseCommand::Step {
+            command: StepCommand::Move { before, .. },
+        } => Some(before.as_str()),
+        _ => None,
     }
 }
 
@@ -230,7 +368,7 @@ async fn cmd_open(
         "ok": true,
         "case": output::case_json(&case),
         "direction": output::direction_json(&dir),
-        "steps": output::steps_json(None, &[]),
+        "steps": output::steps_json(&[]),
         "context": output::context_json(&case_id, 1),
         "next": output::next_json(&next)
     }))
@@ -273,7 +411,7 @@ async fn cmd_current(client: &CaseClient) -> CaseResult<serde_json::Value> {
         "direction": output::direction_json(&dir),
         "direction_history": dir_history,
         "steps_by_direction": steps_by_dir,
-        "steps": output::steps_json(current_step.as_ref(), &pending_steps),
+        "steps": output::steps_json(&steps),
         "context": output::context_json(&case.id, case.current_direction_seq)
     });
 
@@ -473,7 +611,7 @@ async fn cmd_redirect(
             "context": context
         },
         "direction": output::direction_json(&new_dir),
-        "steps": output::steps_json(None, &[]),
+        "steps": output::steps_json(&[]),
         "context": output::context_json(case_id, new_seq),
         "next": output::next_json(&next)
     }))
@@ -552,23 +690,23 @@ async fn cmd_abandon(
     }))
 }
 
-async fn cmd_step(client: &CaseClient, command: StepCommand) -> CaseResult<serde_json::Value> {
+async fn cmd_step(client: &CaseClient, command: &StepCommand) -> CaseResult<serde_json::Value> {
     match command {
         StepCommand::Add { id, title, reason } => {
-            cmd_step_add(client, &id, &title, reason.as_deref()).await
+            cmd_step_add(client, id, title, reason.as_deref()).await
         }
-        StepCommand::Start { id, step_id } => cmd_step_start(client, &id, &step_id).await,
-        StepCommand::Done { id, step_id } => cmd_step_done(client, &id, &step_id).await,
+        StepCommand::Start { id, step_id } => cmd_step_start(client, id, step_id).await,
+        StepCommand::Done { id, step_id } => cmd_step_done(client, id, step_id).await,
         StepCommand::Move {
             id,
             step_id,
             before,
-        } => cmd_step_move(client, &id, &step_id, &before).await,
+        } => cmd_step_move(client, id, step_id, before).await,
         StepCommand::Block {
             id,
             step_id,
             reason,
-        } => cmd_step_block(client, &id, &step_id, &reason).await,
+        } => cmd_step_block(client, id, step_id, reason).await,
     }
 }
 
@@ -603,6 +741,10 @@ async fn cmd_step_add(
         why: "the step exists but is not active yet".to_string(),
     };
 
+    let steps = client
+        .get_steps(case_id, case.current_direction_seq)
+        .await?;
+
     Ok(json!({
         "ok": true,
         "step": {
@@ -611,6 +753,7 @@ async fn cmd_step_add(
             "title": step.title,
             "status": step.status.as_str()
         },
+        "steps": output::steps_json(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -643,7 +786,6 @@ async fn cmd_step_start(
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
         .await?;
-    let (current_step, pending_steps) = split_steps(&steps);
 
     let next = NextAction {
         suggested_command: "record".to_string(),
@@ -652,7 +794,7 @@ async fn cmd_step_start(
 
     Ok(json!({
         "ok": true,
-        "steps": output::steps_json(current_step.as_ref(), &pending_steps),
+        "steps": output::steps_json(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -677,7 +819,7 @@ async fn cmd_step_done(
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
         .await?;
-    let (current_step, pending_steps) = split_steps(&steps);
+    let (_, pending_steps) = split_steps(&steps);
 
     let next = if pending_steps.is_empty() {
         NextAction {
@@ -693,7 +835,7 @@ async fn cmd_step_done(
 
     Ok(json!({
         "ok": true,
-        "steps": output::steps_json(current_step.as_ref(), &pending_steps),
+        "steps": output::steps_json(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -745,7 +887,6 @@ async fn cmd_step_move(
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
         .await?;
-    let (current_step, pending_steps) = split_steps(&steps);
 
     let next = NextAction {
         suggested_command: "step start".to_string(),
@@ -754,7 +895,8 @@ async fn cmd_step_move(
 
     Ok(json!({
         "ok": true,
-        "steps": output::steps_json(current_step.as_ref(), &pending_steps),
+        "steps": output::steps_json(&steps),
+        "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
 }
@@ -776,7 +918,6 @@ async fn cmd_step_block(
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
         .await?;
-    let (current_step, pending_steps) = split_steps(&steps);
 
     let next = NextAction {
         suggested_command: "step add".to_string(),
@@ -785,7 +926,7 @@ async fn cmd_step_block(
 
     Ok(json!({
         "ok": true,
-        "steps": output::steps_json(current_step.as_ref(), &pending_steps),
+        "steps": output::steps_json(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))

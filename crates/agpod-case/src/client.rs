@@ -400,7 +400,7 @@ impl CaseClient {
         results
             .first()
             .and_then(parse_single_step)
-            .ok_or_else(|| CaseError::Other(format!("step not found: {step_id}")))
+            .ok_or_else(|| CaseError::StepNotFound(step_id.to_string()))
     }
 
     pub async fn update_step(

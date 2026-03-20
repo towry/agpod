@@ -521,10 +521,29 @@ fn extract_case_id(raw: &Map<String, Value>) -> Option<String> {
 }
 
 fn extract_state(raw: &Map<String, Value>, ok: bool) -> Option<String> {
-    raw.get("case")
-        .and_then(|value| value.get("status"))
+    raw.get("state")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+        .or_else(|| {
+            if !ok
+                && raw
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message == "no open case in this repository")
+            {
+                Some("none".to_string())
+            } else if !ok {
+                Some("error".to_string())
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            raw.get("case")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .or_else(|| {
             if raw.get("resume").is_some() {
                 Some("resume".to_string())
@@ -532,13 +551,6 @@ fn extract_state(raw: &Map<String, Value>, ok: bool) -> Option<String> {
                 Some("list".to_string())
             } else if raw.get("step").is_some() || raw.get("steps").is_some() {
                 Some("step".to_string())
-            } else if !ok
-                && raw
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .is_some_and(|message| message == "no open case in this repository")
-            {
-                Some("none".to_string())
             } else if ok {
                 Some("ok".to_string())
             } else {
