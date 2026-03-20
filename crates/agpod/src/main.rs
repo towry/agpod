@@ -28,7 +28,7 @@ enum Commands {
         #[arg(long)]
         context: Option<String>,
     },
-    /// Exploration case tracker backed by helix-db
+    /// Track exploration cases: open/close/redirect goals, record findings, manage steps. Use `--json` for machine output. All args are `--key value` (no positional).
     Case(case::CaseArgs),
     /// Format paths with VCS (Git/Jujutsu) branch/bookmark information
     VcsPathInfo(vcs_path::VcsPathInfoArgs),

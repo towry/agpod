@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Exploration case tracker backed by SurrealDB embedded"
+description = "Exploration case tracker"
 
 [dependencies]
 agpod-core = { workspace = true }
