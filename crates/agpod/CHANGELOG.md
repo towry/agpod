@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/towry/agpod/compare/v0.9.2...v0.10.0) (2026-03-20)
+
+
+### Features
+
+* case tool ([#95](https://github.com/towry/agpod/issues/95)) ([804461e](https://github.com/towry/agpod/commit/804461eb7576936b8b855fe0a96254e8c2e34953))
+
 ## [0.9.2](https://github.com/towry/agpod/compare/v0.9.1...v0.9.2) (2026-03-04)
 
 ## [0.9.1](https://github.com/towry/agpod/compare/v0.9.0...v0.9.1) (2026-03-03)

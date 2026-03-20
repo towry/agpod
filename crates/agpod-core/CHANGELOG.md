@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/towry/agpod/compare/agpod-core-v0.8.1...agpod-core-v0.9.0) (2026-03-20)
+
+
+### Features
+
+* case tool ([#95](https://github.com/towry/agpod/issues/95)) ([804461e](https://github.com/towry/agpod/commit/804461eb7576936b8b855fe0a96254e8c2e34953))
+
 ## [0.8.1](https://github.com/towry/agpod/compare/agpod-core-v0.8.0...agpod-core-v0.8.1) (2025-10-23)
 
 
