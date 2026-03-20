@@ -4,6 +4,7 @@ members = [
     "crates/agpod-diff",
     "crates/agpod-case",
     "crates/agpod-vcs-path",
+    "crates/agpod-mcp",
     "crates/agpod",
 ]
 resolver = "2"
@@ -21,6 +22,7 @@ agpod-core = { path = "crates/agpod-core" }
 agpod-diff = { path = "crates/agpod-diff" }
 agpod-case = { path = "crates/agpod-case" }
 agpod-vcs-path = { path = "crates/agpod-vcs-path" }
+agpod-mcp = { path = "crates/agpod-mcp" }
 
 # External dependencies
 regex = "1.11"
@@ -44,3 +46,4 @@ git2 = { version = "0.19", default-features = false }
 termtree = "0.4"
 surrealdb = { version = "3", features = ["kv-rocksdb"] }
 sha2 = "0.10"
+rmcp = { version = "1.2.0", features = ["client", "transport-io"] }

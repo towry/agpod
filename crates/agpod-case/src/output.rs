@@ -4,6 +4,7 @@
 
 use crate::types::*;
 use serde_json::{json, Value};
+use termtree::Tree;
 
 /// Render the result either as JSON or human-readable text.
 pub fn render(json_mode: bool, value: &Value) {
@@ -15,9 +16,13 @@ pub fn render(json_mode: bool, value: &Value) {
 }
 
 fn render_json(value: &Value) {
+    let mut printable = value.clone();
+    if let Some(obj) = printable.as_object_mut() {
+        obj.remove("_meta");
+    }
     println!(
         "{}",
-        serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(&printable).unwrap_or_else(|_| "{}".to_string())
     );
 }
 
@@ -54,19 +59,26 @@ fn render_text(value: &Value) {
         render_direction(dir);
     }
 
-    // Direction history
-    if let Some(history) = value.get("direction_history") {
-        render_direction_history(history);
+    // Direction history + steps (show command) — unified tree
+    if let (Some(history), Some(sbd)) = (
+        value.get("direction_history").and_then(|v| v.as_array()),
+        value.get("steps_by_direction"),
+    ) {
+        render_direction_tree(history, sbd);
+    } else {
+        // Standalone direction history (non-show contexts)
+        if let Some(history) = value.get("direction_history") {
+            render_direction_history(history);
+        }
+        // Standalone steps (non-show contexts)
+        if let Some(sbd) = value.get("steps_by_direction") {
+            render_steps_by_direction(sbd);
+        }
     }
 
     // Steps
     if let Some(steps) = value.get("steps") {
         render_steps(steps);
-    }
-
-    // Steps by direction (show command)
-    if let Some(sbd) = value.get("steps_by_direction") {
-        render_steps_by_direction(sbd);
     }
 
     // Step (single, for step add)
@@ -81,16 +93,15 @@ fn render_text(value: &Value) {
 
     // Last fact
     if let Some(fact) = value.get("last_fact").and_then(|v| v.as_str()) {
-        println!("\n  last_fact:");
-        println!("    {fact}");
+        println!("last_fact: {fact}");
     }
 
     // Health
     if let Some(health) = value.get("health").and_then(|v| v.as_str()) {
-        println!("\n  health: {health}");
+        println!("health: {health}");
     }
     if let Some(warning) = value.get("warning").and_then(|v| v.as_str()) {
-        println!("  warning: {warning}");
+        println!("warning: {warning}");
     }
 
     // Next
@@ -121,12 +132,13 @@ fn render_case_header(case: &Value) {
     let status = case.get("status").and_then(|v| v.as_str()).unwrap_or("?");
     let goal = case.get("goal").and_then(|v| v.as_str()).unwrap_or("?");
 
-    println!("{id}  [{status}]");
-    println!("\n  goal:  {goal}");
+    println!("case_id: {id}");
+    println!("status: {status}");
+    println!("goal: {goal}");
 
     if let Some(constraints) = case.get("goal_constraints").and_then(|v| v.as_array()) {
         if !constraints.is_empty() {
-            println!("\n  goal_constraints:");
+            println!("goal_constraints:");
             for c in constraints {
                 if let Some(rule) = c.get("rule").and_then(|v| v.as_str()) {
                     println!("    - {rule}");
@@ -141,13 +153,12 @@ fn render_case_header(case: &Value) {
 
 fn render_direction(dir: &Value) {
     if let Some(summary) = dir.get("summary").and_then(|v| v.as_str()) {
-        println!("\n  current_direction:");
-        println!("    {summary}");
+        println!("direction: {summary}");
     }
 
     if let Some(constraints) = dir.get("constraints").and_then(|v| v.as_array()) {
         if !constraints.is_empty() {
-            println!("\n  direction_constraints:");
+            println!("constraints:");
             for c in constraints {
                 if let Some(rule) = c.get("rule").and_then(|v| v.as_str()) {
                     println!("    - {rule}");
@@ -161,14 +172,12 @@ fn render_direction(dir: &Value) {
 
     if let Some(sc) = dir.get("success_condition").and_then(|v| v.as_str()) {
         if !sc.is_empty() {
-            println!("\n  success_condition:");
-            println!("    {sc}");
+            println!("success_condition: {sc}");
         }
     }
     if let Some(ac) = dir.get("abort_condition").and_then(|v| v.as_str()) {
         if !ac.is_empty() {
-            println!("\n  abort_condition:");
-            println!("    {ac}");
+            println!("abort_condition: {ac}");
         }
     }
 }
@@ -189,20 +198,54 @@ fn render_steps(steps: &Value) {
         if !current.is_null() {
             let id = current.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let title = current.get("title").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("\n  current_step:");
-            println!("    {id}  {title}");
+            println!("current_step: {id} | {title}");
         }
     }
     if let Some(pending) = steps.get("pending").and_then(|v| v.as_array()) {
         if !pending.is_empty() {
-            println!("\n  pending_steps:");
+            println!("pending_steps:");
             for s in pending {
                 let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("    - {id}  {title}");
+                println!("  - {id} | {title}");
             }
         }
     }
+}
+
+fn render_direction_tree(history: &[Value], sbd: &Value) {
+    let steps_map = sbd.as_object();
+    let mut root = Tree::new("direction_tree:".to_string());
+
+    for dir in history {
+        let seq = dir.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+        let summary = dir.get("summary").and_then(|v| v.as_str()).unwrap_or("?");
+        let is_current = dir
+            .get("is_current")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let label = if is_current {
+            format!("[{seq}] {summary} (current)")
+        } else {
+            format!("[{seq}] {summary}")
+        };
+        let mut dir_node = Tree::new(label);
+
+        if let Some(obj) = steps_map {
+            if let Some(steps) = obj.get(&seq.to_string()).and_then(|v| v.as_array()) {
+                for s in steps {
+                    let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("?");
+                    let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    dir_node.push(Tree::new(format!("{id}  [{status}]  {title}")));
+                }
+            }
+        }
+
+        root.push(dir_node);
+    }
+
+    println!("{root}");
 }
 
 fn render_steps_by_direction(sbd: &Value) {
@@ -258,16 +301,16 @@ fn render_event(event: &Value) {
 }
 
 fn render_resume(resume: &Value) {
-    println!("Resume brief:\n");
-
+    if let Some(case_id) = resume.get("case_id").and_then(|v| v.as_str()) {
+        println!("case_id: {case_id}");
+    }
     if let Some(goal) = resume.get("goal").and_then(|v| v.as_str()) {
-        println!("  goal:");
-        println!("    {goal}");
+        println!("goal: {goal}");
     }
 
     if let Some(constraints) = resume.get("goal_constraints").and_then(|v| v.as_array()) {
         if !constraints.is_empty() {
-            println!("\n  goal_constraints:");
+            println!("goal_constraints:");
             for c in constraints {
                 if let Some(rule) = c.get("rule").and_then(|v| v.as_str()) {
                     println!("    - {rule}");
@@ -280,8 +323,7 @@ fn render_resume(resume: &Value) {
     }
 
     if let Some(dir) = resume.get("current_direction").and_then(|v| v.as_str()) {
-        println!("\n  current_direction:");
-        println!("    {dir}");
+        println!("direction: {dir}");
     }
 
     if let Some(constraints) = resume
@@ -289,7 +331,7 @@ fn render_resume(resume: &Value) {
         .and_then(|v| v.as_array())
     {
         if !constraints.is_empty() {
-            println!("\n  direction_constraints:");
+            println!("direction_constraints:");
             for c in constraints {
                 if let Some(rule) = c.get("rule").and_then(|v| v.as_str()) {
                     println!("    - {rule}");
@@ -305,46 +347,43 @@ fn render_resume(resume: &Value) {
         if !step.is_null() {
             let id = step.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let title = step.get("title").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("\n  current_step:");
-            println!("    {id}  {title}");
+            println!("current_step: {id} | {title}");
         }
     }
 
     if let Some(pending) = resume.get("next_pending_steps").and_then(|v| v.as_array()) {
         if !pending.is_empty() {
-            println!("\n  next_pending_steps:");
+            println!("next_pending_steps:");
             for s in pending {
                 let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                 let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("    - {id}  {title}");
+                println!("  - {id} | {title}");
             }
         }
     }
 
     if let Some(d) = resume.get("last_decision").and_then(|v| v.as_str()) {
-        println!("\n  last_decision:");
-        println!("    {d}");
+        println!("last_decision: {d}");
     }
     if let Some(e) = resume.get("last_evidence").and_then(|v| v.as_str()) {
-        println!("\n  last_evidence:");
-        println!("    {e}");
+        println!("last_evidence: {e}");
     }
 
     if let Some(sc) = resume.get("success_condition").and_then(|v| v.as_str()) {
-        println!("\n  success_condition:");
-        println!("    {sc}");
+        println!("success_condition: {sc}");
     }
     if let Some(ac) = resume.get("abort_condition").and_then(|v| v.as_str()) {
-        println!("\n  abort_condition:");
-        println!("    {ac}");
+        println!("abort_condition: {ac}");
     }
 }
 
 fn render_next_text(next: &Value) {
     if let Some(cmd) = next.get("suggested_command").and_then(|v| v.as_str()) {
         let why = next.get("why").and_then(|v| v.as_str()).unwrap_or("");
-        println!("\nNext:");
-        println!("  {cmd}  \u{2014} {why}");
+        println!("\nnext: {cmd}");
+        if !why.is_empty() {
+            println!("why: {why}");
+        }
     }
 }
 

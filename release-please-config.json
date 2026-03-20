@@ -35,6 +35,12 @@
       "package-name": "agpod-vcs-path",
       "changelog-path": "CHANGELOG.md",
       "component": "agpod-vcs-path"
+    },
+    "crates/agpod-mcp": {
+      "release-type": "rust",
+      "package-name": "agpod-mcp",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-mcp"
     }
   }
 }

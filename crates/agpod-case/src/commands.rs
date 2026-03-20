@@ -14,12 +14,40 @@ use chrono::Utc;
 use serde_json::json;
 
 pub async fn execute(args: CaseArgs) -> Result<()> {
+    let value = execute_json(args).await;
+    let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    let json_mode = value
+        .get("_meta")
+        .and_then(|meta| meta.get("json_mode"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    output::render(json_mode, &value);
+    if ok {
+        Ok(())
+    } else {
+        std::process::exit(1);
+    }
+}
+
+pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let json_mode = args.json;
     let config = DbConfig::from_data_dir(args.data_dir.as_deref());
 
-    let cwd = std::env::current_dir()?;
-    let identity = RepoIdentity::resolve_from(&cwd)?;
-    let client = CaseClient::new(&config, identity.repo_id).await?;
+    let setup = async {
+        let cwd = std::env::current_dir()?;
+        let identity = RepoIdentity::resolve_from(&cwd)?;
+        CaseClient::new(&config, identity.repo_id).await
+    }
+    .await;
+
+    let client = match setup {
+        Ok(client) => client,
+        Err(e) => {
+            let mut err_value = output::error_json("error", &e.to_string(), None);
+            err_value["_meta"] = json!({ "json_mode": json_mode });
+            return err_value;
+        }
+    };
 
     let result = match args.command {
         CaseCommand::Open {
@@ -98,14 +126,14 @@ pub async fn execute(args: CaseArgs) -> Result<()> {
     };
 
     match result {
-        Ok(value) => {
-            output::render(json_mode, &value);
-            Ok(())
+        Ok(mut value) => {
+            value["_meta"] = json!({ "json_mode": json_mode });
+            value
         }
         Err(e) => {
-            let err_value = output::error_json("error", &e.to_string(), None);
-            output::render(json_mode, &err_value);
-            std::process::exit(1);
+            let mut err_value = output::error_json("error", &e.to_string(), None);
+            err_value["_meta"] = json!({ "json_mode": json_mode });
+            err_value
         }
     }
 }
@@ -214,13 +242,22 @@ async fn cmd_current(client: &CaseClient) -> CaseResult<serde_json::Value> {
         .await?
         .ok_or(CaseError::NoOpenCase)?;
 
-    let dir = client
-        .get_current_direction(&case.id, case.current_direction_seq)
-        .await?;
+    let directions = client.get_directions(&case.id).await?;
+    let all_steps = client.get_all_steps(&case.id).await?;
+    let (dir_history, steps_by_dir) =
+        build_direction_tree_payload(&directions, &all_steps, Some(case.current_direction_seq));
 
-    let steps = client
-        .get_steps(&case.id, case.current_direction_seq)
-        .await?;
+    let dir = directions
+        .iter()
+        .find(|direction| direction.seq == case.current_direction_seq)
+        .cloned()
+        .ok_or_else(|| CaseError::Other("no direction found".to_string()))?;
+
+    let steps: Vec<_> = all_steps
+        .iter()
+        .filter(|step| step.direction_seq == case.current_direction_seq)
+        .cloned()
+        .collect();
 
     let (current_step, pending_steps) = split_steps(&steps);
 
@@ -234,6 +271,8 @@ async fn cmd_current(client: &CaseClient) -> CaseResult<serde_json::Value> {
         "ok": true,
         "case": output::case_json(&case),
         "direction": output::direction_json(&dir),
+        "direction_history": dir_history,
+        "steps_by_direction": steps_by_dir,
         "steps": output::steps_json(current_step.as_ref(), &pending_steps),
         "context": output::context_json(&case.id, case.current_direction_seq)
     });
@@ -263,6 +302,10 @@ async fn cmd_record(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+
+    if summary.trim().is_empty() {
+        return Err(CaseError::Other("summary must not be empty".to_string()));
+    }
 
     RecordKind::from_str(kind)
         .ok_or_else(|| CaseError::Other(format!("invalid record kind: {kind}")))?;
@@ -316,6 +359,10 @@ async fn cmd_decide(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+
+    if summary.trim().is_empty() {
+        return Err(CaseError::Other("summary must not be empty".to_string()));
+    }
 
     let seq = next_entry_seq(client, case_id).await?;
     let entry = client
@@ -436,21 +483,8 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
     let case = resolve_case(client, id).await?;
     let directions = client.get_directions(&case.id).await?;
     let all_steps = client.get_all_steps(&case.id).await?;
-
-    // Group steps by direction_seq
-    let mut steps_by_dir: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    for dir in &directions {
-        let dir_steps: Vec<_> = all_steps
-            .iter()
-            .filter(|s| s.direction_seq == dir.seq)
-            .map(output::step_json)
-            .collect();
-        if !dir_steps.is_empty() {
-            steps_by_dir.insert(dir.seq.to_string(), json!(dir_steps));
-        }
-    }
-
-    let dir_history: Vec<_> = directions.iter().map(output::direction_json).collect();
+    let (dir_history, steps_by_dir) =
+        build_direction_tree_payload(&directions, &all_steps, Some(case.current_direction_seq));
 
     Ok(json!({
         "ok": true,
@@ -589,6 +623,7 @@ async fn cmd_step_start(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    client.get_step(step_id).await?;
 
     // Deactivate any existing active step to maintain "one active at a time" invariant
     let steps = client
@@ -630,6 +665,7 @@ async fn cmd_step_done(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    client.get_step(step_id).await?;
 
     client.update_step(step_id, StepStatus::Done, None).await?;
 
@@ -731,6 +767,7 @@ async fn cmd_step_block(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    client.get_step(step_id).await?;
 
     client
         .update_step(step_id, StepStatus::Blocked, Some(reason))
@@ -856,6 +893,41 @@ fn split_steps(steps: &[Step]) -> (Option<Step>, Vec<Step>) {
         .cloned()
         .collect();
     (current, pending)
+}
+
+fn build_direction_tree_payload(
+    directions: &[Direction],
+    all_steps: &[Step],
+    current_direction_seq: Option<u32>,
+) -> (
+    Vec<serde_json::Value>,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let mut steps_by_dir: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+
+    for dir in directions {
+        let dir_steps: Vec<_> = all_steps
+            .iter()
+            .filter(|step| step.direction_seq == dir.seq)
+            .map(output::step_json)
+            .collect();
+        if !dir_steps.is_empty() {
+            steps_by_dir.insert(dir.seq.to_string(), json!(dir_steps));
+        }
+    }
+
+    let dir_history = directions
+        .iter()
+        .map(|dir| {
+            let mut value = output::direction_json(dir);
+            if current_direction_seq == Some(dir.seq) {
+                value["is_current"] = json!(true);
+            }
+            value
+        })
+        .collect();
+
+    (dir_history, steps_by_dir)
 }
 
 /// Detect health status based on recent entries and steps.

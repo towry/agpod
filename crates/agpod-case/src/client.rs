@@ -390,6 +390,19 @@ impl CaseClient {
         Ok(results.iter().filter_map(parse_single_step).collect())
     }
 
+    pub async fn get_step(&self, step_id: &str) -> CaseResult<Step> {
+        let results = self
+            .query_raw(
+                "SELECT * FROM step WHERE step_id = $step_id LIMIT 1",
+                json!({ "step_id": step_id }),
+            )
+            .await?;
+        results
+            .first()
+            .and_then(parse_single_step)
+            .ok_or_else(|| CaseError::Other(format!("step not found: {step_id}")))
+    }
+
     pub async fn update_step(
         &self,
         step_id: &str,
