@@ -12,6 +12,11 @@ on:
         required: false
         default: ""
         type: string
+      smoke_test_command:
+        description: "Optional smoke test shell script for the built binary"
+        required: false
+        default: ""
+        type: string
   workflow_dispatch:
     inputs:
       tag_name:
@@ -20,6 +25,11 @@ on:
         type: string
       bin_name:
         description: "Binary name (must match Cargo.toml package name)"
+        required: false
+        default: ""
+        type: string
+      smoke_test_command:
+        description: "Optional smoke test shell script for the built binary"
         required: false
         default: ""
         type: string
@@ -80,6 +90,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
           bin_name: ${{ env.BIN_NAME }}
           version: ${{ env.VERSION }}
+          smoke_test_command: ${{ inputs.smoke_test_command }}
 
       - name: Upload asset
         uses: ncipollo/release-action@v1

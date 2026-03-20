@@ -21,6 +21,8 @@ jobs:
     outputs:
       agpod_tag_name: ${{ steps.release.outputs['crates/agpod--tag_name'] }}
       agpod_release_created: ${{ steps.release.outputs['crates/agpod--release_created'] }}
+      agpod_mcp_tag_name: ${{ steps.release.outputs['crates/agpod-mcp--tag_name'] }}
+      agpod_mcp_release_created: ${{ steps.release.outputs['crates/agpod-mcp--release_created'] }}
     steps:
       - name: Run release-please
         id: release
@@ -42,3 +44,15 @@ jobs:
     with:
       tag_name: ${{ needs.release_please.outputs.agpod_tag_name }}
       bin_name: agpod
+
+  build_artifacts_agpod_mcp:
+    name: Build Artifacts agpod-mcp
+    needs: release_please
+    if: ${{ needs.release_please.outputs.agpod_mcp_release_created == 'true' }}
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      tag_name: ${{ needs.release_please.outputs.agpod_mcp_tag_name }}
+      bin_name: agpod-mcp
+      smoke_test_command: |
+        npx -y @modelcontextprotocol/inspector --cli --transport stdio --method tools/list target/aarch64-apple-darwin/release/agpod-mcp > /tmp/agpod-mcp-tools-list.json
+        test -s /tmp/agpod-mcp-tools-list.json
