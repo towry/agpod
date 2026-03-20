@@ -23,6 +23,7 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 - Conventional commits: `topic(scope): message`
 - Before adding dependencies: add to `[workspace.dependencies]` in root `Cargo.toml`, reference via `{ workspace = true }` in crate
 - Before creating new files: follow existing crate module structure (`cli.rs`, `commands.rs`, `client.rs`, `config.rs`, `error.rs`, `types.rs`)
+- Before adding or removing a crate: update `release-please-config.json` and `.release-please-manifest.json` accordingly
 - If modifying agpod-case client/queries: see `docs/agents-md/case-surrealdb.md`
 
 ## CI
