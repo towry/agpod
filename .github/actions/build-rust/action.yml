@@ -15,6 +15,10 @@ inputs:
   version:
     description: 'Version string for artifact naming'
     required: true
+  smoke_test_command:
+    description: 'Optional custom smoke test shell script for the built binary'
+    required: false
+    default: ''
 
 outputs:
   asset_path:
@@ -33,16 +37,18 @@ runs:
         toolchain: ${{ inputs.toolchain }}
         target: ${{ inputs.target }}
 
-    - name: Cache cargo artifacts
-      uses: Swatinem/rust-cache@v2
-      with:
-        prefix-key: "v1-${{ inputs.target }}"
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
 
     - name: Build
       shell: bash
-      run: cargo build --release --target ${{ inputs.target }} --verbose
+      env:
+        SCCACHE_GHA_ENABLED: "true"
+        RUSTC_WRAPPER: "sccache"
+      run: cargo build --release --target ${{ inputs.target }} --package ${{ inputs.bin_name }} --verbose
 
     - name: Test binary functionality
+      if: ${{ inputs.smoke_test_command == '' }}
       shell: bash
       run: |
         # Create a test diff to verify binary works
@@ -60,6 +66,16 @@ runs:
 
         # Test the binary
         target/${{ inputs.target }}/release/${{ inputs.bin_name }} < test_diff.txt
+        echo "✅ Binary functionality test passed"
+
+    - name: Run custom smoke test
+      if: ${{ inputs.smoke_test_command != '' }}
+      shell: bash
+      run: |
+        cat > smoke-test.sh <<'EOF'
+        ${{ inputs.smoke_test_command }}
+        EOF
+        bash smoke-test.sh
         echo "✅ Binary functionality test passed"
 
     - name: Package

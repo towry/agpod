@@ -2,7 +2,7 @@
 //!
 //! Keywords: repo-id, repository identity, git remote, normalize url
 
-use crate::error::{FlowError, FlowResult};
+use crate::error::{CaseError, CaseResult};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Command;
@@ -13,12 +13,13 @@ pub struct RepoIdentity {
     /// Stable hex hash: hex(sha256("v1:" + normalized))[0..16]
     pub repo_id: String,
     /// Human-readable label, e.g. "github.com/towry/agpod"
+    #[allow(dead_code)]
     pub repo_label: String,
 }
 
 impl RepoIdentity {
     /// Resolve from a given repo root path.
-    pub fn resolve_from(repo_root: &Path) -> FlowResult<Self> {
+    pub fn resolve_from(repo_root: &Path) -> CaseResult<Self> {
         let url = get_remote_url(Some(repo_root))?;
         let normalized = normalize_git_url(&url);
         let repo_id = compute_repo_id(&normalized);
@@ -30,8 +31,7 @@ impl RepoIdentity {
 }
 
 /// Try remotes in order: origin -> upstream -> first alphabetically.
-fn get_remote_url(cwd: Option<&Path>) -> FlowResult<String> {
-    // Verify we're in a git repo
+fn get_remote_url(cwd: Option<&Path>) -> CaseResult<String> {
     let mut check = Command::new("git");
     check.args(["rev-parse", "--git-dir"]);
     if let Some(dir) = cwd {
@@ -39,25 +39,23 @@ fn get_remote_url(cwd: Option<&Path>) -> FlowResult<String> {
     }
     let output = check
         .output()
-        .map_err(|e| FlowError::Git(format!("Failed to execute git: {e}")))?;
+        .map_err(|e| CaseError::Git(format!("failed to execute git: {e}")))?;
     if !output.status.success() {
-        return Err(FlowError::NotGitRepo);
+        return Err(CaseError::NotGitRepo);
     }
 
-    // Try named remotes in priority order
     for name in &["origin", "upstream"] {
         if let Some(url) = try_get_remote(name, cwd) {
             return Ok(url);
         }
     }
 
-    // Fall back to first remote alphabetically
     let mut cmd = Command::new("git");
     cmd.args(["remote"]);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let output = cmd.output().map_err(|e| FlowError::Git(e.to_string()))?;
+    let output = cmd.output().map_err(|e| CaseError::Git(e.to_string()))?;
     if output.status.success() {
         let remotes_raw = String::from_utf8_lossy(&output.stdout).to_string();
         let mut remotes: Vec<&str> = remotes_raw
@@ -73,7 +71,7 @@ fn get_remote_url(cwd: Option<&Path>) -> FlowResult<String> {
         }
     }
 
-    Err(FlowError::NoGitRemote)
+    Err(CaseError::NoGitRemote)
 }
 
 fn try_get_remote(name: &str, cwd: Option<&Path>) -> Option<String> {
@@ -110,7 +108,6 @@ pub fn normalize_git_url(raw: &str) -> String {
     // Protocol URLs: ssh://git@host/path, https://host/path
     for scheme in &["ssh://", "https://", "http://"] {
         if let Some(without_scheme) = s.strip_prefix(scheme) {
-            // Strip optional user@ prefix
             let without_user = match without_scheme.find('@') {
                 Some(pos) => &without_scheme[pos + 1..],
                 None => without_scheme,
@@ -123,7 +120,6 @@ pub fn normalize_git_url(raw: &str) -> String {
         }
     }
 
-    // Fallback
     s.to_lowercase()
 }
 
@@ -140,7 +136,6 @@ fn format_normalized(host: &str, path: &str) -> String {
 fn compute_repo_id(normalized: &str) -> String {
     let source = format!("v1:{normalized}");
     let hash = Sha256::digest(source.as_bytes());
-    // Take first 8 bytes -> 16 hex chars
     hash[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
