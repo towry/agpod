@@ -450,10 +450,7 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
         }
     }
 
-    let dir_history: Vec<_> = directions
-        .iter()
-        .map(output::direction_json)
-        .collect();
+    let dir_history: Vec<_> = directions.iter().map(output::direction_json).collect();
 
     Ok(json!({
         "ok": true,
