@@ -33,13 +33,14 @@ runs:
         toolchain: ${{ inputs.toolchain }}
         target: ${{ inputs.target }}
 
-    - name: Cache cargo artifacts
-      uses: Swatinem/rust-cache@v2
-      with:
-        prefix-key: "v1-${{ inputs.target }}"
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
 
     - name: Build
       shell: bash
+      env:
+        SCCACHE_GHA_ENABLED: "true"
+        RUSTC_WRAPPER: "sccache"
       run: cargo build --release --target ${{ inputs.target }} --verbose
 
     - name: Test binary functionality
