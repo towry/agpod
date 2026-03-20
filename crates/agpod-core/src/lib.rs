@@ -386,6 +386,10 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Guards env-var mutations so they don't race across threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_config() {
@@ -487,6 +491,8 @@ large_file_changes_threshold = 200
 
     #[test]
     fn test_xdg_config_home_support() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
         // Test with XDG_CONFIG_HOME set
         env::set_var("XDG_CONFIG_HOME", "/tmp/test_config");
         let config_dir = Config::get_config_dir();
@@ -510,7 +516,8 @@ large_file_changes_threshold = 200
 
     #[test]
     fn test_xdg_config_home_in_templates_dir() {
-        // Test that templates_dir respects XDG_CONFIG_HOME
+        let _guard = ENV_LOCK.lock().unwrap();
+
         env::set_var("XDG_CONFIG_HOME", "/custom/config");
         let templates_dir = default_templates_dir();
         assert_eq!(templates_dir, "/custom/config/agpod/templates");
@@ -519,7 +526,8 @@ large_file_changes_threshold = 200
 
     #[test]
     fn test_xdg_config_home_in_plugins_dir() {
-        // Test that plugins_dir respects XDG_CONFIG_HOME
+        let _guard = ENV_LOCK.lock().unwrap();
+
         env::set_var("XDG_CONFIG_HOME", "/custom/config");
         let plugins_dir = default_plugins_dir();
         assert_eq!(plugins_dir, "/custom/config/agpod/plugins");
