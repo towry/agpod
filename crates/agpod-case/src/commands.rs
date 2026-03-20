@@ -52,7 +52,15 @@ pub async fn execute(args: CaseArgs) -> Result<()> {
             let file_list: Vec<String> = files
                 .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            cmd_record(&client, &id, &summary, &kind, &file_list, context.as_deref()).await
+            cmd_record(
+                &client,
+                &id,
+                &summary,
+                &kind,
+                &file_list,
+                context.as_deref(),
+            )
+            .await
         }
         CaseCommand::Decide {
             id,
@@ -136,10 +144,7 @@ async fn next_entry_seq(client: &CaseClient, case_id: &str) -> CaseResult<u32> {
 async fn resolve_case(client: &CaseClient, id: Option<&str>) -> CaseResult<Case> {
     match id {
         Some(id) => client.get_case(id).await,
-        None => client
-            .find_open_case()
-            .await?
-            .ok_or(CaseError::NoOpenCase),
+        None => client.find_open_case().await?.ok_or(CaseError::NoOpenCase),
     }
 }
 
@@ -426,10 +431,7 @@ async fn cmd_redirect(
     }))
 }
 
-async fn cmd_show(
-    client: &CaseClient,
-    id: Option<&str>,
-) -> CaseResult<serde_json::Value> {
+async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_json::Value> {
     let case = resolve_case(client, id).await?;
     let directions = client.get_directions(&case.id).await?;
     let all_steps = client.get_all_steps(&case.id).await?;
@@ -447,7 +449,10 @@ async fn cmd_show(
         }
     }
 
-    let dir_history: Vec<_> = directions.iter().map(|d| output::direction_json(d)).collect();
+    let dir_history: Vec<_> = directions
+        .iter()
+        .map(|d| output::direction_json(d))
+        .collect();
 
     Ok(json!({
         "ok": true,
@@ -515,10 +520,7 @@ async fn cmd_abandon(
     }))
 }
 
-async fn cmd_step(
-    client: &CaseClient,
-    command: StepCommand,
-) -> CaseResult<serde_json::Value> {
+async fn cmd_step(client: &CaseClient, command: StepCommand) -> CaseResult<serde_json::Value> {
     match command {
         StepCommand::Add { id, title, reason } => {
             cmd_step_add(client, &id, &title, reason.as_deref()).await
@@ -596,9 +598,7 @@ async fn cmd_step_start(
         .await?;
     for s in &steps {
         if s.status == StepStatus::Active && s.id != step_id {
-            client
-                .update_step(&s.id, StepStatus::Pending, None)
-                .await?;
+            client.update_step(&s.id, StepStatus::Pending, None).await?;
         }
     }
 
@@ -633,9 +633,7 @@ async fn cmd_step_done(
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
 
-    client
-        .update_step(step_id, StepStatus::Done, None)
-        .await?;
+    client.update_step(step_id, StepStatus::Done, None).await?;
 
     // Clear current_step_id if it was the active one
     if case.current_step_id.as_deref() == Some(step_id) {
@@ -706,9 +704,7 @@ async fn cmd_step_move(
 
     // Update order_index for all steps
     for (i, step) in steps.iter().enumerate() {
-        client
-            .reorder_step(&step.id, (i + 1) as u32)
-            .await?;
+        client.reorder_step(&step.id, (i + 1) as u32).await?;
     }
 
     // Re-fetch to get updated data
@@ -762,10 +758,7 @@ async fn cmd_step_block(
 
 // TODO: recall currently lists all cases (no semantic search).
 // Phase 4 will add vector search via CaseSearchIndex.
-async fn cmd_recall(
-    client: &CaseClient,
-    query: &str,
-) -> CaseResult<serde_json::Value> {
+async fn cmd_recall(client: &CaseClient, query: &str) -> CaseResult<serde_json::Value> {
     let cases = client.search_cases(query).await?;
 
     let case_list: Vec<_> = cases.iter().map(|c| output::case_json(c)).collect();
@@ -788,10 +781,7 @@ async fn cmd_list(client: &CaseClient) -> CaseResult<serde_json::Value> {
     }))
 }
 
-async fn cmd_resume(
-    client: &CaseClient,
-    id: Option<&str>,
-) -> CaseResult<serde_json::Value> {
+async fn cmd_resume(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_json::Value> {
     let case = resolve_case(client, id).await?;
 
     let dir = client
@@ -812,10 +802,7 @@ async fn cmd_resume(
     let last_evidence = entries
         .iter()
         .rev()
-        .find(|e| {
-            e.entry_type == EntryType::Record
-                && e.kind.as_deref() == Some("evidence")
-        })
+        .find(|e| e.entry_type == EntryType::Record && e.kind.as_deref() == Some("evidence"))
         .map(|e| e.summary.as_str());
 
     let next = suggest_next(
@@ -861,7 +848,10 @@ async fn cmd_resume(
 
 /// Split steps into current (active) and pending.
 fn split_steps(steps: &[Step]) -> (Option<Step>, Vec<Step>) {
-    let current = steps.iter().find(|s| s.status == StepStatus::Active).cloned();
+    let current = steps
+        .iter()
+        .find(|s| s.status == StepStatus::Active)
+        .cloned();
     let pending: Vec<Step> = steps
         .iter()
         .filter(|s| s.status == StepStatus::Pending)
@@ -871,10 +861,7 @@ fn split_steps(steps: &[Step]) -> (Option<Step>, Vec<Step>) {
 }
 
 /// Detect health status based on recent entries and steps.
-fn detect_health(
-    steps: &[Step],
-    _last_entry: &Option<Entry>,
-) -> (Health, Option<String>) {
+fn detect_health(steps: &[Step], _last_entry: &Option<Entry>) -> (Health, Option<String>) {
     // Check for blocked steps
     if steps.iter().any(|s| s.status == StepStatus::Blocked) {
         return (

@@ -54,9 +54,7 @@ fn get_remote_url(cwd: Option<&Path>) -> CaseResult<String> {
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| CaseError::Git(e.to_string()))?;
+    let output = cmd.output().map_err(|e| CaseError::Git(e.to_string()))?;
     if output.status.success() {
         let remotes_raw = String::from_utf8_lossy(&output.stdout).to_string();
         let mut remotes: Vec<&str> = remotes_raw

@@ -166,10 +166,7 @@ fn render_steps(steps: &Value) {
     if let Some(current) = steps.get("current") {
         if !current.is_null() {
             let id = current.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            let title = current
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let title = current.get("title").and_then(|v| v.as_str()).unwrap_or("?");
             println!("\n  current_step:");
             println!("    {id}  {title}");
         }
@@ -265,7 +262,10 @@ fn render_resume(resume: &Value) {
         println!("    {dir}");
     }
 
-    if let Some(constraints) = resume.get("direction_constraints").and_then(|v| v.as_array()) {
+    if let Some(constraints) = resume
+        .get("direction_constraints")
+        .and_then(|v| v.as_array())
+    {
         if !constraints.is_empty() {
             println!("\n  direction_constraints:");
             for c in constraints {

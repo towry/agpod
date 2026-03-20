@@ -19,9 +19,8 @@ impl CaseClient {
     pub async fn new(config: &DbConfig, repo_id: String) -> CaseResult<Self> {
         // Ensure parent directory exists
         if let Some(parent) = config.data_dir.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                CaseError::DbInit(format!("failed to create data directory: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CaseError::DbInit(format!("failed to create data directory: {e}")))?;
         }
 
         let db = Surreal::new::<RocksDb>(config.data_dir.to_string_lossy().as_ref())
@@ -146,8 +145,8 @@ impl CaseClient {
         goal_constraints: &[Constraint],
     ) -> CaseResult<Case> {
         let now = Utc::now().to_rfc3339();
-        let constraints_json = serde_json::to_string(goal_constraints)
-            .map_err(|e| CaseError::Other(e.to_string()))?;
+        let constraints_json =
+            serde_json::to_string(goal_constraints).map_err(|e| CaseError::Other(e.to_string()))?;
 
         self.query_raw(
             "CREATE case SET case_id = $case_id, repo_id = $repo_id, goal = $goal, \
@@ -223,11 +222,7 @@ impl CaseClient {
         Ok(())
     }
 
-    pub async fn update_case_direction(
-        &self,
-        case_id: &str,
-        direction_seq: u32,
-    ) -> CaseResult<()> {
+    pub async fn update_case_direction(&self, case_id: &str, direction_seq: u32) -> CaseResult<()> {
         let now = Utc::now().to_rfc3339();
         self.query_raw(
             "UPDATE case SET current_direction_seq = $seq, current_step_id = '', \
@@ -271,8 +266,8 @@ impl CaseClient {
         context: Option<&str>,
     ) -> CaseResult<Direction> {
         let now = Utc::now().to_rfc3339();
-        let constraints_json = serde_json::to_string(constraints)
-            .map_err(|e| CaseError::Other(e.to_string()))?;
+        let constraints_json =
+            serde_json::to_string(constraints).map_err(|e| CaseError::Other(e.to_string()))?;
 
         self.query_raw(
             "CREATE direction SET case_id = $case_id, seq = $seq, summary = $summary, \
