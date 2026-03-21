@@ -502,18 +502,28 @@ impl AgpodMcpServer {
         let case_id = req.id.clone();
         let mut created_steps = Vec::new();
         let mut last_success = None;
+        let commands: Vec<CaseCommand> = req
+            .steps
+            .iter()
+            .cloned()
+            .map(|step| CaseCommand::Step {
+                command: StepCommand::Add {
+                    id: case_id.clone(),
+                    title: step.title,
+                    reason: step.reason,
+                    start: step.start,
+                },
+            })
+            .collect();
+        let results = agpod_case::run_json_batch(self.data_dir.clone(), commands).await;
 
-        for (index, step) in req.steps.into_iter().enumerate() {
-            let result = self
-                .run_case_command_raw(CaseCommand::Step {
-                    command: StepCommand::Add {
-                        id: case_id.clone(),
-                        title: step.title.clone(),
-                        reason: step.reason.clone(),
-                        start: step.start,
-                    },
-                })
-                .await?;
+        for (index, (step, mut result)) in req.steps.into_iter().zip(results).enumerate() {
+            if let Some(obj) = result.as_object_mut() {
+                obj.remove("_meta");
+            }
+            let result = result.as_object().cloned().ok_or_else(|| {
+                ErrorData::internal_error("agpod-case returned a non-object JSON payload", None)
+            })?;
 
             if result.get("ok").and_then(Value::as_bool) == Some(true) {
                 if let Some(created) = result.get("step").cloned() {

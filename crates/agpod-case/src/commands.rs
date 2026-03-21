@@ -32,14 +32,7 @@ pub async fn execute(args: CaseArgs) -> Result<()> {
 
 pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let json_mode = args.json;
-    let config = DbConfig::from_data_dir(args.data_dir.as_deref());
-
-    let setup = async {
-        let cwd = std::env::current_dir()?;
-        let identity = RepoIdentity::resolve_from(&cwd)?;
-        CaseClient::new(&config, identity).await
-    }
-    .await;
+    let setup = setup_client(args.data_dir.as_deref()).await;
 
     let client = match setup {
         Ok(client) => client,
@@ -50,7 +43,88 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
         }
     };
 
-    let result = match &args.command {
+    finish_json_value(
+        execute_command_json(&client, &args.command).await,
+        &client,
+        &args.command,
+        json_mode,
+    )
+    .await
+}
+
+pub async fn execute_json_batch(
+    data_dir: Option<&str>,
+    commands: Vec<CaseCommand>,
+) -> Vec<serde_json::Value> {
+    let setup = setup_client(data_dir).await;
+
+    let client = match setup {
+        Ok(client) => client,
+        Err(e) => {
+            let mut err_value = output::error_json("error", &e.to_string(), None);
+            err_value["_meta"] = json!({ "json_mode": true });
+            return vec![err_value];
+        }
+    };
+
+    execute_json_batch_with_client(&client, commands, true).await
+}
+
+async fn execute_json_batch_with_client(
+    client: &CaseClient,
+    commands: Vec<CaseCommand>,
+    json_mode: bool,
+) -> Vec<serde_json::Value> {
+    let mut values = Vec::with_capacity(commands.len());
+    for command in commands {
+        let value = finish_json_value(
+            execute_command_json(client, &command).await,
+            client,
+            &command,
+            json_mode,
+        )
+        .await;
+        let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        values.push(value);
+        if !ok {
+            break;
+        }
+    }
+
+    values
+}
+
+async fn setup_client(data_dir: Option<&str>) -> Result<CaseClient> {
+    let config = DbConfig::from_data_dir(data_dir);
+    let cwd = std::env::current_dir()?;
+    let identity = RepoIdentity::resolve_from(&cwd)?;
+    Ok(CaseClient::new(&config, identity).await?)
+}
+
+async fn finish_json_value(
+    result: CaseResult<serde_json::Value>,
+    client: &CaseClient,
+    command: &CaseCommand,
+    json_mode: bool,
+) -> serde_json::Value {
+    match result {
+        Ok(mut value) => {
+            value["_meta"] = json!({ "json_mode": json_mode });
+            value
+        }
+        Err(e) => {
+            let mut err_value = build_error_value(client, command, &e).await;
+            err_value["_meta"] = json!({ "json_mode": json_mode });
+            err_value
+        }
+    }
+}
+
+async fn execute_command_json(
+    client: &CaseClient,
+    command: &CaseCommand,
+) -> CaseResult<serde_json::Value> {
+    match command {
         CaseCommand::Open {
             goal,
             direction,
@@ -60,7 +134,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             abort_condition,
         } => {
             cmd_open(
-                &client,
+                client,
                 goal,
                 direction,
                 goal_constraints,
@@ -70,7 +144,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             )
             .await
         }
-        CaseCommand::Current => cmd_current(&client).await,
+        CaseCommand::Current => cmd_current(client).await,
         CaseCommand::Record {
             id,
             summary,
@@ -82,13 +156,13 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
                 .as_ref()
                 .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            cmd_record(&client, id, summary, kind, &file_list, context.as_deref()).await
+            cmd_record(client, id, summary, kind, &file_list, context.as_deref()).await
         }
         CaseCommand::Decide {
             id,
             summary,
             reason,
-        } => cmd_decide(&client, id, summary, reason).await,
+        } => cmd_decide(client, id, summary, reason).await,
         CaseCommand::Redirect {
             id,
             direction,
@@ -100,7 +174,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             abort_condition,
         } => {
             cmd_redirect(
-                &client,
+                client,
                 id,
                 direction,
                 reason,
@@ -112,25 +186,13 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             )
             .await
         }
-        CaseCommand::Show { id } => cmd_show(&client, id.as_deref()).await,
-        CaseCommand::Close { id, summary } => cmd_close(&client, id, summary).await,
-        CaseCommand::Abandon { id, summary } => cmd_abandon(&client, id, summary).await,
-        CaseCommand::Step { command } => cmd_step(&client, command).await,
-        CaseCommand::Recall { query } => cmd_recall(&client, query).await,
-        CaseCommand::List => cmd_list(&client).await,
-        CaseCommand::Resume { id } => cmd_resume(&client, id.as_deref()).await,
-    };
-
-    match result {
-        Ok(mut value) => {
-            value["_meta"] = json!({ "json_mode": json_mode });
-            value
-        }
-        Err(e) => {
-            let mut err_value = build_error_value(&client, &args.command, &e).await;
-            err_value["_meta"] = json!({ "json_mode": json_mode });
-            err_value
-        }
+        CaseCommand::Show { id } => cmd_show(client, id.as_deref()).await,
+        CaseCommand::Close { id, summary } => cmd_close(client, id, summary).await,
+        CaseCommand::Abandon { id, summary } => cmd_abandon(client, id, summary).await,
+        CaseCommand::Step { command } => cmd_step(client, command).await,
+        CaseCommand::Recall { query } => cmd_recall(client, query).await,
+        CaseCommand::List => cmd_list(client).await,
+        CaseCommand::Resume { id } => cmd_resume(client, id.as_deref()).await,
     }
 }
 
@@ -1304,6 +1366,63 @@ mod tests {
             result["steps"]["current"]["title"].as_str(),
             Some("run verification")
         );
+    }
+
+    #[tokio::test]
+    async fn execute_json_batch_adds_six_steps_with_shared_client() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let commands = vec![
+            ("step 1", None, true),
+            ("step 2", Some("reason 2".to_string()), false),
+            ("step 3", Some("reason 3".to_string()), false),
+            ("step 4", Some("reason 4".to_string()), false),
+            ("step 5", Some("reason 5".to_string()), false),
+            ("step 6", Some("reason 6".to_string()), false),
+        ]
+        .into_iter()
+        .map(|(title, reason, start)| CaseCommand::Step {
+            command: StepCommand::Add {
+                id: case_id.clone(),
+                title: title.to_string(),
+                reason,
+                start,
+            },
+        })
+        .collect();
+
+        let values = execute_json_batch_with_client(&client, commands, true).await;
+
+        assert_eq!(values.len(), 6);
+        assert!(values
+            .iter()
+            .all(|value| value.get("ok").and_then(|v| v.as_bool()) == Some(true)));
+        assert_eq!(values[0]["step"]["status"].as_str(), Some("active"));
+        assert_eq!(
+            values[5]["steps"]["ordered"].as_array().map(Vec::len),
+            Some(6)
+        );
+        assert_eq!(values[5]["step"]["title"].as_str(), Some("step 6"));
     }
 
     #[tokio::test]
