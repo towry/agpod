@@ -206,6 +206,24 @@ pub struct Entry {
     pub created_at: String,
 }
 
+/// A single field-level match returned by case recall.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchMatch {
+    pub scope: String,
+    pub field: String,
+    pub excerpt: String,
+    pub direction_seq: Option<u32>,
+    pub entry_seq: Option<u32>,
+    pub kind: Option<String>,
+}
+
+/// Recall result for one case plus its matching fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseSearchResult {
+    pub case: Case,
+    pub matches: Vec<SearchMatch>,
+}
+
 /// Suggested next action for the CLI output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NextAction {

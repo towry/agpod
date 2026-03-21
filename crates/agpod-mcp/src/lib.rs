@@ -117,8 +117,6 @@ impl AgpodMcpServer {
             .arg(AGENT_OPUS_SYSTEM_PROMPT)
             .arg("--allowed-tools")
             .arg(AGENT_OPUS_ALLOWED_TOOLS)
-            .arg("--")
-            .arg(prompt)
             .stdin(Stdio::null());
 
         if is_resume {
@@ -126,6 +124,8 @@ impl AgpodMcpServer {
         } else {
             command.arg("--session-id").arg(&resume_id);
         }
+
+        command.arg("--").arg(prompt);
 
         let output = command.output().await;
 
@@ -505,13 +505,12 @@ impl AgpodMcpServer {
         let commands: Vec<CaseCommand> = req
             .steps
             .iter()
-            .cloned()
             .map(|step| CaseCommand::Step {
                 command: StepCommand::Add {
                     id: case_id.clone(),
-                    title: step.title,
-                    reason: step.reason,
-                    start: step.start,
+                    title: step.title().to_string(),
+                    reason: step.reason().map(ToOwned::to_owned),
+                    start: step.start(),
                 },
             })
             .collect();
@@ -931,12 +930,42 @@ pub struct CaseRecallRequest {
 pub struct CaseStepsAddRequest {
     /// Case ID.
     pub id: String,
-    /// Steps to add.
+    /// Steps to add. Accepts either plain strings like `"审阅报表"` or objects like `{"title":"审阅报表","reason":"补证","start":true}`.
     pub steps: Vec<StepInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct StepInput {
+#[serde(untagged)]
+pub enum StepInput {
+    Text(String),
+    Detailed(StepObjectInput),
+}
+
+impl StepInput {
+    fn title(&self) -> &str {
+        match self {
+            Self::Text(title) => title.as_str(),
+            Self::Detailed(step) => step.title.as_str(),
+        }
+    }
+
+    fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Text(_) => None,
+            Self::Detailed(step) => step.reason.as_deref(),
+        }
+    }
+
+    fn start(&self) -> bool {
+        match self {
+            Self::Text(_) => false,
+            Self::Detailed(step) => step.start,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct StepObjectInput {
     /// Step title.
     pub title: String,
     /// Why this step is needed.
@@ -1216,11 +1245,11 @@ mod tests {
 
         let raw = build_case_steps_add_partial_error(
             2,
-            StepInput {
+            StepInput::Detailed(StepObjectInput {
                 title: "second".to_string(),
                 reason: Some("because".to_string()),
                 start: false,
-            },
+            }),
             vec![serde_json::json!({"id": "case/S-001", "title": "first"})],
             failed_result,
         );
@@ -1239,6 +1268,40 @@ mod tests {
             Some("second")
         );
         assert!(raw.get("failure").is_some());
+    }
+
+    #[test]
+    fn case_steps_add_request_accepts_string_steps() {
+        let request: CaseStepsAddRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "steps": ["first step", "second step"]
+        }))
+        .expect("string shorthand should deserialize");
+
+        assert_eq!(request.steps.len(), 2);
+        assert_eq!(request.steps[0].title(), "first step");
+        assert_eq!(request.steps[0].reason(), None);
+        assert!(!request.steps[0].start());
+    }
+
+    #[test]
+    fn case_steps_add_request_keeps_object_steps() {
+        let request: CaseStepsAddRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "steps": [
+                {
+                    "title": "first step",
+                    "reason": "because",
+                    "start": true
+                }
+            ]
+        }))
+        .expect("object form should deserialize");
+
+        assert_eq!(request.steps.len(), 1);
+        assert_eq!(request.steps[0].title(), "first step");
+        assert_eq!(request.steps[0].reason(), Some("because"));
+        assert!(request.steps[0].start());
     }
 
     #[tokio::test]

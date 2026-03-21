@@ -96,6 +96,10 @@ fn render_text(value: &Value) {
         render_steps(steps, rendered_direction_tree);
     }
 
+    if let Some(entries) = value.get("entries").and_then(|v| v.as_array()) {
+        render_entries(entries);
+    }
+
     // Step (single, for step add)
     if let Some(step) = value.get("step") {
         render_single_step(step);
@@ -139,6 +143,17 @@ fn render_case_list(cases: &[Value], query: Option<&str>) {
         let status = case.get("status").and_then(|v| v.as_str()).unwrap_or("?");
         let goal = case.get("goal").and_then(|v| v.as_str()).unwrap_or("?");
         println!("{id}  [{status}]  {goal}");
+        if let Some(matches) = case.get("matches").and_then(|v| v.as_array()) {
+            for matched in matches.iter().take(3) {
+                let scope = matched.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
+                let field = matched.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                let excerpt = matched
+                    .get("excerpt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                println!("  - match {scope}.{field}: {excerpt}");
+            }
+        }
     }
 }
 
@@ -328,6 +343,32 @@ fn render_single_step(step: &Value) {
     println!("  status:   {status}");
 }
 
+fn render_entries(entries: &[Value]) {
+    if entries.is_empty() {
+        return;
+    }
+
+    println!("entries:");
+    for entry in entries {
+        let seq = entry.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+        let entry_type = entry
+            .get("entry_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let kind = entry.get("kind").and_then(|v| v.as_str());
+        let summary = entry.get("summary").and_then(|v| v.as_str()).unwrap_or("?");
+        match kind {
+            Some(kind) if !kind.is_empty() => println!("  {seq}. {entry_type}/{kind}: {summary}"),
+            _ => println!("  {seq}. {entry_type}: {summary}"),
+        }
+        if let Some(context) = entry.get("context").and_then(|v| v.as_str()) {
+            if !context.is_empty() {
+                println!("     context: {context}");
+            }
+        }
+    }
+}
+
 fn render_event(event: &Value) {
     let seq = event.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
     let entry_type = event
@@ -480,6 +521,42 @@ pub fn case_json(case: &Case) -> Value {
         value["timestamps"] = timestamps;
     }
     value
+}
+
+pub fn case_search_json(result: &CaseSearchResult) -> Value {
+    let mut value = case_json(&result.case);
+    value["matches"] = json!(result
+        .matches
+        .iter()
+        .map(search_match_json)
+        .collect::<Vec<_>>());
+    value
+}
+
+pub fn entry_json(entry: &Entry) -> Value {
+    json!({
+        "case_id": entry.case_id,
+        "seq": entry.seq,
+        "entry_type": entry.entry_type.as_str(),
+        "kind": entry.kind,
+        "summary": entry.summary,
+        "reason": entry.reason,
+        "context": entry.context,
+        "files": entry.files,
+        "artifacts": entry.artifacts,
+        "created_at": entry.created_at
+    })
+}
+
+pub fn search_match_json(search_match: &SearchMatch) -> Value {
+    json!({
+        "scope": search_match.scope,
+        "field": search_match.field,
+        "excerpt": search_match.excerpt,
+        "direction_seq": search_match.direction_seq,
+        "entry_seq": search_match.entry_seq,
+        "kind": search_match.kind
+    })
 }
 
 pub fn direction_json(dir: &Direction) -> Value {

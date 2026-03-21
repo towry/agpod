@@ -8,11 +8,20 @@ use crate::repo_id::RepoIdentity;
 use crate::types::*;
 use chrono::Utc;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 use surrealdb::engine::local::{Db, RocksDb};
 use surrealdb::Surreal;
 
+const DB_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const DB_LOCK_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct CaseClient {
     db: Surreal<Db>,
+    _db_lock: Arc<File>,
     repo_id: String,
     repo_label: String,
     worktree_id: String,
@@ -27,9 +36,8 @@ impl CaseClient {
                 .map_err(|e| CaseError::DbInit(format!("failed to create data directory: {e}")))?;
         }
 
-        let db = Surreal::new::<RocksDb>(config.data_dir.to_string_lossy().as_ref())
-            .await
-            .map_err(|e| CaseError::DbConnection(format!("{e}")))?;
+        let db_lock = acquire_db_lock(config).await?;
+        let db = connect_with_retry(config).await?;
 
         db.use_ns("agpod")
             .use_db("case")
@@ -38,6 +46,7 @@ impl CaseClient {
 
         let client = Self {
             db,
+            _db_lock: db_lock,
             repo_id: identity.repo_id,
             repo_label: identity.repo_label,
             worktree_id: identity.worktree_id,
@@ -121,6 +130,7 @@ impl CaseClient {
     pub(crate) fn clone_with_identity(&self, identity: RepoIdentity) -> Self {
         Self {
             db: self.db.clone(),
+            _db_lock: self._db_lock.clone(),
             repo_id: identity.repo_id,
             repo_label: identity.repo_label,
             worktree_id: identity.worktree_id,
@@ -558,14 +568,158 @@ impl CaseClient {
         Ok(results.iter().filter_map(parse_case).collect())
     }
 
-    pub async fn search_cases(&self, query: &str) -> CaseResult<Vec<Case>> {
-        let results = self
-            .query_raw(
-                "SELECT * FROM case WHERE repo_id = $repo_id AND string::lowercase(goal) CONTAINS string::lowercase($query)",
-                json!({ "repo_id": self.repo_id, "query": query }),
-            )
-            .await?;
-        Ok(results.iter().filter_map(parse_case).collect())
+    pub async fn search_cases(&self, query: &str) -> CaseResult<Vec<CaseSearchResult>> {
+        let needle = query.trim().to_lowercase();
+        let cases = self.list_cases().await?;
+        let mut results = Vec::new();
+
+        for case in cases {
+            let mut case_matches = Vec::new();
+            push_match(
+                &mut case_matches,
+                "case",
+                "goal",
+                Some(&case.goal),
+                &needle,
+                MatchMeta::default(),
+            );
+            push_match(
+                &mut case_matches,
+                "case",
+                "close_summary",
+                case.close_summary.as_deref(),
+                &needle,
+                MatchMeta::default(),
+            );
+            push_match(
+                &mut case_matches,
+                "case",
+                "abandon_summary",
+                case.abandon_summary.as_deref(),
+                &needle,
+                MatchMeta::default(),
+            );
+
+            let directions = self.get_directions(&case.id).await?;
+            for direction in &directions {
+                push_match(
+                    &mut case_matches,
+                    "direction",
+                    "summary",
+                    Some(&direction.summary),
+                    &needle,
+                    MatchMeta {
+                        direction_seq: Some(direction.seq),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "direction",
+                    "success_condition",
+                    Some(&direction.success_condition),
+                    &needle,
+                    MatchMeta {
+                        direction_seq: Some(direction.seq),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "direction",
+                    "abort_condition",
+                    Some(&direction.abort_condition),
+                    &needle,
+                    MatchMeta {
+                        direction_seq: Some(direction.seq),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "direction",
+                    "reason",
+                    direction.reason.as_deref(),
+                    &needle,
+                    MatchMeta {
+                        direction_seq: Some(direction.seq),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "direction",
+                    "context",
+                    direction.context.as_deref(),
+                    &needle,
+                    MatchMeta {
+                        direction_seq: Some(direction.seq),
+                        ..MatchMeta::default()
+                    },
+                );
+            }
+
+            let entries = self.get_entries(&case.id).await?;
+            for entry in &entries {
+                push_match(
+                    &mut case_matches,
+                    "entry",
+                    "summary",
+                    Some(&entry.summary),
+                    &needle,
+                    MatchMeta {
+                        entry_seq: Some(entry.seq),
+                        kind: entry.kind.clone(),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "entry",
+                    "reason",
+                    entry.reason.as_deref(),
+                    &needle,
+                    MatchMeta {
+                        entry_seq: Some(entry.seq),
+                        kind: entry.kind.clone(),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "entry",
+                    "context",
+                    entry.context.as_deref(),
+                    &needle,
+                    MatchMeta {
+                        entry_seq: Some(entry.seq),
+                        kind: entry.kind.clone(),
+                        ..MatchMeta::default()
+                    },
+                );
+                push_match(
+                    &mut case_matches,
+                    "entry",
+                    "kind",
+                    entry.kind.as_deref(),
+                    &needle,
+                    MatchMeta {
+                        entry_seq: Some(entry.seq),
+                        kind: entry.kind.clone(),
+                        ..MatchMeta::default()
+                    },
+                );
+            }
+
+            if !case_matches.is_empty() {
+                results.push(CaseSearchResult {
+                    case,
+                    matches: case_matches,
+                });
+            }
+        }
+
+        Ok(results)
     }
 
     pub async fn get_case(&self, case_id: &str) -> CaseResult<Case> {
@@ -580,6 +734,153 @@ impl CaseClient {
             .and_then(parse_case)
             .ok_or_else(|| CaseError::CaseNotFound(case_id.to_string()))
     }
+}
+
+async fn connect_with_retry(config: &DbConfig) -> CaseResult<Surreal<Db>> {
+    let path = config.data_dir.to_string_lossy().to_string();
+    let started = Instant::now();
+
+    loop {
+        match Surreal::new::<RocksDb>(path.as_str()).await {
+            Ok(db) => return Ok(db),
+            Err(err) => {
+                let message = err.to_string();
+                if !is_lock_contention(&message) {
+                    return Err(CaseError::DbConnection(message));
+                }
+
+                if started.elapsed() >= DB_LOCK_RETRY_TIMEOUT {
+                    return Err(CaseError::DbConnection(format!(
+                        "timed out waiting for database lock after {} ms: {message}",
+                        DB_LOCK_RETRY_TIMEOUT.as_millis()
+                    )));
+                }
+
+                tokio::time::sleep(DB_LOCK_RETRY_DELAY).await;
+            }
+        }
+    }
+}
+
+async fn acquire_db_lock(config: &DbConfig) -> CaseResult<Arc<File>> {
+    let lock_path = db_lock_path(config);
+    if let Some(existing) = shared_db_lock(&lock_path) {
+        return Ok(existing);
+    }
+
+    let started = Instant::now();
+
+    loop {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|err| {
+                CaseError::DbConnection(format!(
+                    "failed to open database access lock {}: {err}",
+                    lock_path.display()
+                ))
+            })?;
+
+        match file.try_lock() {
+            Ok(()) => {
+                let file = Arc::new(file);
+                return Ok(remember_db_lock(lock_path.clone(), file));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if started.elapsed() >= DB_LOCK_RETRY_TIMEOUT {
+                    return Err(CaseError::DbConnection(format!(
+                        "timed out waiting for database access lock {} after {} ms",
+                        lock_path.display(),
+                        DB_LOCK_RETRY_TIMEOUT.as_millis()
+                    )));
+                }
+                tokio::time::sleep(DB_LOCK_RETRY_DELAY).await;
+            }
+            Err(std::fs::TryLockError::Error(err)) => {
+                return Err(CaseError::DbConnection(format!(
+                    "failed to acquire database access lock {}: {err}",
+                    lock_path.display()
+                )));
+            }
+        }
+    }
+}
+
+fn db_lock_path(config: &DbConfig) -> PathBuf {
+    PathBuf::from(format!("{}.access.lock", config.data_dir.to_string_lossy()))
+}
+
+fn shared_db_locks() -> &'static Mutex<HashMap<PathBuf, Weak<File>>> {
+    static DB_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<File>>>> = OnceLock::new();
+    DB_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn shared_db_lock(lock_path: &PathBuf) -> Option<Arc<File>> {
+    let mut locks = shared_db_locks()
+        .lock()
+        .expect("database lock registry should not be poisoned");
+    let existing = locks.get(lock_path).and_then(Weak::upgrade);
+    if existing.is_none() {
+        locks.remove(lock_path);
+    }
+    existing
+}
+
+fn remember_db_lock(lock_path: PathBuf, file: Arc<File>) -> Arc<File> {
+    shared_db_locks()
+        .lock()
+        .expect("database lock registry should not be poisoned")
+        .insert(lock_path, Arc::downgrade(&file));
+    file
+}
+
+fn is_lock_contention(message: &str) -> bool {
+    let lowercase = message.to_lowercase();
+    lowercase.contains("lock")
+        && (lowercase.contains("resource temporarily unavailable")
+            || lowercase.contains("no locks available")
+            || lowercase.contains("lock hold by current process"))
+}
+
+fn text_matches_query(text: Option<&str>, query: &str) -> bool {
+    if query.is_empty() {
+        return false;
+    }
+
+    text.map(|value| value.to_lowercase().contains(query))
+        .unwrap_or(false)
+}
+
+#[derive(Default)]
+struct MatchMeta {
+    direction_seq: Option<u32>,
+    entry_seq: Option<u32>,
+    kind: Option<String>,
+}
+
+fn push_match(
+    matches: &mut Vec<SearchMatch>,
+    scope: &str,
+    field: &str,
+    text: Option<&str>,
+    query: &str,
+    meta: MatchMeta,
+) {
+    let Some(excerpt) = text.filter(|value| text_matches_query(Some(value), query)) else {
+        return;
+    };
+
+    matches.push(SearchMatch {
+        scope: scope.to_string(),
+        field: field.to_string(),
+        excerpt: excerpt.to_string(),
+        direction_seq: meta.direction_seq,
+        entry_seq: meta.entry_seq,
+        kind: meta.kind,
+    });
 }
 
 // ── Parsing helpers ──
@@ -758,4 +1059,38 @@ fn parse_single_entry(v: &Value) -> Option<Entry> {
         artifacts,
         created_at: v.get("created_at")?.as_str()?.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn temp_db_config(temp_dir: &TempDir) -> DbConfig {
+        let db_path = temp_dir.path().join("case.db");
+        DbConfig::from_data_dir(Some(
+            db_path
+                .to_str()
+                .expect("temporary database path should be valid UTF-8"),
+        ))
+    }
+
+    #[tokio::test]
+    async fn database_access_lock_is_shared_within_process() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let first_lock = acquire_db_lock(&config)
+            .await
+            .expect("first lock should succeed");
+
+        let started = Instant::now();
+        let second_lock = acquire_db_lock(&config)
+            .await
+            .expect("second lock should reuse the process-local lock");
+
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(Arc::ptr_eq(&first_lock, &second_lock));
+        drop(first_lock);
+        drop(second_lock);
+    }
 }

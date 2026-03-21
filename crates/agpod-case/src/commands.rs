@@ -714,6 +714,7 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
     let case = resolve_case(client, id).await?;
     let directions = client.get_directions(&case.id).await?;
     let all_steps = client.get_all_steps(&case.id).await?;
+    let entries = client.get_entries(&case.id).await?;
     let (dir_history, steps_by_dir) =
         build_direction_tree_payload(&directions, &all_steps, Some(case.current_direction_seq));
 
@@ -721,7 +722,8 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
         "ok": true,
         "case": output::case_json(&case),
         "direction_history": dir_history,
-        "steps_by_direction": steps_by_dir
+        "steps_by_direction": steps_by_dir,
+        "entries": entries.iter().map(output::entry_json).collect::<Vec<_>>()
     }))
 }
 
@@ -1057,7 +1059,7 @@ async fn cmd_step_block(
 async fn cmd_recall(client: &CaseClient, query: &str) -> CaseResult<serde_json::Value> {
     let cases = client.search_cases(query).await?;
 
-    let case_list: Vec<_> = cases.iter().map(output::case_json).collect();
+    let case_list: Vec<_> = cases.iter().map(output::case_search_json).collect();
 
     Ok(json!({
         "ok": true,
@@ -1423,6 +1425,131 @@ mod tests {
             Some(6)
         );
         assert_eq!(values[5]["step"]["title"].as_str(), Some("step 6"));
+    }
+
+    #[tokio::test]
+    async fn recall_matches_record_summary_and_context() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(
+            &client,
+            "stabilize inference rollout",
+            "inspect prod readiness",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            "sample report shows one toxic audit outlier",
+            "finding",
+            &[],
+            Some("audit csv was only a sample, not the full pool"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let recalled = cmd_recall(&client, "audit")
+            .await
+            .expect("recall should succeed");
+        let cases = recalled["cases"]
+            .as_array()
+            .expect("cases should be returned");
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0]["id"].as_str(), Some(case_id.as_str()));
+        let matches = cases[0]["matches"]
+            .as_array()
+            .expect("recall should include match details");
+        assert!(
+            matches.iter().any(|m| {
+                m["scope"].as_str() == Some("entry")
+                    && m["field"].as_str() == Some("summary")
+                    && m["excerpt"]
+                        .as_str()
+                        .is_some_and(|excerpt| excerpt.contains("audit outlier"))
+            }),
+            "record summary match should be surfaced"
+        );
+        assert!(
+            matches.iter().any(|m| {
+                m["scope"].as_str() == Some("entry")
+                    && m["field"].as_str() == Some("context")
+                    && m["excerpt"]
+                        .as_str()
+                        .is_some_and(|excerpt| excerpt.contains("audit csv"))
+            }),
+            "record context match should be surfaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn show_includes_record_entries_for_case_review() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            "record summary",
+            "finding",
+            &[],
+            Some("record context"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let shown = cmd_show(&client, Some(&case_id))
+            .await
+            .expect("show should succeed");
+        let entries = shown["entries"]
+            .as_array()
+            .expect("show should include entries");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["summary"].as_str(), Some("record summary"));
+        assert_eq!(entries[0]["context"].as_str(), Some("record context"));
+        assert_eq!(entries[0]["kind"].as_str(), Some("finding"));
     }
 
     #[tokio::test]

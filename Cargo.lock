@@ -90,6 +90,7 @@ version = "0.2.3"
 dependencies = [
  "agpod-case",
  "anyhow",
+ "dirs",
  "rmcp",
  "serde",
  "serde_json",
