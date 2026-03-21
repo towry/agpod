@@ -6,8 +6,8 @@ use agpod_case::{CaseArgs, CaseCommand, GoalDriftFlag, StepCommand};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{JsonObject, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ErrorData, Json, ServerHandler, ServiceExt,
+    model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo},
+    schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -48,7 +48,7 @@ impl AgpodMcpServer {
         kind: &'static str,
         command: CaseCommand,
         case_id_hint: Option<String>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         let args = CaseArgs {
             data_dir: self.data_dir.clone(),
             json: true,
@@ -61,29 +61,31 @@ impl AgpodMcpServer {
         let result = result.as_object().cloned().ok_or_else(|| {
             ErrorData::internal_error("agpod-case returned a non-object JSON payload", None)
         })?;
-        Ok(Json(ToolResponse {
+        ToolResponse {
             result: ToolEnvelope::from_raw(kind, case_id_hint, result),
-        }))
+        }
+        .into_call_tool_result()
     }
 
     async fn run_agent_opus_tool(
         &self,
         prompt: String,
         resume_id: Option<String>,
-    ) -> Result<Json<AgentTextToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         let is_resume = resume_id.is_some();
         let resume_id = match resolve_resume_id(resume_id) {
             Ok(resume_id) => resume_id,
             Err(message) => {
-                return Ok(Json(AgentTextToolResponse {
+                return AgentTextToolResponse {
                     result: AgentTextEnvelope {
-                        ok: false,
+                        is_error: true,
                         kind: "agent_opus".to_string(),
                         text: None,
                         message: Some(message),
                         resume_id: Uuid::new_v4().to_string(),
                     },
-                }));
+                }
+                .into_call_tool_result();
             }
         };
 
@@ -115,7 +117,7 @@ impl AgpodMcpServer {
             Ok(output) if output.status.success() => {
                 let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 AgentTextEnvelope {
-                    ok: true,
+                    is_error: false,
                     kind: "agent_opus".to_string(),
                     text: Some(text),
                     message: None,
@@ -128,7 +130,7 @@ impl AgpodMcpServer {
                 let message = if !stderr.is_empty() { stderr } else { stdout };
 
                 AgentTextEnvelope {
-                    ok: false,
+                    is_error: true,
                     kind: "agent_opus".to_string(),
                     text: None,
                     message: Some(message),
@@ -136,7 +138,7 @@ impl AgpodMcpServer {
                 }
             }
             Err(err) => AgentTextEnvelope {
-                ok: false,
+                is_error: true,
                 kind: "agent_opus".to_string(),
                 text: None,
                 message: Some(format!("failed to execute claude: {err}")),
@@ -144,7 +146,7 @@ impl AgpodMcpServer {
             },
         };
 
-        Ok(Json(AgentTextToolResponse { result }))
+        AgentTextToolResponse { result }.into_call_tool_result()
     }
 }
 
@@ -166,10 +168,6 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
                         "result": {
                             "type": "object",
                             "properties": {
-                                "ok": {
-                                    "type": "boolean",
-                                    "description": "Whether the agpod case command succeeded."
-                                },
                                 "kind": {
                                     "type": "string",
                                     "description": "Stable result kind matching the MCP tool name."
@@ -192,7 +190,7 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
                                     "additionalProperties": true
                                 }
                             },
-                            "required": ["ok", "kind", "raw"]
+                            "required": ["kind", "raw"]
                         }
                     },
                     "required": ["result"],
@@ -219,10 +217,6 @@ fn agent_text_output_schema() -> Arc<JsonObject> {
                         "result": {
                             "type": "object",
                             "properties": {
-                                "ok": {
-                                    "type": "boolean",
-                                    "description": "Whether the Claude Opus invocation succeeded."
-                                },
                                 "kind": {
                                     "type": "string",
                                     "description": "Stable result kind. Always `agent_opus`."
@@ -240,7 +234,7 @@ fn agent_text_output_schema() -> Arc<JsonObject> {
                                     "description": "Stable Claude session ID. Reuse it in later calls to continue the same discussion."
                                 }
                             },
-                            "required": ["ok", "kind", "resume_id"]
+                            "required": ["kind", "resume_id"]
                         }
                     },
                     "required": ["result"],
@@ -274,7 +268,7 @@ impl AgpodMcpServer {
     async fn agent_opus(
         &self,
         Parameters(req): Parameters<AgentTextRequest>,
-    ) -> Result<Json<AgentTextToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_agent_opus_tool(req.prompt, req.resume_id).await
     }
 
@@ -286,7 +280,7 @@ impl AgpodMcpServer {
     async fn case_current(
         &self,
         Parameters(_req): Parameters<CaseCurrentRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool("case_current", CaseCommand::Current, None)
             .await
     }
@@ -299,7 +293,7 @@ impl AgpodMcpServer {
     async fn case_open(
         &self,
         Parameters(req): Parameters<CaseOpenRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_open",
             CaseCommand::Open {
@@ -323,7 +317,7 @@ impl AgpodMcpServer {
     async fn case_record(
         &self,
         Parameters(req): Parameters<CaseRecordRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_record",
             CaseCommand::Record {
@@ -346,7 +340,7 @@ impl AgpodMcpServer {
     async fn case_decide(
         &self,
         Parameters(req): Parameters<CaseDecideRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_decide",
             CaseCommand::Decide {
@@ -367,7 +361,7 @@ impl AgpodMcpServer {
     async fn case_redirect(
         &self,
         Parameters(req): Parameters<CaseRedirectRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_redirect",
             CaseCommand::Redirect {
@@ -396,7 +390,7 @@ impl AgpodMcpServer {
     async fn case_show(
         &self,
         Parameters(req): Parameters<CaseShowRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool("case_show", CaseCommand::Show { id: req.id }, None)
             .await
     }
@@ -409,7 +403,7 @@ impl AgpodMcpServer {
     async fn case_close(
         &self,
         Parameters(req): Parameters<CaseCloseRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_close",
             CaseCommand::Close {
@@ -429,7 +423,7 @@ impl AgpodMcpServer {
     async fn case_abandon(
         &self,
         Parameters(req): Parameters<CaseCloseRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_abandon",
             CaseCommand::Abandon {
@@ -449,7 +443,7 @@ impl AgpodMcpServer {
     async fn case_list(
         &self,
         Parameters(_req): Parameters<CaseCurrentRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool("case_list", CaseCommand::List, None)
             .await
     }
@@ -462,7 +456,7 @@ impl AgpodMcpServer {
     async fn case_recall(
         &self,
         Parameters(req): Parameters<CaseRecallRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_recall",
             CaseCommand::Recall { query: req.query },
@@ -479,7 +473,7 @@ impl AgpodMcpServer {
     async fn case_resume(
         &self,
         Parameters(req): Parameters<CaseShowRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool("case_resume", CaseCommand::Resume { id: req.id }, None)
             .await
     }
@@ -492,7 +486,7 @@ impl AgpodMcpServer {
     async fn case_step_add(
         &self,
         Parameters(req): Parameters<CaseStepAddRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_step_add",
             CaseCommand::Step {
@@ -516,7 +510,7 @@ impl AgpodMcpServer {
     async fn case_step_start(
         &self,
         Parameters(req): Parameters<CaseStepIdRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_step_start",
             CaseCommand::Step {
@@ -538,7 +532,7 @@ impl AgpodMcpServer {
     async fn case_step_done(
         &self,
         Parameters(req): Parameters<CaseStepIdRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_step_done",
             CaseCommand::Step {
@@ -560,7 +554,7 @@ impl AgpodMcpServer {
     async fn case_step_move(
         &self,
         Parameters(req): Parameters<CaseStepMoveRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_step_move",
             CaseCommand::Step {
@@ -583,7 +577,7 @@ impl AgpodMcpServer {
     async fn case_step_block(
         &self,
         Parameters(req): Parameters<CaseStepBlockRequest>,
-    ) -> Result<Json<ToolResponse>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool(
             "case_step_block",
             CaseCommand::Step {
@@ -661,9 +655,22 @@ pub struct ToolResponse {
     pub result: ToolEnvelope,
 }
 
+impl ToolResponse {
+    fn into_call_tool_result(self) -> Result<CallToolResult, ErrorData> {
+        let is_error = self.result.is_error();
+        let text = self
+            .result
+            .message
+            .clone()
+            .unwrap_or_else(|| self.result.kind.clone());
+        structured_tool_result(self, text, is_error)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolEnvelope {
-    pub ok: bool,
+    #[serde(skip)]
+    is_error: bool,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub case_id: Option<String>,
@@ -685,13 +692,17 @@ impl ToolEnvelope {
             .map(ToOwned::to_owned);
 
         Self {
-            ok,
+            is_error: !ok,
             kind: kind.to_string(),
             case_id,
             state,
             message,
             raw,
         }
+    }
+
+    fn is_error(&self) -> bool {
+        self.is_error
     }
 }
 
@@ -900,15 +911,50 @@ pub struct AgentTextToolResponse {
     pub result: AgentTextEnvelope,
 }
 
+impl AgentTextToolResponse {
+    fn into_call_tool_result(self) -> Result<CallToolResult, ErrorData> {
+        let is_error = self.result.is_error;
+        let text = self
+            .result
+            .text
+            .clone()
+            .or_else(|| self.result.message.clone())
+            .unwrap_or_else(|| self.result.kind.clone());
+        structured_tool_result(self, text, is_error)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentTextEnvelope {
-    pub ok: bool,
+    #[serde(skip)]
+    is_error: bool,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     pub resume_id: String,
+}
+
+fn structured_tool_result<T>(
+    payload: T,
+    text: String,
+    is_error: bool,
+) -> Result<CallToolResult, ErrorData>
+where
+    T: Serialize,
+{
+    let value = serde_json::to_value(&payload).map_err(|err| {
+        ErrorData::internal_error(format!("Failed to serialize MCP tool result: {err}"), None)
+    })?;
+    let mut result = if is_error {
+        CallToolResult::structured_error(value)
+    } else {
+        CallToolResult::structured(value)
+    };
+    result.content = vec![Content::text(text)];
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -992,7 +1038,7 @@ mod tests {
 
         let envelope = ToolEnvelope::from_raw("case_current", None, raw);
 
-        assert!(envelope.ok);
+        assert!(!envelope.is_error());
         assert_eq!(envelope.kind, "case_current");
         assert_eq!(
             envelope.case_id.as_deref(),
@@ -1016,11 +1062,102 @@ mod tests {
 
         let envelope = ToolEnvelope::from_raw("case_current", None, raw);
 
-        assert!(!envelope.ok);
+        assert!(envelope.is_error());
         assert_eq!(envelope.state.as_deref(), Some("none"));
         assert_eq!(
             envelope.message.as_deref(),
             Some("no open case in this repository")
+        );
+    }
+
+    #[test]
+    fn tool_response_sets_mcp_is_error() {
+        let result = ToolResponse {
+            result: ToolEnvelope {
+                is_error: true,
+                kind: "case_current".to_string(),
+                case_id: None,
+                state: Some("none".to_string()),
+                message: Some("no open case in this repository".to_string()),
+                raw: Map::new(),
+            },
+        }
+        .into_call_tool_result()
+        .expect("tool response should serialize");
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content,
+            vec![Content::text("no open case in this repository")]
+        );
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({
+                "result": {
+                    "kind": "case_current",
+                    "state": "none",
+                    "message": "no open case in this repository",
+                    "raw": {}
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn agent_tool_response_sets_mcp_is_error() {
+        let result = AgentTextToolResponse {
+            result: AgentTextEnvelope {
+                is_error: true,
+                kind: "agent_opus".to_string(),
+                text: None,
+                message: Some("resume_id must be a valid UUID".to_string()),
+                resume_id: "123e4567-e89b-12d3-a456-426614174000".to_string(),
+            },
+        }
+        .into_call_tool_result()
+        .expect("agent response should serialize");
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content,
+            vec![Content::text("resume_id must be a valid UUID")]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_opus_invalid_resume_id_sets_mcp_is_error() {
+        let server = AgpodMcpServer::new();
+        let result = server
+            .run_agent_opus_tool("ping".to_string(), Some("not-a-uuid".to_string()))
+            .await
+            .expect("invalid resume_id should return tool error payload");
+        let structured = result
+            .structured_content
+            .clone()
+            .expect("structured content should be present");
+        let message = structured
+            .get("result")
+            .and_then(|value| value.get("message"))
+            .and_then(|value| value.as_str())
+            .expect("message should be present");
+        let resume_id = structured
+            .get("result")
+            .and_then(|value| value.get("resume_id"))
+            .and_then(|value| value.as_str())
+            .expect("resume_id should be present");
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.content.len(), 1);
+        assert!(message.contains("resume_id must be a valid UUID"));
+        assert_eq!(
+            structured,
+            serde_json::json!({
+                "result": {
+                    "kind": "agent_opus",
+                    "message": message,
+                    "resume_id": resume_id,
+                }
+            })
         );
     }
 
