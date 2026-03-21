@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/towry/agpod/compare/agpod-mcp-v0.2.1...agpod-mcp-v0.2.2) (2026-03-21)
+
+
+### Bug Fixes
+
+* **agpod-mcp:** merge case_close and case_abandon into case_finish ([#99](https://github.com/towry/agpod/issues/99)) ([6d8f41e](https://github.com/towry/agpod/commit/6d8f41e610d96ee3a83ab7725eb6cbf65fabed86))
+
 ## [0.2.1](https://github.com/towry/agpod/compare/agpod-mcp-v0.2.0...agpod-mcp-v0.2.1) (2026-03-21)
 
 
