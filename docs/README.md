@@ -1,21 +1,15 @@
 # Documentation
 
-This directory contains comprehensive documentation for agpod.
+This directory contains active documentation for `agpod`.
 
-## User Guides
+## Guides
 
-- [KIRO_GUIDE.md](KIRO_GUIDE.md) - Complete guide to using the Kiro PR draft workflow
-- [KIRO_VARIABLES.md](KIRO_VARIABLES.md) - Variables available in Kiro templates
-- [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) - Guide to using diff save mode for code review workflow
-
-## Development Documentation
-
-- [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) - Rust workspace structure and architecture
-- [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Implementation details and summaries
-- [REFACTOR_SUMMARY.md](REFACTOR_SUMMARY.md) - History of refactoring changes
+- [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) - Diff save mode and review chunk output
+- [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) - Current crate layout and responsibilities
+- [agents-md/case-surrealdb.md](agents-md/case-surrealdb.md) - Notes for `agpod-case` storage internals
 
 ## Quick Links
 
-- [Main README](../README.md) - Project overview and quick start
-- [Examples](../examples/) - Configuration examples and templates
-- [Changelog](../CHANGELOG.md) - Version history and changes
+- [Main README](../README.md) - Overview and quick start
+- [Examples](../examples/) - Configuration example
+- [Changelog](../CHANGELOG.md) - Release history
