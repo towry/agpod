@@ -98,7 +98,7 @@ body:
       options:
         - label: README.md
           required: false
-        - label: User guides (KIRO_GUIDE.md, etc.)
+        - label: User guides and command documentation
           required: false
         - label: Code comments/docstrings
           required: false
