@@ -34,6 +34,9 @@ pub enum CaseError {
     #[error("redirect requires both success_condition and abort_condition")]
     MissingDirectionExitConditions,
 
+    #[error("goal drift detected: close or archive the current case and open a new one instead of redirecting")]
+    GoalDriftRequiresNewCase,
+
     #[error("step not found: {0}")]
     StepNotFound(String),
 

@@ -9,9 +9,10 @@ use crate::error::{CaseError, CaseResult};
 use crate::output;
 use crate::repo_id::RepoIdentity;
 use crate::types::*;
+use crate::GoalDriftFlag;
 use anyhow::Result;
-use chrono::Utc;
 use serde_json::json;
+use uuid::Uuid;
 
 pub async fn execute(args: CaseArgs) -> Result<()> {
     let value = execute_json(args).await;
@@ -36,7 +37,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let setup = async {
         let cwd = std::env::current_dir()?;
         let identity = RepoIdentity::resolve_from(&cwd)?;
-        CaseClient::new(&config, identity.repo_id).await
+        CaseClient::new(&config, identity).await
     }
     .await;
 
@@ -93,6 +94,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
             direction,
             reason,
             context,
+            is_drift_from_goal,
             constraints,
             success_condition,
             abort_condition,
@@ -103,6 +105,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
                 direction,
                 reason,
                 context,
+                *is_drift_from_goal,
                 constraints,
                 success_condition,
                 abort_condition,
@@ -177,6 +180,7 @@ async fn build_error_value(
 fn error_state(error: &CaseError) -> &'static str {
     match error {
         CaseError::RepoHasOpenCase(_) => "conflict",
+        CaseError::GoalDriftRequiresNewCase => "goal_drift",
         CaseError::NoOpenCase => "none",
         CaseError::CaseNotFound(_) | CaseError::StepNotFound(_) => "missing",
         CaseError::CaseNotOpen(_) => "not_open",
@@ -189,6 +193,10 @@ fn error_next_action(error: &CaseError) -> Option<NextAction> {
         CaseError::RepoHasOpenCase(_) => Some(NextAction {
             suggested_command: "resume".to_string(),
             why: "an open case already exists for this repository".to_string(),
+        }),
+        CaseError::GoalDriftRequiresNewCase => Some(NextAction {
+            suggested_command: "open".to_string(),
+            why: "goal drift means this work now belongs in a new case, not a redirect".to_string(),
         }),
         CaseError::NoOpenCase => Some(NextAction {
             suggested_command: "open".to_string(),
@@ -277,32 +285,50 @@ fn command_before_step_id(command: &CaseCommand) -> Option<&str> {
 }
 
 fn parse_constraints(raw: &[String]) -> CaseResult<Vec<Constraint>> {
-    raw.iter()
-        .map(|s| {
-            serde_json::from_str::<Constraint>(s)
-                .map_err(|e| CaseError::InvalidConstraint(format!("{s}: {e}")))
-        })
-        .collect()
+    raw.iter().map(|s| parse_constraint(s)).collect()
 }
 
-/// Generate case ID: C-YYYYMMDD-NN
-async fn generate_case_id(client: &CaseClient) -> CaseResult<String> {
-    let today = Utc::now().format("%Y%m%d").to_string();
-    let count = client.count_cases_today().await.unwrap_or(0);
-    let seq = count + 1;
-    Ok(format!("C-{today}-{seq:02}"))
+fn parse_constraint(raw: &str) -> CaseResult<Constraint> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(CaseError::InvalidConstraint(
+            "constraint must not be empty".to_string(),
+        ));
+    }
+
+    if let Ok(constraint) = serde_json::from_str::<Constraint>(trimmed) {
+        return Ok(constraint);
+    }
+
+    if let Ok(rule) = serde_json::from_str::<String>(trimmed) {
+        return Ok(Constraint { rule, reason: None });
+    }
+
+    Ok(Constraint {
+        rule: trimmed.to_string(),
+        reason: None,
+    })
+}
+
+fn format_case_id(uuid: Uuid) -> String {
+    format!("C-{uuid}")
+}
+
+/// Generate case ID: C-<uuid>
+async fn generate_case_id(_client: &CaseClient) -> CaseResult<String> {
+    Ok(format_case_id(Uuid::new_v4()))
 }
 
 /// Generate step ID: {case_id}/S-NNN (case-scoped, globally unique)
 async fn generate_step_id(client: &CaseClient, case_id: &str) -> CaseResult<String> {
-    let count = client.get_step_count(case_id).await.unwrap_or(0);
+    let count = client.get_step_count(case_id).await?;
     let seq = count + 1;
     Ok(format!("{case_id}/S-{seq:03}"))
 }
 
 /// Get next entry seq for a case.
 async fn next_entry_seq(client: &CaseClient, case_id: &str) -> CaseResult<u32> {
-    let count = client.get_entry_count(case_id).await.unwrap_or(0);
+    let count = client.get_entry_count(case_id).await?;
     Ok(count + 1)
 }
 
@@ -542,12 +568,17 @@ async fn cmd_redirect(
     direction: &str,
     reason: &str,
     context: &str,
+    is_drift_from_goal: GoalDriftFlag,
     constraint_strs: &[String],
     success_condition: &str,
     abort_condition: &str,
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+
+    if is_drift_from_goal == GoalDriftFlag::Yes {
+        return Err(CaseError::GoalDriftRequiresNewCase);
+    }
 
     if success_condition.is_empty() || abort_condition.is_empty() {
         return Err(CaseError::MissingDirectionExitConditions);
@@ -692,9 +723,12 @@ async fn cmd_abandon(
 
 async fn cmd_step(client: &CaseClient, command: &StepCommand) -> CaseResult<serde_json::Value> {
     match command {
-        StepCommand::Add { id, title, reason } => {
-            cmd_step_add(client, id, title, reason.as_deref()).await
-        }
+        StepCommand::Add {
+            id,
+            title,
+            reason,
+            start,
+        } => cmd_step_add(client, id, title, reason.as_deref(), *start).await,
         StepCommand::Start { id, step_id } => cmd_step_start(client, id, step_id).await,
         StepCommand::Done { id, step_id } => cmd_step_done(client, id, step_id).await,
         StepCommand::Move {
@@ -715,6 +749,7 @@ async fn cmd_step_add(
     case_id: &str,
     title: &str,
     reason: Option<&str>,
+    start: bool,
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
@@ -736,14 +771,30 @@ async fn cmd_step_add(
         )
         .await?;
 
-    let next = NextAction {
-        suggested_command: "step start".to_string(),
-        why: "the step exists but is not active yet".to_string(),
-    };
+    if start {
+        activate_step(client, &case, &step.id).await?;
+    }
 
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
         .await?;
+    let step = steps
+        .iter()
+        .find(|candidate| candidate.id == step.id)
+        .cloned()
+        .expect("newly created step should be visible after reload");
+
+    let next = if start {
+        NextAction {
+            suggested_command: "record".to_string(),
+            why: "capture findings as you execute the active step".to_string(),
+        }
+    } else {
+        NextAction {
+            suggested_command: "step start".to_string(),
+            why: "the step exists but is not active yet".to_string(),
+        }
+    };
 
     Ok(json!({
         "ok": true,
@@ -768,20 +819,7 @@ async fn cmd_step_start(
     ensure_open(&case)?;
     client.get_step(step_id).await?;
 
-    // Deactivate any existing active step to maintain "one active at a time" invariant
-    let steps = client
-        .get_steps(case_id, case.current_direction_seq)
-        .await?;
-    for s in &steps {
-        if s.status == StepStatus::Active && s.id != step_id {
-            client.update_step(&s.id, StepStatus::Pending, None).await?;
-        }
-    }
-
-    client
-        .update_step(step_id, StepStatus::Active, None)
-        .await?;
-    client.update_case_step(case_id, step_id).await?;
+    activate_step(client, &case, step_id).await?;
 
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
@@ -798,6 +836,26 @@ async fn cmd_step_start(
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
+}
+
+async fn activate_step(client: &CaseClient, case: &Case, step_id: &str) -> CaseResult<()> {
+    // Deactivate any existing active step to maintain "one active at a time" invariant.
+    let steps = client
+        .get_steps(&case.id, case.current_direction_seq)
+        .await?;
+    for step in &steps {
+        if step.status == StepStatus::Active && step.id != step_id {
+            client
+                .update_step(&step.id, StepStatus::Pending, None)
+                .await?;
+        }
+    }
+
+    client
+        .update_step(step_id, StepStatus::Active, None)
+        .await?;
+    client.update_case_step(&case.id, step_id).await?;
+    Ok(())
 }
 
 async fn cmd_step_done(
@@ -1117,5 +1175,175 @@ fn suggest_next(
     NextAction {
         suggested_command: "step add".to_string(),
         why: "the direction is set but no execution step has been added yet".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DbConfig;
+    use tempfile::TempDir;
+
+    fn temp_db_config(temp_dir: &TempDir) -> DbConfig {
+        let db_path = temp_dir.path().join("case.db");
+        DbConfig::from_data_dir(Some(
+            db_path
+                .to_str()
+                .expect("temporary database path should be valid UTF-8"),
+        ))
+    }
+
+    #[tokio::test]
+    async fn shared_database_generates_distinct_case_ids_per_repository() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let identity_a = RepoIdentity {
+            repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+            repo_label: "github.com/example/repo-a".to_string(),
+            worktree_id: "1111111111111111".to_string(),
+            worktree_root: "/tmp/repo-a".to_string(),
+        };
+        let identity_b = RepoIdentity {
+            repo_id: "bbbbbbbbbbbbbbbb".to_string(),
+            repo_label: "github.com/example/repo-b".to_string(),
+            worktree_id: "2222222222222222".to_string(),
+            worktree_root: "/tmp/repo-b".to_string(),
+        };
+        let client_a = CaseClient::new(&config, identity_a.clone())
+            .await
+            .expect("repo A client should initialize");
+        let client_b = client_a.clone_with_identity(identity_b);
+
+        let result_a = cmd_open(&client_a, "goal a", "direction a", &[], &[], None, None)
+            .await
+            .expect("repo A should open its first case");
+        let result_b = cmd_open(&client_b, "goal b", "direction b", &[], &[], None, None)
+            .await
+            .expect("repo B should open its first case on the same shared DB");
+
+        let case_id_a = result_a["case"]["id"]
+            .as_str()
+            .expect("repo A case id should exist");
+        let case_id_b = result_b["case"]["id"]
+            .as_str()
+            .expect("repo B case id should exist");
+
+        assert!(case_id_a.starts_with("C-"));
+        assert!(case_id_b.starts_with("C-"));
+        assert!(Uuid::parse_str(&case_id_a[2..]).is_ok());
+        assert!(Uuid::parse_str(&case_id_b[2..]).is_ok());
+        assert_ne!(case_id_a, case_id_b);
+    }
+
+    #[tokio::test]
+    async fn get_case_is_scoped_to_current_repository() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let identity_a = RepoIdentity {
+            repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+            repo_label: "github.com/example/repo-a".to_string(),
+            worktree_id: "1111111111111111".to_string(),
+            worktree_root: "/tmp/repo-a".to_string(),
+        };
+        let identity_b = RepoIdentity {
+            repo_id: "bbbbbbbbbbbbbbbb".to_string(),
+            repo_label: "github.com/example/repo-b".to_string(),
+            worktree_id: "2222222222222222".to_string(),
+            worktree_root: "/tmp/repo-b".to_string(),
+        };
+        let client_a = CaseClient::new(&config, identity_a)
+            .await
+            .expect("repo A client should initialize");
+        let client_b = client_a.clone_with_identity(identity_b);
+
+        let result_a = cmd_open(&client_a, "goal a", "direction a", &[], &[], None, None)
+            .await
+            .expect("repo A should open its case");
+        let case_id_a = result_a["case"]["id"]
+            .as_str()
+            .expect("repo A case id should exist");
+
+        let error = client_b
+            .get_case(case_id_a)
+            .await
+            .expect_err("repo B should not resolve repo A case by explicit id");
+        assert!(matches!(error, CaseError::CaseNotFound(id) if id == case_id_a));
+    }
+
+    #[tokio::test]
+    async fn step_add_can_start_immediately() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let result = cmd_step_add(&client, &case_id, "run verification", None, true)
+            .await
+            .expect("step add with start should succeed");
+
+        assert_eq!(result["step"]["status"].as_str(), Some("active"));
+        assert_eq!(result["next"]["suggested_command"].as_str(), Some("record"));
+        assert_eq!(
+            result["steps"]["current"]["title"].as_str(),
+            Some("run verification")
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_rejects_goal_drift_and_points_to_new_case() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let error = cmd_redirect(
+            &client,
+            &case_id,
+            "new direction",
+            "topic changed",
+            "work drifted",
+            GoalDriftFlag::Yes,
+            &[],
+            "success",
+            "abort",
+        )
+        .await
+        .expect_err("goal drift should force a new case instead of redirect");
+
+        assert!(matches!(error, CaseError::GoalDriftRequiresNewCase));
     }
 }

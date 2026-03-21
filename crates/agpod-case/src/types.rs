@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Constraint {
     pub rule: String,
-    pub reason: String,
+    pub reason: Option<String>,
 }
 
 /// Case status.
@@ -147,6 +147,9 @@ impl RecordKind {
 pub struct Case {
     pub id: String,
     pub repo_id: String,
+    pub repo_label: Option<String>,
+    pub worktree_id: Option<String>,
+    pub worktree_root: Option<String>,
     pub goal: String,
     pub goal_constraints: Vec<Constraint>,
     pub status: CaseStatus,

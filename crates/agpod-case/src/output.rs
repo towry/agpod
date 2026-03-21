@@ -3,6 +3,7 @@
 //! Keywords: output, json, text, render, format, display
 
 use crate::types::*;
+use chrono::{DateTime, Local};
 use serde_json::{json, Value};
 use termtree::Tree;
 
@@ -162,6 +163,31 @@ fn render_case_header(case: &Value) {
                 }
             }
         }
+    }
+
+    if let Some(repo) = case.get("repo") {
+        if let Some(label) = repo.get("label").and_then(|v| v.as_str()) {
+            println!("repo: {label}");
+        }
+        if let Some(repo_id) = repo.get("id").and_then(|v| v.as_str()) {
+            println!("repo_id: {repo_id}");
+        }
+    }
+
+    if let Some(worktree) = case.get("worktree") {
+        if let Some(worktree_id) = worktree.get("id").and_then(|v| v.as_str()) {
+            println!("worktree_id: {worktree_id}");
+        }
+        if let Some(root) = worktree.get("root").and_then(|v| v.as_str()) {
+            println!("worktree_root: {root}");
+        }
+    }
+
+    if let Some(timestamps) = case.get("timestamps") {
+        render_timestamp_line("opened_at", timestamps, "opened_at");
+        render_timestamp_line("updated_at", timestamps, "updated_at");
+        render_timestamp_line("closed_at", timestamps, "closed_at");
+        render_timestamp_line("abandoned_at", timestamps, "abandoned_at");
     }
 }
 
@@ -430,12 +456,30 @@ pub fn error_json(error_code: &str, message: &str, next: Option<NextAction>) -> 
 }
 
 pub fn case_json(case: &Case) -> Value {
-    json!({
+    let mut value = json!({
         "id": case.id,
         "goal": case.goal,
         "goal_constraints": case.goal_constraints,
-        "status": case.status.as_str()
-    })
+        "status": case.status.as_str(),
+        "repo": {
+            "id": case.repo_id,
+            "label": case.repo_label
+        },
+        "worktree": {
+            "id": case.worktree_id,
+            "root": case.worktree_root
+        }
+    });
+    let timestamps = timestamp_bundle(
+        Some(&case.opened_at),
+        Some(&case.updated_at),
+        case.closed_at.as_deref(),
+        case.abandoned_at.as_deref(),
+    );
+    if !timestamps.is_null() {
+        value["timestamps"] = timestamps;
+    }
+    value
 }
 
 pub fn direction_json(dir: &Direction) -> Value {
@@ -499,6 +543,56 @@ pub fn context_json(case_id: &str, direction_seq: u32) -> Value {
     })
 }
 
+fn render_timestamp_line(label: &str, timestamps: &Value, key: &str) {
+    let local_key = format!("{key}_local");
+    let utc_key = format!("{key}_utc");
+    let local = timestamps.get(&local_key).and_then(|v| v.as_str());
+    let utc = timestamps.get(&utc_key).and_then(|v| v.as_str());
+    match (local, utc) {
+        (Some(local), Some(utc)) => println!("{label}: {local} (utc: {utc})"),
+        (Some(local), None) => println!("{label}: {local}"),
+        (None, Some(utc)) => println!("{label}_utc: {utc}"),
+        (None, None) => {}
+    }
+}
+
+fn localize_timestamp(raw: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Local).to_rfc3339())
+}
+
+fn timestamp_bundle(
+    opened_at: Option<&str>,
+    updated_at: Option<&str>,
+    closed_at: Option<&str>,
+    abandoned_at: Option<&str>,
+) -> Value {
+    let mut timestamps = serde_json::Map::new();
+    timestamps.insert(
+        "storage_timezone".to_string(),
+        json!("utc_with_local_rendering"),
+    );
+    insert_timestamp_pair(&mut timestamps, "opened_at", opened_at);
+    insert_timestamp_pair(&mut timestamps, "updated_at", updated_at);
+    insert_timestamp_pair(&mut timestamps, "closed_at", closed_at);
+    insert_timestamp_pair(&mut timestamps, "abandoned_at", abandoned_at);
+    Value::Object(timestamps)
+}
+
+fn insert_timestamp_pair(
+    timestamps: &mut serde_json::Map<String, Value>,
+    key: &str,
+    raw: Option<&str>,
+) {
+    if let Some(raw) = raw {
+        timestamps.insert(format!("{key}_utc"), json!(raw));
+        if let Some(local) = localize_timestamp(raw) {
+            timestamps.insert(format!("{key}_local"), json!(local));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,5 +630,44 @@ mod tests {
         assert_eq!(result["current"]["id"], "step-1");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0]["id"], "step-2");
+    }
+
+    #[test]
+    fn case_json_includes_repo_worktree_and_localized_timestamps() {
+        let case = Case {
+            id: "C-550e8400-e29b-41d4-a716-446655440000".to_string(),
+            repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+            repo_label: Some("github.com/example/agpod".to_string()),
+            worktree_id: Some("1111111111111111".to_string()),
+            worktree_root: Some("/tmp/agpod-worktree".to_string()),
+            goal: "verify timeline rendering".to_string(),
+            goal_constraints: vec![Constraint {
+                rule: "show local time".to_string(),
+                reason: Some("avoid agent confusion".to_string()),
+            }],
+            status: CaseStatus::Open,
+            current_direction_seq: 1,
+            current_step_id: None,
+            opened_at: "2026-03-21T00:00:00Z".to_string(),
+            updated_at: "2026-03-21T01:00:00Z".to_string(),
+            closed_at: None,
+            close_summary: None,
+            abandoned_at: None,
+            abandon_summary: None,
+        };
+
+        let result = case_json(&case);
+
+        assert_eq!(result["repo"]["id"], "aaaaaaaaaaaaaaaa");
+        assert_eq!(result["worktree"]["id"], "1111111111111111");
+        assert_eq!(
+            result["timestamps"]["storage_timezone"],
+            "utc_with_local_rendering"
+        );
+        assert_eq!(
+            result["timestamps"]["opened_at_utc"],
+            "2026-03-21T00:00:00Z"
+        );
+        assert!(result["timestamps"]["opened_at_local"].as_str().is_some());
     }
 }

@@ -2,7 +2,14 @@
 //!
 //! Keywords: cli, clap, subcommand, case args
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalDriftFlag {
+    Yes,
+    No,
+}
 
 #[derive(Debug, Args)]
 pub struct CaseArgs {
@@ -52,7 +59,7 @@ pub enum CaseCommand {
 
     /// Record a fact, finding, evidence, or blocker
     Record {
-        /// Case ID (e.g., C-20260320-01)
+        /// Case ID (e.g., C-550e8400-e29b-41d4-a716-446655440000)
         #[arg(long)]
         id: String,
 
@@ -105,6 +112,10 @@ pub enum CaseCommand {
         /// Context from prior work
         #[arg(long)]
         context: String,
+
+        /// Explicitly acknowledge whether the proposed redirect has drifted away from the immutable case goal
+        #[arg(long, value_enum)]
+        is_drift_from_goal: GoalDriftFlag,
 
         /// Direction-level constraint (JSON: {"rule":"...","reason":"..."})
         #[arg(long = "constraint")]
@@ -186,6 +197,10 @@ pub enum StepCommand {
         /// Reason for adding this step
         #[arg(long)]
         reason: Option<String>,
+
+        /// Start the step immediately after creating it
+        #[arg(long)]
+        start: bool,
     },
 
     /// Start (activate) a step

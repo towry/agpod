@@ -4,6 +4,7 @@
 
 use crate::config::DbConfig;
 use crate::error::{CaseError, CaseResult};
+use crate::repo_id::RepoIdentity;
 use crate::types::*;
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -13,10 +14,13 @@ use surrealdb::Surreal;
 pub struct CaseClient {
     db: Surreal<Db>,
     repo_id: String,
+    repo_label: String,
+    worktree_id: String,
+    worktree_root: String,
 }
 
 impl CaseClient {
-    pub async fn new(config: &DbConfig, repo_id: String) -> CaseResult<Self> {
+    pub async fn new(config: &DbConfig, identity: RepoIdentity) -> CaseResult<Self> {
         // Ensure parent directory exists
         if let Some(parent) = config.data_dir.parent() {
             std::fs::create_dir_all(parent)
@@ -32,7 +36,13 @@ impl CaseClient {
             .await
             .map_err(|e| CaseError::DbInit(format!("namespace/db init: {e}")))?;
 
-        let client = Self { db, repo_id };
+        let client = Self {
+            db,
+            repo_id: identity.repo_id,
+            repo_label: identity.repo_label,
+            worktree_id: identity.worktree_id,
+            worktree_root: identity.worktree_root,
+        };
         client.ensure_schema().await?;
         Ok(client)
     }
@@ -42,6 +52,9 @@ impl CaseClient {
             DEFINE TABLE IF NOT EXISTS case SCHEMAFULL;
             DEFINE FIELD IF NOT EXISTS case_id ON case TYPE string;
             DEFINE FIELD IF NOT EXISTS repo_id ON case TYPE string;
+            DEFINE FIELD IF NOT EXISTS repo_label ON case TYPE string;
+            DEFINE FIELD IF NOT EXISTS worktree_id ON case TYPE string;
+            DEFINE FIELD IF NOT EXISTS worktree_root ON case TYPE string;
             DEFINE FIELD IF NOT EXISTS goal ON case TYPE string;
             DEFINE FIELD IF NOT EXISTS goal_constraints ON case TYPE string;
             DEFINE FIELD IF NOT EXISTS status ON case TYPE string;
@@ -104,9 +117,15 @@ impl CaseClient {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn repo_id(&self) -> &str {
-        &self.repo_id
+    #[cfg(test)]
+    pub(crate) fn clone_with_identity(&self, identity: RepoIdentity) -> Self {
+        Self {
+            db: self.db.clone(),
+            repo_id: identity.repo_id,
+            repo_label: identity.repo_label,
+            worktree_id: identity.worktree_id,
+            worktree_root: identity.worktree_root,
+        }
     }
 
     // ── Internal query helper ──
@@ -151,6 +170,7 @@ impl CaseClient {
 
         self.query_raw(
             "CREATE case SET case_id = $case_id, repo_id = $repo_id, goal = $goal, \
+             repo_label = $repo_label, worktree_id = $worktree_id, worktree_root = $worktree_root, \
              goal_constraints = $goal_constraints, status = 'open', \
              current_direction_seq = $current_direction_seq, current_step_id = '', \
              opened_at = $opened_at, updated_at = $updated_at, \
@@ -158,6 +178,9 @@ impl CaseClient {
             json!({
                 "case_id": case_id,
                 "repo_id": self.repo_id,
+                "repo_label": self.repo_label,
+                "worktree_id": self.worktree_id,
+                "worktree_root": self.worktree_root,
                 "goal": goal,
                 "goal_constraints": constraints_json,
                 "current_direction_seq": 1,
@@ -170,6 +193,9 @@ impl CaseClient {
         Ok(Case {
             id: case_id.to_string(),
             repo_id: self.repo_id.clone(),
+            repo_label: Some(self.repo_label.clone()),
+            worktree_id: Some(self.worktree_id.clone()),
+            worktree_root: Some(self.worktree_root.clone()),
             goal: goal.to_string(),
             goal_constraints: goal_constraints.to_vec(),
             status: CaseStatus::Open,
@@ -545,25 +571,14 @@ impl CaseClient {
     pub async fn get_case(&self, case_id: &str) -> CaseResult<Case> {
         let results = self
             .query_raw(
-                "SELECT * FROM case WHERE case_id = $case_id LIMIT 1",
-                json!({ "case_id": case_id }),
+                "SELECT * FROM case WHERE repo_id = $repo_id AND case_id = $case_id LIMIT 1",
+                json!({ "repo_id": self.repo_id, "case_id": case_id }),
             )
             .await?;
         results
             .first()
             .and_then(parse_case)
             .ok_or_else(|| CaseError::CaseNotFound(case_id.to_string()))
-    }
-
-    pub async fn count_cases_today(&self) -> CaseResult<u32> {
-        let today_prefix = format!("C-{}", Utc::now().format("%Y%m%d"));
-        let results = self
-            .query_raw(
-                "SELECT * FROM case WHERE repo_id = $repo_id AND string::starts_with(case_id, $prefix)",
-                json!({ "repo_id": self.repo_id, "prefix": today_prefix }),
-            )
-            .await?;
-        Ok(results.len() as u32)
     }
 }
 
@@ -585,6 +600,18 @@ fn parse_case(v: &Value) -> Option<Case> {
     Some(Case {
         id,
         repo_id: v.get("repo_id")?.as_str()?.to_string(),
+        repo_label: v
+            .get("repo_label")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        worktree_id: v
+            .get("worktree_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        worktree_root: v
+            .get("worktree_root")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         goal: v.get("goal")?.as_str()?.to_string(),
         goal_constraints,
         status: CaseStatus::from_str(v.get("status")?.as_str()?)?,
