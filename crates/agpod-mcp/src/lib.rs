@@ -11,13 +11,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
-use tokio::process::Command;
-use uuid::Uuid;
-
-const AGENT_OPUS_SYSTEM_PROMPT: &str = include_str!("../prompts/agent_opus.md");
-const AGENT_OPUS_ALLOWED_TOOLS: &str = "Read,Bash(rg:*),Bash(fd:*)";
 
 #[derive(Debug, Clone)]
 pub struct AgpodMcpServer {
@@ -83,87 +77,6 @@ impl AgpodMcpServer {
         .into_call_tool_result()
     }
 
-    async fn run_agent_opus_tool(
-        &self,
-        prompt: String,
-        resume_id: Option<String>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let is_resume = resume_id.is_some();
-        let resume_id = match resolve_resume_id(resume_id) {
-            Ok(resume_id) => resume_id,
-            Err(message) => {
-                return AgentTextToolResponse {
-                    result: AgentTextEnvelope {
-                        is_error: true,
-                        kind: "agent_opus".to_string(),
-                        text: None,
-                        message: Some(message),
-                        resume_id: Uuid::new_v4().to_string(),
-                    },
-                }
-                .into_call_tool_result();
-            }
-        };
-
-        let mut command = Command::new("claude");
-        command
-            .arg("-p")
-            .arg("--model")
-            .arg("opus")
-            .arg("--effort")
-            .arg("high")
-            .arg("--strict-mcp-config")
-            .arg("--system-prompt")
-            .arg(AGENT_OPUS_SYSTEM_PROMPT)
-            .arg("--allowed-tools")
-            .arg(AGENT_OPUS_ALLOWED_TOOLS)
-            .stdin(Stdio::null());
-
-        if is_resume {
-            command.arg("--resume").arg(&resume_id);
-        } else {
-            command.arg("--session-id").arg(&resume_id);
-        }
-
-        command.arg("--").arg(prompt);
-
-        let output = command.output().await;
-
-        let result = match output {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                AgentTextEnvelope {
-                    is_error: false,
-                    kind: "agent_opus".to_string(),
-                    text: Some(text),
-                    message: None,
-                    resume_id,
-                }
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let message = if !stderr.is_empty() { stderr } else { stdout };
-
-                AgentTextEnvelope {
-                    is_error: true,
-                    kind: "agent_opus".to_string(),
-                    text: None,
-                    message: Some(message),
-                    resume_id,
-                }
-            }
-            Err(err) => AgentTextEnvelope {
-                is_error: true,
-                kind: "agent_opus".to_string(),
-                text: None,
-                message: Some(format!("failed to execute claude: {err}")),
-                resume_id,
-            },
-        };
-
-        AgentTextToolResponse { result }.into_call_tool_result()
-    }
 }
 
 impl Default for AgpodMcpServer {
@@ -221,50 +134,6 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
         .clone()
 }
 
-fn agent_text_output_schema() -> Arc<JsonObject> {
-    static SCHEMA: OnceLock<Arc<JsonObject>> = OnceLock::new();
-
-    SCHEMA
-        .get_or_init(|| {
-            Arc::new(
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "result": {
-                            "type": "object",
-                            "properties": {
-                                "kind": {
-                                    "type": "string",
-                                    "description": "Stable result kind. Always `agent_opus`."
-                                },
-                                "text": {
-                                    "type": ["string", "null"],
-                                    "description": "Claude Opus text output on success."
-                                },
-                                "message": {
-                                    "type": ["string", "null"],
-                                    "description": "Failure message when the invocation did not succeed."
-                                },
-                                "resume_id": {
-                                    "type": "string",
-                                    "description": "Stable Claude session ID. Reuse it in later calls to continue the same discussion."
-                                }
-                            },
-                            "required": ["kind", "resume_id"]
-                        }
-                    },
-                    "required": ["result"],
-                    "$schema": "https://json-schema.org/draft/2020-12/schema",
-                    "title": "AgentTextToolResponse"
-                })
-                .as_object()
-                .expect("output schema should be an object")
-                .clone(),
-            )
-        })
-        .clone()
-}
-
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
@@ -276,18 +145,6 @@ impl ServerHandler for AgpodMcpServer {
 
 #[tool_router]
 impl AgpodMcpServer {
-    #[tool(
-        name = "agent_opus",
-        description = "Read-only second opinion via Claude Opus. Input a prompt, output text.",
-        output_schema = agent_text_output_schema()
-    )]
-    async fn agent_opus(
-        &self,
-        Parameters(req): Parameters<AgentTextRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.run_agent_opus_tool(req.prompt, req.resume_id).await
-    }
-
     #[tool(
         name = "case_current",
         description = "Read active case state. Safe first call.",
@@ -612,15 +469,6 @@ fn encode_constraints(constraints: Vec<ConstraintInput>) -> Vec<String> {
                 .expect("constraint should serialize")
         })
         .collect()
-}
-
-fn resolve_resume_id(resume_id: Option<String>) -> Result<String, String> {
-    match resume_id {
-        Some(resume_id) => Uuid::parse_str(&resume_id)
-            .map(|uuid| uuid.to_string())
-            .map_err(|err| format!("resume_id must be a valid UUID: {err}")),
-        None => Ok(Uuid::new_v4().to_string()),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -997,44 +845,6 @@ pub struct CaseStepMoveRequest {
     pub before: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentTextRequest {
-    /// Prompt sent to the read-only Claude Opus second-opinion agent.
-    pub prompt: String,
-    /// Optional Claude session ID to continue a previous discussion.
-    pub resume_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentTextToolResponse {
-    pub result: AgentTextEnvelope,
-}
-
-impl AgentTextToolResponse {
-    fn into_call_tool_result(self) -> Result<CallToolResult, ErrorData> {
-        let is_error = self.result.is_error;
-        let text = self
-            .result
-            .text
-            .clone()
-            .or_else(|| self.result.message.clone())
-            .unwrap_or_else(|| self.result.kind.clone());
-        structured_tool_result(self, text, is_error)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentTextEnvelope {
-    #[serde(skip)]
-    is_error: bool,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    pub resume_id: String,
-}
-
 fn structured_tool_result<T>(
     payload: T,
     text: String,
@@ -1069,7 +879,6 @@ mod tests {
         assert!(tool_names.contains(&"case_current"));
         assert!(tool_names.contains(&"case_open"));
         assert!(tool_names.contains(&"case_steps_add"));
-        assert!(tool_names.contains(&"agent_opus"));
 
         let current_tool = tools
             .iter()
@@ -1094,10 +903,6 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "case_open")
             .expect("case_open tool should exist");
-        let agent_tool = tools
-            .iter()
-            .find(|tool| tool.name == "agent_opus")
-            .expect("agent_opus tool should exist");
 
         let current_schema =
             serde_json::to_value(&current_tool.input_schema).expect("schema should serialize");
@@ -1109,14 +914,10 @@ mod tests {
             .expect("case_redirect tool should exist");
         let redirect_schema =
             serde_json::to_value(&redirect_tool.input_schema).expect("schema should serialize");
-        let agent_schema =
-            serde_json::to_value(&agent_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
-        assert!(agent_schema.to_string().contains("prompt"));
-        assert!(agent_schema.to_string().contains("resume_id"));
     }
 
     #[test]
@@ -1351,80 +1152,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn agent_tool_response_sets_mcp_is_error() {
-        let result = AgentTextToolResponse {
-            result: AgentTextEnvelope {
-                is_error: true,
-                kind: "agent_opus".to_string(),
-                text: None,
-                message: Some("resume_id must be a valid UUID".to_string()),
-                resume_id: "123e4567-e89b-12d3-a456-426614174000".to_string(),
-            },
-        }
-        .into_call_tool_result()
-        .expect("agent response should serialize");
-
-        assert_eq!(result.is_error, Some(true));
-        assert_eq!(
-            result.content,
-            vec![Content::text("resume_id must be a valid UUID")]
-        );
-    }
-
-    #[tokio::test]
-    async fn agent_opus_invalid_resume_id_sets_mcp_is_error() {
-        let server = AgpodMcpServer::new();
-        let result = server
-            .run_agent_opus_tool("ping".to_string(), Some("not-a-uuid".to_string()))
-            .await
-            .expect("invalid resume_id should return tool error payload");
-        let structured = result
-            .structured_content
-            .clone()
-            .expect("structured content should be present");
-        let message = structured
-            .get("result")
-            .and_then(|value| value.get("message"))
-            .and_then(|value| value.as_str())
-            .expect("message should be present");
-        let resume_id = structured
-            .get("result")
-            .and_then(|value| value.get("resume_id"))
-            .and_then(|value| value.as_str())
-            .expect("resume_id should be present");
-
-        assert_eq!(result.is_error, Some(true));
-        assert_eq!(result.content.len(), 1);
-        assert!(message.contains("resume_id must be a valid UUID"));
-        assert_eq!(
-            structured,
-            serde_json::json!({
-                "result": {
-                    "kind": "agent_opus",
-                    "message": message,
-                    "resume_id": resume_id,
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn agent_opus_prompt_is_loaded_from_markdown() {
-        assert!(AGENT_OPUS_SYSTEM_PROMPT.contains("第二意见代理"));
-        assert!(AGENT_OPUS_SYSTEM_PROMPT.contains("只读"));
-    }
-
-    #[test]
-    fn resolve_resume_id_reuses_valid_uuid() {
-        let input = "123e4567-e89b-12d3-a456-426614174000".to_string();
-        let result = resolve_resume_id(Some(input.clone())).expect("uuid should be valid");
-        assert_eq!(result, input);
-    }
-
-    #[test]
-    fn resolve_resume_id_rejects_invalid_uuid() {
-        let err = resolve_resume_id(Some("not-a-uuid".to_string())).expect_err("uuid invalid");
-        assert!(err.contains("resume_id must be a valid UUID"));
-    }
 }
