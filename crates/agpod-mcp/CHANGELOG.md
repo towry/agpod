@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/towry/agpod/compare/agpod-mcp-v0.2.2...agpod-mcp-v0.2.3) (2026-03-21)
+
+
+### Bug Fixes
+
+* **agpod-mcp:** avoid lock contention in case_steps_add ([51d2659](https://github.com/towry/agpod/commit/51d26595eb8e53093874917ad5b5cb5f153d36e1))
+
 ## [0.2.2](https://github.com/towry/agpod/compare/agpod-mcp-v0.2.1...agpod-mcp-v0.2.2) (2026-03-21)
 
 
