@@ -19,3 +19,7 @@ pub async fn run(args: CaseArgs) -> Result<()> {
 pub async fn run_json(args: CaseArgs) -> Value {
     commands::execute_json(args).await
 }
+
+pub async fn run_json_batch(data_dir: Option<String>, commands: Vec<CaseCommand>) -> Vec<Value> {
+    commands::execute_json_batch(data_dir.as_deref(), commands).await
+}
