@@ -49,6 +49,14 @@ impl AgpodMcpServer {
         command: CaseCommand,
         case_id_hint: Option<String>,
     ) -> Result<CallToolResult, ErrorData> {
+        let result = self.run_case_command_raw(command).await?;
+        Self::case_tool_result(kind, case_id_hint, result)
+    }
+
+    async fn run_case_command_raw(
+        &self,
+        command: CaseCommand,
+    ) -> Result<Map<String, Value>, ErrorData> {
         let args = CaseArgs {
             data_dir: self.data_dir.clone(),
             json: true,
@@ -61,6 +69,14 @@ impl AgpodMcpServer {
         let result = result.as_object().cloned().ok_or_else(|| {
             ErrorData::internal_error("agpod-case returned a non-object JSON payload", None)
         })?;
+        Ok(result)
+    }
+
+    fn case_tool_result(
+        kind: &'static str,
+        case_id_hint: Option<String>,
+        result: Map<String, Value>,
+    ) -> Result<CallToolResult, ErrorData> {
         ToolResponse {
             result: ToolEnvelope::from_raw(kind, case_id_hint, result),
         }
@@ -396,43 +412,32 @@ impl AgpodMcpServer {
     }
 
     #[tool(
-        name = "case_close",
-        description = "Close an open case once the goal is met.",
+        name = "case_finish",
+        description = "End an open case. Use outcome \"completed\" when the goal is met, or \"abandoned\" when no longer worth pursuing.",
         output_schema = case_tool_output_schema()
     )]
-    async fn case_close(
+    async fn case_finish(
         &self,
-        Parameters(req): Parameters<CaseCloseRequest>,
+        Parameters(req): Parameters<CaseFinishRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool(
-            "case_close",
-            CaseCommand::Close {
+        let command = match req.outcome.as_str() {
+            "completed" => CaseCommand::Close {
                 id: req.id.clone(),
                 summary: req.summary,
             },
-            Some(req.id),
-        )
-        .await
-    }
-
-    #[tool(
-        name = "case_abandon",
-        description = "Abandon an open case when the goal is no longer worth pursuing.",
-        output_schema = case_tool_output_schema()
-    )]
-    async fn case_abandon(
-        &self,
-        Parameters(req): Parameters<CaseCloseRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool(
-            "case_abandon",
-            CaseCommand::Abandon {
+            "abandoned" => CaseCommand::Abandon {
                 id: req.id.clone(),
                 summary: req.summary,
             },
-            Some(req.id),
-        )
-        .await
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("invalid outcome \"{other}\": expected \"completed\" or \"abandoned\""),
+                    None,
+                ));
+            }
+        };
+        self.run_case_tool("case_finish", command, Some(req.id))
+            .await
     }
 
     #[tool(
@@ -479,68 +484,88 @@ impl AgpodMcpServer {
     }
 
     #[tool(
-        name = "case_step_add",
-        description = "Add a step to the current direction. Use after `case_open` or `case_redirect`.",
+        name = "case_steps_add",
+        description = "Add one or more steps to the current direction. Use after `case_open` or `case_redirect`.",
         output_schema = case_tool_output_schema()
     )]
-    async fn case_step_add(
+    async fn case_steps_add(
         &self,
-        Parameters(req): Parameters<CaseStepAddRequest>,
+        Parameters(req): Parameters<CaseStepsAddRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool(
-            "case_step_add",
-            CaseCommand::Step {
-                command: StepCommand::Add {
-                    id: req.id.clone(),
-                    title: req.title,
-                    reason: req.reason,
-                    start: req.start,
-                },
-            },
-            Some(req.id),
-        )
-        .await
+        if req.steps.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "steps array must not be empty",
+                None,
+            ));
+        }
+
+        let case_id = req.id.clone();
+        let mut created_steps = Vec::new();
+        let mut last_success = None;
+
+        for (index, step) in req.steps.into_iter().enumerate() {
+            let result = self
+                .run_case_command_raw(CaseCommand::Step {
+                    command: StepCommand::Add {
+                        id: case_id.clone(),
+                        title: step.title.clone(),
+                        reason: step.reason.clone(),
+                        start: step.start,
+                    },
+                })
+                .await?;
+
+            if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                if let Some(created) = result.get("step").cloned() {
+                    created_steps.push(created);
+                }
+                last_success = Some(result);
+                continue;
+            }
+
+            let partial =
+                build_case_steps_add_partial_error(index + 1, step, created_steps, result);
+            return Self::case_tool_result("case_steps_add", Some(case_id), partial);
+        }
+
+        let result =
+            build_case_steps_add_success(created_steps, last_success.expect("checked non-empty"));
+        Self::case_tool_result("case_steps_add", Some(case_id), result)
     }
 
     #[tool(
-        name = "case_step_start",
-        description = "Start a pending step on an open case.",
+        name = "case_step_mark_as",
+        description = "Transition a step's status: started, done, or blocked.",
         output_schema = case_tool_output_schema()
     )]
-    async fn case_step_start(
+    async fn case_step_mark_as(
         &self,
-        Parameters(req): Parameters<CaseStepIdRequest>,
+        Parameters(req): Parameters<CaseStepMarkAsRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool(
-            "case_step_start",
-            CaseCommand::Step {
-                command: StepCommand::Start {
-                    id: req.id.clone(),
-                    step_id: req.step_id,
-                },
+        let command = match req.status.as_str() {
+            "started" => StepCommand::Start {
+                id: req.id.clone(),
+                step_id: req.step_id,
             },
-            Some(req.id),
-        )
-        .await
-    }
-
-    #[tool(
-        name = "case_step_done",
-        description = "Mark an active or pending step done.",
-        output_schema = case_tool_output_schema()
-    )]
-    async fn case_step_done(
-        &self,
-        Parameters(req): Parameters<CaseStepIdRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool(
-            "case_step_done",
-            CaseCommand::Step {
-                command: StepCommand::Done {
-                    id: req.id.clone(),
-                    step_id: req.step_id,
-                },
+            "done" => StepCommand::Done {
+                id: req.id.clone(),
+                step_id: req.step_id,
             },
+            "blocked" => StepCommand::Block {
+                id: req.id.clone(),
+                step_id: req.step_id,
+                reason: req.reason.unwrap_or_default(),
+            },
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("invalid status \"{other}\": expected \"started\", \"done\", or \"blocked\""),
+                    None,
+                ));
+            }
+        };
+        self.run_case_tool(
+            "case_step_mark_as",
+            CaseCommand::Step { command },
             Some(req.id),
         )
         .await
@@ -562,29 +587,6 @@ impl AgpodMcpServer {
                     id: req.id.clone(),
                     step_id: req.step_id,
                     before: req.before,
-                },
-            },
-            Some(req.id),
-        )
-        .await
-    }
-
-    #[tool(
-        name = "case_step_block",
-        description = "Mark a step blocked when execution cannot proceed.",
-        output_schema = case_tool_output_schema()
-    )]
-    async fn case_step_block(
-        &self,
-        Parameters(req): Parameters<CaseStepBlockRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool(
-            "case_step_block",
-            CaseCommand::Step {
-                command: StepCommand::Block {
-                    id: req.id.clone(),
-                    step_id: req.step_id,
-                    reason: req.reason,
                 },
             },
             Some(req.id),
@@ -764,6 +766,62 @@ fn extract_state(raw: &Map<String, Value>, ok: bool) -> Option<String> {
         })
 }
 
+fn build_case_steps_add_success(
+    created_steps: Vec<Value>,
+    last_result: Map<String, Value>,
+) -> Map<String, Value> {
+    let created_count = created_steps.len() as u64;
+    let mut raw = Map::new();
+    raw.insert("ok".to_string(), Value::Bool(true));
+    raw.insert("created_steps".to_string(), Value::Array(created_steps));
+    raw.insert("created_count".to_string(), Value::from(created_count));
+    copy_case_steps_add_passthrough_fields(&mut raw, &last_result);
+    raw
+}
+
+fn build_case_steps_add_partial_error(
+    failed_index: usize,
+    failed_step: StepInput,
+    created_steps: Vec<Value>,
+    failed_result: Map<String, Value>,
+) -> Map<String, Value> {
+    let failed_message = failed_result
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("step add failed");
+    let created_count = created_steps.len() as u64;
+
+    let mut raw = Map::new();
+    raw.insert("ok".to_string(), Value::Bool(false));
+    raw.insert(
+        "message".to_string(),
+        Value::String(format!(
+            "case_steps_add failed at step {failed_index}: {failed_message}"
+        )),
+    );
+    raw.insert("created_steps".to_string(), Value::Array(created_steps));
+    raw.insert("created_count".to_string(), Value::from(created_count));
+    raw.insert("failed_index".to_string(), Value::from(failed_index as u64));
+    raw.insert(
+        "failed_input".to_string(),
+        serde_json::to_value(failed_step).expect("step input should serialize"),
+    );
+    raw.insert("failure".to_string(), Value::Object(failed_result.clone()));
+    copy_case_steps_add_passthrough_fields(&mut raw, &failed_result);
+    raw
+}
+
+fn copy_case_steps_add_passthrough_fields(
+    target: &mut Map<String, Value>,
+    source: &Map<String, Value>,
+) {
+    for key in ["steps", "context", "next"] {
+        if let Some(value) = source.get(key).cloned() {
+            target.insert(key.to_string(), value);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct CaseCurrentRequest {}
 
@@ -844,9 +902,11 @@ pub struct CaseShowRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CaseCloseRequest {
+pub struct CaseFinishRequest {
     /// Case ID.
     pub id: String,
+    /// Outcome: "completed" or "abandoned".
+    pub outcome: String,
     /// Closing or abandonment summary.
     pub summary: String,
 }
@@ -858,9 +918,15 @@ pub struct CaseRecallRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CaseStepAddRequest {
+pub struct CaseStepsAddRequest {
     /// Case ID.
     pub id: String,
+    /// Steps to add.
+    pub steps: Vec<StepInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct StepInput {
     /// Step title.
     pub title: String,
     /// Why this step is needed.
@@ -871,11 +937,15 @@ pub struct CaseStepAddRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CaseStepIdRequest {
+pub struct CaseStepMarkAsRequest {
     /// Case ID.
     pub id: String,
     /// Step ID.
     pub step_id: String,
+    /// Target status: "started", "done", or "blocked".
+    pub status: String,
+    /// Required when status is "blocked". Reason the step cannot proceed.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -886,16 +956,6 @@ pub struct CaseStepMoveRequest {
     pub step_id: String,
     /// Place before this step ID.
     pub before: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CaseStepBlockRequest {
-    /// Case ID.
-    pub id: String,
-    /// Step ID.
-    pub step_id: String,
-    /// Why the step is blocked.
-    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -969,7 +1029,7 @@ mod tests {
 
         assert!(tool_names.contains(&"case_current"));
         assert!(tool_names.contains(&"case_open"));
-        assert!(tool_names.contains(&"case_step_add"));
+        assert!(tool_names.contains(&"case_steps_add"));
         assert!(tool_names.contains(&"agent_opus"));
 
         let current_tool = tools
@@ -1068,6 +1128,121 @@ mod tests {
             envelope.message.as_deref(),
             Some("no open case in this repository")
         );
+    }
+
+    #[test]
+    fn case_steps_add_success_aggregates_created_steps() {
+        let last_result = serde_json::json!({
+            "ok": true,
+            "step": {
+                "id": "case/S-002",
+                "title": "second"
+            },
+            "steps": {
+                "ordered": [
+                    {"id": "case/S-001"},
+                    {"id": "case/S-002"}
+                ]
+            },
+            "context": {
+                "active_case_id": "case"
+            },
+            "next": {
+                "suggested_command": "record"
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("raw payload should be an object");
+
+        let raw = build_case_steps_add_success(
+            vec![
+                serde_json::json!({"id": "case/S-001", "title": "first"}),
+                serde_json::json!({"id": "case/S-002", "title": "second"}),
+            ],
+            last_result,
+        );
+
+        assert_eq!(raw.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(raw.get("created_count").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            raw.get("created_steps")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            raw.get("steps")
+                .and_then(|value| value.get("ordered"))
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            raw.get("next")
+                .and_then(|value| value.get("suggested_command"))
+                .and_then(Value::as_str),
+            Some("record")
+        );
+    }
+
+    #[test]
+    fn case_steps_add_partial_error_preserves_successes() {
+        let failed_result = serde_json::json!({
+            "ok": false,
+            "message": "step not found",
+            "steps": {
+                "ordered": [
+                    {"id": "case/S-001"}
+                ]
+            },
+            "context": {
+                "active_case_id": "case"
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("raw payload should be an object");
+
+        let raw = build_case_steps_add_partial_error(
+            2,
+            StepInput {
+                title: "second".to_string(),
+                reason: Some("because".to_string()),
+                start: false,
+            },
+            vec![serde_json::json!({"id": "case/S-001", "title": "first"})],
+            failed_result,
+        );
+
+        assert_eq!(raw.get("ok").and_then(Value::as_bool), Some(false));
+        assert_eq!(raw.get("created_count").and_then(Value::as_u64), Some(1));
+        assert_eq!(raw.get("failed_index").and_then(Value::as_u64), Some(2));
+        assert!(raw
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("failed at step 2")));
+        assert_eq!(
+            raw.get("failed_input")
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str),
+            Some("second")
+        );
+        assert!(raw.get("failure").is_some());
+    }
+
+    #[tokio::test]
+    async fn case_steps_add_rejects_empty_array() {
+        let server = AgpodMcpServer::new();
+        let err = server
+            .case_steps_add(Parameters(CaseStepsAddRequest {
+                id: "case".to_string(),
+                steps: Vec::new(),
+            }))
+            .await
+            .expect_err("empty steps should be invalid");
+
+        assert!(err.message.contains("steps array must not be empty"));
     }
 
     #[test]
