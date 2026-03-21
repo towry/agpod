@@ -4,6 +4,7 @@
 
 use crate::error::{CaseError, CaseResult};
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -13,8 +14,11 @@ pub struct RepoIdentity {
     /// Stable hex hash: hex(sha256("v1:" + normalized))[0..16]
     pub repo_id: String,
     /// Human-readable label, e.g. "github.com/towry/agpod"
-    #[allow(dead_code)]
     pub repo_label: String,
+    /// Stable worktree hash: hex(sha256("wt1:" + canonical_root))[0..16]
+    pub worktree_id: String,
+    /// Canonical worktree root path.
+    pub worktree_root: String,
 }
 
 impl RepoIdentity {
@@ -22,10 +26,14 @@ impl RepoIdentity {
     pub fn resolve_from(repo_root: &Path) -> CaseResult<Self> {
         let url = get_remote_url(Some(repo_root))?;
         let normalized = normalize_git_url(&url);
+        let worktree_root = get_worktree_root(Some(repo_root))?;
         let repo_id = compute_repo_id(&normalized);
+        let worktree_id = compute_worktree_id(&worktree_root);
         Ok(Self {
             repo_id,
             repo_label: normalized,
+            worktree_id,
+            worktree_root,
         })
     }
 }
@@ -90,6 +98,29 @@ fn try_get_remote(name: &str, cwd: Option<&Path>) -> Option<String> {
     None
 }
 
+fn get_worktree_root(cwd: Option<&Path>) -> CaseResult<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--show-toplevel"]);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().map_err(|e| CaseError::Git(e.to_string()))?;
+    if !output.status.success() {
+        return Err(CaseError::NotGitRepo);
+    }
+
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return Err(CaseError::Git(
+            "git rev-parse --show-toplevel returned an empty path".to_string(),
+        ));
+    }
+
+    let canonical = fs::canonicalize(&root)
+        .map_err(|e| CaseError::Git(format!("failed to canonicalize worktree root: {e}")))?;
+    Ok(canonical.to_string_lossy().to_string())
+}
+
 /// Normalize a git remote URL to `host/full_path` form.
 ///
 /// Handles ssh shorthand, ssh://, https://, http:// schemes.
@@ -135,6 +166,13 @@ fn format_normalized(host: &str, path: &str) -> String {
 /// repo_id = hex(sha256("v1:" + normalized))[0..16]
 fn compute_repo_id(normalized: &str) -> String {
     let source = format!("v1:{normalized}");
+    let hash = Sha256::digest(source.as_bytes());
+    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// worktree_id = hex(sha256("wt1:" + canonical_root))[0..16]
+fn compute_worktree_id(canonical_root: &str) -> String {
+    let source = format!("wt1:{canonical_root}");
     let hash = Sha256::digest(source.as_bytes());
     hash[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -188,5 +226,19 @@ mod tests {
         let id = compute_repo_id("github.com/towry/agpod");
         assert_eq!(id.len(), 16);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn worktree_id_is_16_hex_chars() {
+        let id = compute_worktree_id("/tmp/agpod-worktree");
+        assert_eq!(id.len(), 16);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn distinct_worktree_paths_produce_distinct_ids() {
+        let first = compute_worktree_id("/tmp/agpod-worktree-a");
+        let second = compute_worktree_id("/tmp/agpod-worktree-b");
+        assert_ne!(first, second);
     }
 }

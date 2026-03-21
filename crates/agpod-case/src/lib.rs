@@ -7,7 +7,7 @@ mod output;
 mod repo_id;
 mod types;
 
-pub use cli::{CaseArgs, CaseCommand, StepCommand};
+pub use cli::{CaseArgs, CaseCommand, GoalDriftFlag, StepCommand};
 
 use anyhow::Result;
 use serde_json::Value;

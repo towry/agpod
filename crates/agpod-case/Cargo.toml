@@ -20,6 +20,7 @@ surrealdb = { workspace = true }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 termtree = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

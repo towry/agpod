@@ -2,7 +2,7 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
-use agpod_case::{CaseArgs, CaseCommand, StepCommand};
+use agpod_case::{CaseArgs, CaseCommand, GoalDriftFlag, StepCommand};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -361,7 +361,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_redirect",
-        description = "Change direction on an open case when the path changes.",
+        description = "Change direction on an open case only when the work still fits the same immutable goal. If the work has drifted from the goal, set `is_drift_from_goal` to `yes` and open a new case instead of redirecting.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_redirect(
@@ -375,6 +375,10 @@ impl AgpodMcpServer {
                 direction: req.direction,
                 reason: req.reason,
                 context: req.context,
+                is_drift_from_goal: match req.is_drift_from_goal {
+                    GoalDriftInput::Yes => GoalDriftFlag::Yes,
+                    GoalDriftInput::No => GoalDriftFlag::No,
+                },
                 constraints: encode_constraints(req.constraints),
                 success_condition: req.success_condition,
                 abort_condition: req.abort_condition,
@@ -496,6 +500,7 @@ impl AgpodMcpServer {
                     id: req.id.clone(),
                     title: req.title,
                     reason: req.reason,
+                    start: req.start,
                 },
             },
             Some(req.id),
@@ -597,7 +602,10 @@ impl AgpodMcpServer {
 fn encode_constraints(constraints: Vec<ConstraintInput>) -> Vec<String> {
     constraints
         .into_iter()
-        .map(|constraint| serde_json::to_string(&constraint).expect("constraint should serialize"))
+        .map(|constraint| {
+            serde_json::to_string(&constraint.into_constraint())
+                .expect("constraint should serialize")
+        })
         .collect()
 }
 
@@ -611,10 +619,40 @@ fn resolve_resume_id(resume_id: Option<String>) -> Result<String, String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ConstraintInput {
-    /// Constraint text.
+#[serde(untagged)]
+#[schemars(
+    title = "ConstraintInput",
+    description = "Accepts either a plain rule string or an object {\"rule\": \"...\", \"reason\": \"...\"}."
+)]
+pub enum ConstraintInput {
+    /// Short form: just the rule text.
+    Short(String),
+    /// Detailed form: explicit rule plus optional rationale.
+    Detailed(ConstraintDetailInput),
+}
+
+impl ConstraintInput {
+    fn into_constraint(self) -> Value {
+        match self {
+            Self::Short(rule) => serde_json::json!({
+                "rule": rule,
+                "reason": null
+            }),
+            Self::Detailed(detail) => serde_json::json!({
+                "rule": detail.rule,
+                "reason": detail.reason
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ConstraintDetailInput {
+    /// Constraint rule text.
+    #[schemars(title = "Constraint Rule")]
     pub rule: String,
-    /// Why the constraint exists.
+    /// Optional rationale for the rule.
+    #[schemars(title = "Constraint Reason")]
     pub reason: Option<String>,
 }
 
@@ -724,10 +762,10 @@ pub struct CaseOpenRequest {
     pub goal: String,
     /// Initial direction summary.
     pub direction: String,
-    /// Case-wide constraints.
+    /// Case-wide constraints. Accepts either plain strings like `"先证据后推断"` or objects like `{"rule":"先证据后推断","reason":"避免过早下结论"}`.
     #[serde(default)]
     pub goal_constraints: Vec<ConstraintInput>,
-    /// Direction-local constraints.
+    /// Direction-local constraints. Accepts either plain strings like `"先证据后推断"` or objects like `{"rule":"先证据后推断","reason":"避免过早下结论"}`.
     #[serde(default)]
     pub constraints: Vec<ConstraintInput>,
     /// Condition for success on this direction.
@@ -770,13 +808,22 @@ pub struct CaseRedirectRequest {
     pub reason: String,
     /// Context carried from prior work.
     pub context: String,
-    /// New direction constraints.
+    /// Required explicit check for goal drift. Use `no` only when the redirect still serves the same immutable case goal. Use `yes` when the work has drifted; the tool will reject the redirect and you should open a new case instead.
+    pub is_drift_from_goal: GoalDriftInput,
+    /// New direction constraints. Accepts either plain strings like `"先证据后推断"` or objects like `{"rule":"先证据后推断","reason":"避免过早下结论"}`.
     #[serde(default)]
     pub constraints: Vec<ConstraintInput>,
     /// Condition for success on the new direction.
     pub success_condition: String,
     /// Condition for aborting the new direction.
     pub abort_condition: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalDriftInput {
+    Yes,
+    No,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -807,6 +854,9 @@ pub struct CaseStepAddRequest {
     pub title: String,
     /// Why this step is needed.
     pub reason: Option<String>,
+    /// Start the step immediately after creating it.
+    #[serde(default)]
+    pub start: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -908,11 +958,18 @@ mod tests {
             serde_json::to_value(&current_tool.input_schema).expect("schema should serialize");
         let open_schema =
             serde_json::to_value(&open_tool.input_schema).expect("schema should serialize");
+        let redirect_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_redirect")
+            .expect("case_redirect tool should exist");
+        let redirect_schema =
+            serde_json::to_value(&redirect_tool.input_schema).expect("schema should serialize");
         let agent_schema =
             serde_json::to_value(&agent_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
+        assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
         assert!(agent_schema.to_string().contains("prompt"));
         assert!(agent_schema.to_string().contains("resume_id"));
     }
@@ -922,11 +979,11 @@ mod tests {
         let raw = serde_json::json!({
             "ok": true,
             "case": {
-                "id": "C-20260320-01",
+                "id": "C-550e8400-e29b-41d4-a716-446655440000",
                 "status": "open"
             },
             "context": {
-                "active_case_id": "C-20260320-01"
+                "active_case_id": "C-550e8400-e29b-41d4-a716-446655440000"
             }
         })
         .as_object()
@@ -937,7 +994,10 @@ mod tests {
 
         assert!(envelope.ok);
         assert_eq!(envelope.kind, "case_current");
-        assert_eq!(envelope.case_id.as_deref(), Some("C-20260320-01"));
+        assert_eq!(
+            envelope.case_id.as_deref(),
+            Some("C-550e8400-e29b-41d4-a716-446655440000")
+        );
         assert_eq!(envelope.state.as_deref(), Some("open"));
         assert!(envelope.message.is_none());
         assert!(envelope.raw.contains_key("case"));
