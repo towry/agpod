@@ -286,7 +286,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_finish",
-        description = "End an open case. Use outcome \"completed\" when the goal is met, or \"abandoned\" when no longer worth pursuing.",
+        description = "End an open case. Use outcome \"completed\" when the goal is met, or \"abandoned\" when no longer worth pursuing. First call without `confirm_token` to request confirmation; only retry with the returned token if ending the case is truly intended.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_finish(
@@ -297,10 +297,12 @@ impl AgpodMcpServer {
             CaseFinishOutcomeInput::Completed => CaseCommand::Close {
                 id: req.id.clone(),
                 summary: req.summary,
+                confirm_token: req.confirm_token,
             },
             CaseFinishOutcomeInput::Abandoned => CaseCommand::Abandon {
                 id: req.id.clone(),
                 summary: req.summary,
+                confirm_token: req.confirm_token,
             },
         };
         self.run_case_tool("case_finish", command, Some(req.id))
@@ -887,6 +889,8 @@ pub struct CaseFinishRequest {
     pub outcome: CaseFinishOutcomeInput,
     /// Closing or abandonment summary.
     pub summary: String,
+    /// Confirmation token returned by a previous `case_finish` attempt. Omit on the first call to request confirmation.
+    pub confirm_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1407,11 +1411,13 @@ mod tests {
         let request: CaseFinishRequest = serde_json::from_value(serde_json::json!({
             "id": "case",
             "outcome": "completed",
-            "summary": "done"
+            "summary": "done",
+            "confirm_token": "token-1"
         }))
         .expect("known finish outcome should deserialize");
 
         assert!(matches!(request.outcome, CaseFinishOutcomeInput::Completed));
+        assert_eq!(request.confirm_token.as_deref(), Some("token-1"));
     }
 
     #[test]

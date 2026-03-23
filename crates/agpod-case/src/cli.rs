@@ -166,6 +166,10 @@ pub enum CaseCommand {
         /// Close summary
         #[arg(long)]
         summary: String,
+
+        /// Confirmation token returned by a prior close attempt
+        #[arg(long = "confirm-token")]
+        confirm_token: Option<String>,
     },
 
     /// Abandon a case
@@ -177,6 +181,10 @@ pub enum CaseCommand {
         /// Abandon summary
         #[arg(long)]
         summary: String,
+
+        /// Confirmation token returned by a prior abandon attempt
+        #[arg(long = "confirm-token")]
+        confirm_token: Option<String>,
     },
 
     /// Manage execution steps
