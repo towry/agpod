@@ -68,3 +68,6 @@ jobs:
     with:
       tag_name: ${{ needs.release_please.outputs.agpod_case_server_tag_name }}
       bin_name: agpod-case-server
+      smoke_test_command: |
+        target/aarch64-apple-darwin/release/agpod-case-server --help > /tmp/agpod-case-server-help.txt
+        test -s /tmp/agpod-case-server-help.txt
