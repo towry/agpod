@@ -3,6 +3,7 @@
 //! Keywords: cli, clap, subcommand, case args
 
 use clap::{Args, Subcommand, ValueEnum};
+use schemars::JsonSchema;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -17,6 +18,25 @@ pub enum CaseStatusArg {
     Open,
     Closed,
     Abandoned,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+    JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenModeArg {
+    #[default]
+    New,
+    Reopen,
 }
 
 #[derive(Debug, Args)]
@@ -45,13 +65,21 @@ pub struct CaseArgs {
 pub enum CaseCommand {
     /// Open a new exploration case
     Open {
-        /// The goal (immutable once set)
-        #[arg(long)]
-        goal: String,
+        /// Open mode: create a new case or reopen a previously closed/abandoned one
+        #[arg(long, default_value = "new")]
+        mode: OpenModeArg,
 
-        /// Initial direction summary
+        /// Existing case ID to reopen (required when --mode reopen)
+        #[arg(long = "case-id")]
+        case_id: Option<String>,
+
+        /// The goal (immutable once set; required when --mode new)
         #[arg(long)]
-        direction: String,
+        goal: Option<String>,
+
+        /// Initial direction summary (required when --mode new)
+        #[arg(long)]
+        direction: Option<String>,
 
         /// Goal-level constraint (JSON: {"rule":"...","reason":"..."})
         #[arg(long = "goal-constraint")]
@@ -166,6 +194,10 @@ pub enum CaseCommand {
         /// Close summary
         #[arg(long)]
         summary: String,
+
+        /// Confirmation token returned by a prior close attempt
+        #[arg(long = "confirm-token")]
+        confirm_token: Option<String>,
     },
 
     /// Abandon a case
@@ -177,6 +209,10 @@ pub enum CaseCommand {
         /// Abandon summary
         #[arg(long)]
         summary: String,
+
+        /// Confirmation token returned by a prior abandon attempt
+        #[arg(long = "confirm-token")]
+        confirm_token: Option<String>,
     },
 
     /// Manage execution steps

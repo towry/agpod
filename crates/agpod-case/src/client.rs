@@ -105,6 +105,9 @@ impl CaseClient {
             DEFINE FIELD IF NOT EXISTS close_summary ON case TYPE string;
             DEFINE FIELD IF NOT EXISTS abandoned_at ON case TYPE string;
             DEFINE FIELD IF NOT EXISTS abandon_summary ON case TYPE string;
+            DEFINE FIELD IF NOT EXISTS close_confirm_token ON case TYPE string;
+            DEFINE FIELD IF NOT EXISTS close_confirm_action ON case TYPE string;
+            DEFINE FIELD IF NOT EXISTS close_confirm_summary ON case TYPE string;
             DEFINE INDEX IF NOT EXISTS idx_case_repo_status ON case FIELDS repo_id, status;
             DEFINE INDEX IF NOT EXISTS idx_case_id ON case FIELDS case_id UNIQUE;
 
@@ -202,7 +205,8 @@ impl CaseClient {
              goal_constraints = $goal_constraints, status = 'open', \
              current_direction_seq = $current_direction_seq, current_step_id = '', \
              opened_at = $opened_at, updated_at = $updated_at, \
-             closed_at = '', close_summary = '', abandoned_at = '', abandon_summary = ''",
+             closed_at = '', close_summary = '', abandoned_at = '', abandon_summary = '', \
+             close_confirm_token = '', close_confirm_action = '', close_confirm_summary = ''",
             json!({
                 "case_id": case_id,
                 "repo_id": self.repo_id,
@@ -235,7 +239,34 @@ impl CaseClient {
             close_summary: None,
             abandoned_at: None,
             abandon_summary: None,
+            close_confirm_token: None,
+            close_confirm_action: None,
+            close_confirm_summary: None,
         })
+    }
+
+    pub async fn set_close_confirmation(
+        &self,
+        case_id: &str,
+        action: &str,
+        summary: &str,
+        confirm_token: &str,
+    ) -> CaseResult<()> {
+        let now = Utc::now().to_rfc3339();
+        self.query_raw(
+            "UPDATE case SET updated_at = $updated_at, \
+             close_confirm_token = $confirm_token, close_confirm_action = $action, close_confirm_summary = $summary \
+             WHERE case_id = $case_id",
+            json!({
+                "case_id": case_id,
+                "updated_at": now,
+                "confirm_token": confirm_token,
+                "action": action,
+                "summary": summary,
+            }),
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn update_case_status(
@@ -248,12 +279,14 @@ impl CaseClient {
         let sql = match status {
             CaseStatus::Closed => {
                 "UPDATE case SET status = $status, updated_at = $updated_at, \
-                 closed_at = $now, close_summary = $summary \
+                 closed_at = $now, close_summary = $summary, \
+                 close_confirm_token = '', close_confirm_action = '', close_confirm_summary = '' \
                  WHERE case_id = $case_id"
             }
             CaseStatus::Abandoned => {
                 "UPDATE case SET status = $status, updated_at = $updated_at, \
-                 abandoned_at = $now, abandon_summary = $summary \
+                 abandoned_at = $now, abandon_summary = $summary, \
+                 close_confirm_token = '', close_confirm_action = '', close_confirm_summary = '' \
                  WHERE case_id = $case_id"
             }
             _ => {
@@ -274,6 +307,22 @@ impl CaseClient {
         )
         .await?;
 
+        Ok(())
+    }
+
+    pub async fn reopen_case(&self, case_id: &str) -> CaseResult<()> {
+        let now = Utc::now().to_rfc3339();
+        self.query_raw(
+            "UPDATE case SET status = 'open', updated_at = $updated_at, \
+             closed_at = '', close_summary = '', abandoned_at = '', abandon_summary = '', \
+             close_confirm_token = '', close_confirm_action = '', close_confirm_summary = '' \
+             WHERE case_id = $case_id",
+            json!({
+                "case_id": case_id,
+                "updated_at": now,
+            }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -982,6 +1031,21 @@ fn parse_case(v: &Value) -> Option<Case> {
             .map(String::from),
         abandon_summary: v
             .get("abandon_summary")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        close_confirm_token: v
+            .get("close_confirm_token")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        close_confirm_action: v
+            .get("close_confirm_action")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        close_confirm_summary: v
+            .get("close_confirm_summary")
             .and_then(|s| s.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from),

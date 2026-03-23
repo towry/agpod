@@ -855,6 +855,9 @@ mod tests {
             close_summary: None,
             abandoned_at: None,
             abandon_summary: None,
+            close_confirm_token: None,
+            close_confirm_action: None,
+            close_confirm_summary: None,
         };
 
         let result = case_json(&case);

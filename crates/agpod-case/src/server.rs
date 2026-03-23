@@ -132,8 +132,10 @@ mod tests {
         let repo_a = CaseRequest {
             repo: repo_payload("repo-a", "/tmp/repo-a"),
             command: CaseCommand::Open {
-                goal: "goal a".to_string(),
-                direction: "dir a".to_string(),
+                mode: crate::cli::OpenModeArg::New,
+                case_id: None,
+                goal: Some("goal a".to_string()),
+                direction: Some("dir a".to_string()),
                 goal_constraints: vec![],
                 constraints: vec![],
                 success_condition: None,
@@ -143,8 +145,10 @@ mod tests {
         let repo_b = CaseRequest {
             repo: repo_payload("repo-b", "/tmp/repo-b"),
             command: CaseCommand::Open {
-                goal: "goal b".to_string(),
-                direction: "dir b".to_string(),
+                mode: crate::cli::OpenModeArg::New,
+                case_id: None,
+                goal: Some("goal b".to_string()),
+                direction: Some("dir b".to_string()),
                 goal_constraints: vec![],
                 constraints: vec![],
                 success_condition: None,
@@ -170,8 +174,10 @@ mod tests {
         let repo_a = CaseRequest {
             repo: repo_payload("repo-a", "/tmp/repo-a"),
             command: CaseCommand::Open {
-                goal: "goal a".to_string(),
-                direction: "dir a".to_string(),
+                mode: crate::cli::OpenModeArg::New,
+                case_id: None,
+                goal: Some("goal a".to_string()),
+                direction: Some("dir a".to_string()),
                 goal_constraints: vec![],
                 constraints: vec![],
                 success_condition: None,
@@ -181,8 +187,10 @@ mod tests {
         let repo_b = CaseRequest {
             repo: repo_payload("repo-b", "/tmp/repo-b"),
             command: CaseCommand::Open {
-                goal: "goal b".to_string(),
-                direction: "dir b".to_string(),
+                mode: crate::cli::OpenModeArg::New,
+                case_id: None,
+                goal: Some("goal b".to_string()),
+                direction: Some("dir b".to_string()),
                 goal_constraints: vec![],
                 constraints: vec![],
                 success_condition: None,

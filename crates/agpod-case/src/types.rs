@@ -195,6 +195,9 @@ pub struct Case {
     pub close_summary: Option<String>,
     pub abandoned_at: Option<String>,
     pub abandon_summary: Option<String>,
+    pub close_confirm_token: Option<String>,
+    pub close_confirm_action: Option<String>,
+    pub close_confirm_summary: Option<String>,
 }
 
 /// A direction within a case.
