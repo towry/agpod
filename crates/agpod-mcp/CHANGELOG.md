@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.3.0...agpod-mcp-v0.4.0) (2026-03-23)
+
+
+### Features
+
+* **case:** support goal constraint updates in record ([f7445ff](https://github.com/towry/agpod/commit/f7445ff7686cbbae2f46064ebfcc8022f2702239))
+
 ## [0.3.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.2.3...agpod-mcp-v0.3.0) (2026-03-23)
 
 
