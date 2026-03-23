@@ -2,7 +2,7 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
-use agpod_case::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, StepCommand};
+use agpod_case::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, RecordKind, StepCommand};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -210,7 +210,8 @@ impl AgpodMcpServer {
                 kind: req
                     .kind
                     .map(|kind| kind.as_str().to_string())
-                    .unwrap_or_else(|| "note".to_string()),
+                    .unwrap_or_else(|| RecordKind::Note.as_str().to_string()),
+                goal_constraints: encode_constraints(req.goal_constraints),
                 files: req.files.map(|files| files.join(",")),
                 context: req.context,
             },
@@ -719,6 +720,25 @@ fn copy_case_steps_add_passthrough_fields(
     }
 }
 
+fn deserialize_optional_record_kind<'de, D>(deserializer: D) -> Result<Option<RecordKind>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    match raw.as_deref() {
+        None => Ok(None),
+        Some("decision") => Err(D::Error::custom(
+            "invalid record kind `decision`; use `case_decide` because decisions require a reason",
+        )),
+        Some(value) => value.parse::<RecordKind>().map(Some).map_err(|_| {
+            D::Error::custom(format!(
+                "invalid record kind `{value}`; expected one of {}",
+                RecordKind::allowed_values_code_span()
+            ))
+        }),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct CaseCurrentRequest {}
 
@@ -746,53 +766,16 @@ pub struct CaseRecordRequest {
     pub id: String,
     /// Fact summary.
     pub summary: String,
-    /// note, finding, evidence, or blocker.
-    pub kind: Option<RecordKindArg>,
+    /// Kind of record to append.
+    #[serde(default, deserialize_with = "deserialize_optional_record_kind")]
+    pub kind: Option<RecordKind>,
+    /// Goal constraint payloads. Only valid when `kind` is `goal_constraint_update`.
+    #[serde(default)]
+    pub goal_constraints: Vec<ConstraintInput>,
     /// Related file paths.
     pub files: Option<Vec<String>>,
     /// Extra context.
     pub context: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RecordKindArg {
-    Note,
-    Finding,
-    Evidence,
-    Blocker,
-}
-
-impl RecordKindArg {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Note => "note",
-            Self::Finding => "finding",
-            Self::Evidence => "evidence",
-            Self::Blocker => "blocker",
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for RecordKindArg {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        match raw.as_str() {
-            "note" => Ok(Self::Note),
-            "finding" => Ok(Self::Finding),
-            "evidence" => Ok(Self::Evidence),
-            "blocker" => Ok(Self::Blocker),
-            "decision" => Err(D::Error::custom(
-                "invalid record kind `decision`; use `case_decide` because decisions require a reason",
-            )),
-            _ => Err(D::Error::custom(format!(
-                "invalid record kind `{raw}`; expected one of `note`, `finding`, `evidence`, `blocker`"
-            ))),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1081,6 +1064,7 @@ mod tests {
         assert!(record_schema_text.contains("\"finding\""));
         assert!(record_schema_text.contains("\"evidence\""));
         assert!(record_schema_text.contains("\"blocker\""));
+        assert!(record_schema_text.contains("\"goal_constraint_update\""));
         assert!(!record_schema_text.contains("\"decision\""));
     }
 
@@ -1094,6 +1078,25 @@ mod tests {
         .expect_err("decision should not deserialize as record kind");
 
         assert!(error.to_string().contains("use `case_decide`"));
+    }
+
+    #[test]
+    fn record_kind_deserialize_accepts_goal_constraint_update() {
+        let request = serde_json::from_value::<CaseRecordRequest>(serde_json::json!({
+            "id": "C-1",
+            "summary": "update constraints",
+            "kind": "goal_constraint_update",
+            "goal_constraints": [
+                {"rule": "先证据后推断", "reason": "避免臆断"}
+            ]
+        }))
+        .expect("goal_constraint_update should deserialize");
+
+        assert!(matches!(
+            request.kind,
+            Some(RecordKind::GoalConstraintUpdate)
+        ));
+        assert_eq!(request.goal_constraints.len(), 1);
     }
 
     #[test]

@@ -193,6 +193,7 @@ pub(crate) async fn execute_command_json(
             id,
             summary,
             kind,
+            goal_constraints,
             files,
             context,
         } => {
@@ -200,7 +201,16 @@ pub(crate) async fn execute_command_json(
                 .as_ref()
                 .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            cmd_record(client, id, summary, kind, &file_list, context.as_deref()).await
+            cmd_record(
+                client,
+                id,
+                summary,
+                kind,
+                goal_constraints,
+                &file_list,
+                context.as_deref(),
+            )
+            .await
         }
         CaseCommand::Decide {
             id,
@@ -342,7 +352,7 @@ fn error_next_action(error: &CaseError) -> Option<NextAction> {
             why: "review unfinished steps, then mark them done or blocked before closing the case"
                 .to_string(),
         }),
-        CaseError::InvalidRecordKind(kind) if kind == "decision" => Some(NextAction {
+        CaseError::InvalidRecordKind { kind, .. } if kind == "decision" => Some(NextAction {
             suggested_command: "decide".to_string(),
             why: "decisions belong in `case_decide`, which also requires a reason".to_string(),
         }),
@@ -601,19 +611,52 @@ async fn cmd_record(
     case_id: &str,
     summary: &str,
     kind: &str,
+    goal_constraint_strs: &[String],
     files: &[String],
     context: Option<&str>,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let mut case = client.get_case(case_id).await?;
     ensure_open(&case)?;
 
     if summary.trim().is_empty() {
         return Err(CaseError::Other("summary must not be empty".to_string()));
     }
 
-    RecordKind::from_str(kind).ok_or_else(|| CaseError::InvalidRecordKind(kind.to_string()))?;
+    let record_kind = kind
+        .parse::<RecordKind>()
+        .map_err(|_| CaseError::invalid_record_kind(kind))?;
+    let goal_constraints = parse_constraints(goal_constraint_strs)?;
+
+    if record_kind == RecordKind::GoalConstraintUpdate && goal_constraints.is_empty() {
+        return Err(CaseError::GoalConstraintUpdateRequiresConstraints);
+    }
+    if record_kind != RecordKind::GoalConstraintUpdate && !goal_constraints.is_empty() {
+        return Err(CaseError::GoalConstraintsOnlyAllowedForGoalConstraintUpdate);
+    }
+
+    if record_kind == RecordKind::GoalConstraintUpdate {
+        let mut merged = case.goal_constraints.clone();
+        for constraint in goal_constraints.iter().cloned() {
+            if !merged.contains(&constraint) {
+                merged.push(constraint);
+            }
+        }
+        client
+            .update_case_goal_constraints(case_id, &merged)
+            .await?;
+        case.goal_constraints = merged;
+    }
 
     let seq = next_entry_seq(client, case_id).await?;
+    let artifacts = if record_kind == RecordKind::GoalConstraintUpdate {
+        goal_constraints
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CaseError::Other(e.to_string()))?
+    } else {
+        vec![]
+    };
     let entry = client
         .create_entry(
             case_id,
@@ -624,7 +667,7 @@ async fn cmd_record(
             None,
             context,
             files,
-            &[],
+            &artifacts,
         )
         .await?;
 
@@ -638,7 +681,7 @@ async fn cmd_record(
         why: "the scan step is still gathering evidence".to_string(),
     };
 
-    Ok(json!({
+    let mut result = json!({
         "ok": true,
         "event": {
             "seq": entry.seq,
@@ -651,7 +694,14 @@ async fn cmd_record(
             "current": current_step.map(|s| output::step_json(&s))
         },
         "next": output::next_json(&next)
-    }))
+    });
+
+    if record_kind == RecordKind::GoalConstraintUpdate {
+        result["event"]["goal_constraints"] = json!(goal_constraints);
+        result["case"] = output::case_json(&case);
+    }
+
+    Ok(result)
 }
 
 async fn cmd_decide(
@@ -1743,6 +1793,7 @@ mod tests {
             "sample report shows one toxic audit outlier",
             "finding",
             &[],
+            &[],
             Some("audit csv was only a sample, not the full pool"),
         )
         .await
@@ -1885,6 +1936,7 @@ mod tests {
             "captured a mention of financial coverage in notes",
             "finding",
             &[],
+            &[],
             None,
         )
         .await
@@ -2013,6 +2065,7 @@ mod tests {
             &case_id,
             "record summary",
             "finding",
+            &[],
             &[],
             Some("record context"),
         )
@@ -2150,14 +2203,185 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let error = cmd_record(&client, &case_id, "decision summary", "decision", &[], None)
-            .await
-            .expect_err("decision kind should be rejected in record");
+        let error = cmd_record(
+            &client,
+            &case_id,
+            "decision summary",
+            "decision",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect_err("decision kind should be rejected in record");
 
-        assert!(matches!(error, CaseError::InvalidRecordKind(ref kind) if kind == "decision"));
+        assert!(matches!(
+            error,
+            CaseError::InvalidRecordKind { ref kind, .. } if kind == "decision"
+        ));
         let next = error_next_action(&error).expect("decision misuse should provide hint");
         assert_eq!(next.suggested_command, "decide");
         assert!(next.why.contains("case_decide"));
+    }
+
+    #[tokio::test]
+    async fn goal_constraint_update_record_appends_case_constraints_and_logs_payload() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let initial_constraints =
+            vec![r#"{"rule":"先证据后推断","reason":"避免臆断"}"#.to_string()];
+        let opened = cmd_open(
+            &client,
+            "goal",
+            "direction",
+            &initial_constraints,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let added_constraints = vec![
+            r#"{"rule":"保持最小改动","reason":"控制范围"}"#.to_string(),
+            r#"{"rule":"先证据后推断","reason":"避免臆断"}"#.to_string(),
+        ];
+
+        let recorded = cmd_record(
+            &client,
+            &case_id,
+            "补充全局约束",
+            "goal_constraint_update",
+            &added_constraints,
+            &[],
+            Some("新增后续执行边界"),
+        )
+        .await
+        .expect("goal constraint update should succeed");
+
+        let current_case = client.get_case(&case_id).await.expect("case should reload");
+        assert_eq!(current_case.goal_constraints.len(), 2);
+        assert_eq!(
+            recorded["case"]["goal_constraints"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            recorded["event"]["goal_constraints"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+
+        let shown = cmd_show(&client, Some(&case_id))
+            .await
+            .expect("show should succeed");
+        let entries = shown["entries"]
+            .as_array()
+            .expect("show should include entries");
+        assert_eq!(entries[0]["kind"].as_str(), Some("goal_constraint_update"));
+        assert_eq!(entries[0]["artifacts"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[tokio::test]
+    async fn goal_constraint_update_requires_goal_constraint_payload() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let error = cmd_record(
+            &client,
+            &case_id,
+            "补充全局约束",
+            "goal_constraint_update",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect_err("missing goal_constraint payload should fail");
+
+        assert!(matches!(
+            error,
+            CaseError::GoalConstraintUpdateRequiresConstraints
+        ));
+    }
+
+    #[tokio::test]
+    async fn regular_record_rejects_goal_constraint_payload() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let error = cmd_record(
+            &client,
+            &case_id,
+            "普通记录",
+            "finding",
+            &[r#"{"rule":"保持最小改动"}"#.to_string()],
+            &[],
+            None,
+        )
+        .await
+        .expect_err("non-goal-constraint record should reject payload");
+
+        assert!(matches!(
+            error,
+            CaseError::GoalConstraintsOnlyAllowedForGoalConstraintUpdate
+        ));
     }
 
     #[tokio::test]

@@ -2,10 +2,12 @@
 //!
 //! Keywords: case model, direction, step, entry, constraint
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// A constraint rule with its rationale.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Constraint {
     pub rule: String,
     pub reason: Option<String>,
@@ -111,33 +113,65 @@ impl std::fmt::Display for EntryType {
 }
 
 /// Record kind (sub-type of EntryType::Record).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordKind {
     Note,
     Finding,
     Evidence,
     Blocker,
+    GoalConstraintUpdate,
 }
 
 impl RecordKind {
+    const ALL: [Self; 5] = [
+        Self::Note,
+        Self::Finding,
+        Self::Evidence,
+        Self::Blocker,
+        Self::GoalConstraintUpdate,
+    ];
+
     #[allow(dead_code)]
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Note => "note",
             Self::Finding => "finding",
             Self::Evidence => "evidence",
             Self::Blocker => "blocker",
+            Self::GoalConstraintUpdate => "goal_constraint_update",
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn allowed_values() -> &'static [&'static str] {
+        static VALUES: OnceLock<Vec<&'static str>> = OnceLock::new();
+        VALUES.get_or_init(|| Self::ALL.iter().map(Self::as_str).collect())
+    }
+
+    pub fn allowed_values_display() -> String {
+        Self::allowed_values().join(", ")
+    }
+
+    pub fn allowed_values_code_span() -> String {
+        Self::allowed_values()
+            .iter()
+            .map(|value| format!("`{value}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl std::str::FromStr for RecordKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "note" => Some(Self::Note),
-            "finding" => Some(Self::Finding),
-            "evidence" => Some(Self::Evidence),
-            "blocker" => Some(Self::Blocker),
-            _ => None,
+            "note" => Ok(Self::Note),
+            "finding" => Ok(Self::Finding),
+            "evidence" => Ok(Self::Evidence),
+            "blocker" => Ok(Self::Blocker),
+            "goal_constraint_update" => Ok(Self::GoalConstraintUpdate),
+            _ => Err(()),
         }
     }
 }
