@@ -954,6 +954,45 @@ async fn cmd_redirect(
         .await?;
 
     let new_seq = case.current_direction_seq + 1;
+    if let Some(existing_dir) = client.find_direction(case_id, new_seq).await? {
+        // Recover the common half-written redirect case: the next direction already exists,
+        // but the case pointer never advanced because the final UPDATE failed.
+        if existing_dir.summary == direction
+            && existing_dir.constraints == constraints
+            && existing_dir.success_condition == success_condition
+            && existing_dir.abort_condition == abort_condition
+            && existing_dir.reason.as_deref() == Some(reason)
+            && existing_dir.context.as_deref() == Some(context)
+        {
+            client.update_case_direction(case_id, new_seq).await?;
+
+            let next = NextAction {
+                suggested_command: "step add".to_string(),
+                why: "the recovered direction needs a fresh execution queue".to_string(),
+            };
+
+            return Ok(json!({
+                "ok": true,
+                "event": {
+                    "seq": serde_json::Value::Null,
+                    "entry_type": "redirect_recovered",
+                    "summary": "recovered previously written redirect direction",
+                    "from_direction": prev_dir.summary,
+                    "to_direction": existing_dir.summary,
+                    "reason": reason,
+                    "context": context
+                },
+                "direction": output::direction_json(&existing_dir),
+                "steps": output::steps_json(&[]),
+                "context": output::context_json(case_id, new_seq),
+                "next": output::next_json(&next)
+            }));
+        }
+
+        return Err(CaseError::Other(format!(
+            "direction seq {new_seq} already exists for case {case_id}; likely a partial redirect residue with different content"
+        )));
+    }
 
     // Create redirect entry
     let entry_seq = next_entry_seq(client, case_id).await?;
@@ -2799,5 +2838,184 @@ mod tests {
         .expect_err("goal drift should force a new case instead of redirect");
 
         assert!(matches!(error, CaseError::GoalDriftRequiresNewCase));
+    }
+
+    #[tokio::test]
+    async fn redirect_recovers_when_next_direction_already_exists() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        client
+            .create_direction(
+                &case_id,
+                2,
+                "new direction",
+                &[],
+                "success",
+                "abort",
+                Some("topic changed"),
+                Some("work drifted"),
+            )
+            .await
+            .expect("residual direction should be inserted");
+
+        let redirected = cmd_redirect(
+            &client,
+            &case_id,
+            "new direction",
+            "topic changed",
+            "work drifted",
+            GoalDriftFlag::No,
+            &[],
+            "success",
+            "abort",
+        )
+        .await
+        .expect("redirect should recover from matching residual direction");
+
+        assert_eq!(
+            redirected["event"]["entry_type"].as_str(),
+            Some("redirect_recovered")
+        );
+        assert_eq!(
+            redirected["context"]["current_direction_seq"].as_u64(),
+            Some(2)
+        );
+        let case = client
+            .get_case(&case_id)
+            .await
+            .expect("case should still exist");
+        assert_eq!(case.current_direction_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn redirect_rejects_conflicting_residual_direction() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        client
+            .create_direction(
+                &case_id,
+                2,
+                "stale direction",
+                &[],
+                "success",
+                "abort",
+                Some("old reason"),
+                Some("old context"),
+            )
+            .await
+            .expect("conflicting residual direction should be inserted");
+
+        let error = cmd_redirect(
+            &client,
+            &case_id,
+            "new direction",
+            "topic changed",
+            "work drifted",
+            GoalDriftFlag::No,
+            &[],
+            "success",
+            "abort",
+        )
+        .await
+        .expect_err("conflicting residual direction should be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("partial redirect residue"));
+    }
+
+    #[tokio::test]
+    async fn redirect_rejects_residual_direction_with_different_reason_or_context() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        client
+            .create_direction(
+                &case_id,
+                2,
+                "new direction",
+                &[],
+                "success",
+                "abort",
+                Some("stale reason"),
+                Some("work drifted"),
+            )
+            .await
+            .expect("residual direction should be inserted");
+
+        let error = cmd_redirect(
+            &client,
+            &case_id,
+            "new direction",
+            "topic changed",
+            "work drifted",
+            GoalDriftFlag::No,
+            &[],
+            "success",
+            "abort",
+        )
+        .await
+        .expect_err("different reason should block residual recovery");
+
+        let message = error.to_string();
+        assert!(message.contains("partial redirect residue"));
     }
 }

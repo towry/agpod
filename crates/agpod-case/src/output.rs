@@ -472,19 +472,22 @@ fn render_entries(entries: &[Value]) {
 }
 
 fn render_event(event: &Value) {
-    let seq = event.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let seq = event.get("seq").and_then(|v| v.as_u64());
     let entry_type = event
         .get("entry_type")
         .and_then(|v| v.as_str())
         .unwrap_or("?");
     let summary = event.get("summary").and_then(|v| v.as_str());
 
-    println!("\n  event #{seq} ({entry_type})");
+    match seq {
+        Some(seq) => println!("\n  event #{seq} ({entry_type})"),
+        None => println!("\n  event ({entry_type})"),
+    }
     if let Some(s) = summary {
         println!("    {s}");
     }
 
-    if entry_type == "redirect" {
+    if matches!(entry_type, "redirect" | "redirect_recovered") {
         if let Some(from) = event.get("from_direction").and_then(|v| v.as_str()) {
             println!("\n  from:  {from}");
         }
