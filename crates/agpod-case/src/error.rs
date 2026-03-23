@@ -52,6 +52,9 @@ pub enum CaseError {
     #[error("invalid list option: {0}")]
     InvalidListOption(String),
 
+    #[error("cannot close case with unfinished steps")]
+    UnfinishedSteps,
+
     #[error(
         "invalid record kind: {0}; use one of note, finding, evidence, blocker, or call `case_decide` for decisions"
     )]

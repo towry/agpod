@@ -43,6 +43,18 @@ fn render_text(value: &Value) {
         if let Some(steps) = value.get("steps") {
             render_steps(steps, false);
         }
+        if let Some(unfinished) = value.get("unfinished_steps").and_then(|v| v.as_array()) {
+            if !unfinished.is_empty() {
+                println!("unfinished_steps:");
+                for step in unfinished {
+                    let order = step.get("order").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let id = step.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let status = step.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    let title = step.get("title").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("  {order}. {id}  [{status}]  {title}");
+                }
+            }
+        }
         if let Some(cases) = value.get("cases").and_then(|v| v.as_array()) {
             render_case_list(cases, value.get("query").and_then(|v| v.as_str()));
         }
@@ -121,6 +133,9 @@ fn render_text(value: &Value) {
     }
     if let Some(warning) = value.get("warning").and_then(|v| v.as_str()) {
         println!("warning: {warning}");
+    }
+    if let Some(reminder) = value.get("reminder").and_then(|v| v.as_str()) {
+        println!("reminder: {reminder}");
     }
 
     // Next

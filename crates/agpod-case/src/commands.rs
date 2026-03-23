@@ -294,6 +294,13 @@ async fn build_error_value(
 
         if let Ok(steps) = client.get_steps(&case.id, case.current_direction_seq).await {
             err_value["steps"] = output::steps_json(&steps);
+            if matches!(error, CaseError::UnfinishedSteps) {
+                err_value["unfinished_steps"] = json!(steps
+                    .iter()
+                    .filter(|step| !matches!(step.status, StepStatus::Done))
+                    .map(output::step_json)
+                    .collect::<Vec<_>>());
+            }
         }
     }
 
@@ -304,6 +311,7 @@ fn error_state(error: &CaseError) -> &'static str {
     match error {
         CaseError::RepoHasOpenCase(_) => "conflict",
         CaseError::GoalDriftRequiresNewCase => "goal_drift",
+        CaseError::UnfinishedSteps => "unfinished_steps",
         CaseError::NoOpenCase => "none",
         CaseError::CaseNotFound(_) | CaseError::StepNotFound(_) => "missing",
         CaseError::CaseNotOpen(_) => "not_open",
@@ -328,6 +336,10 @@ fn error_next_action(error: &CaseError) -> Option<NextAction> {
         CaseError::CaseNotFound(_) => Some(NextAction {
             suggested_command: "list".to_string(),
             why: "inspect available case IDs before retrying".to_string(),
+        }),
+        CaseError::UnfinishedSteps => Some(NextAction {
+            suggested_command: "step done".to_string(),
+            why: "review unfinished steps, then mark them done or blocked before closing the case".to_string(),
         }),
         CaseError::InvalidRecordKind(kind) if kind == "decision" => Some(NextAction {
             suggested_command: "decide".to_string(),
@@ -798,6 +810,7 @@ async fn cmd_close(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    ensure_no_unfinished_steps(client, &case).await?;
 
     client
         .update_case_status(case_id, CaseStatus::Closed, summary)
@@ -827,6 +840,7 @@ async fn cmd_abandon(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    ensure_no_unfinished_steps(client, &case).await?;
 
     client
         .update_case_status(case_id, CaseStatus::Abandoned, summary)
@@ -961,6 +975,7 @@ async fn cmd_step_start(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -1022,6 +1037,7 @@ async fn cmd_step_done(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -1082,6 +1098,7 @@ async fn cmd_step_move(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -1113,9 +1130,38 @@ async fn cmd_step_block(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
+}
+
+async fn ensure_no_unfinished_steps(client: &CaseClient, case: &Case) -> CaseResult<()> {
+    let steps = client.get_steps(&case.id, case.current_direction_seq).await?;
+    if steps
+        .iter()
+        .any(|step| !matches!(step.status, StepStatus::Done))
+    {
+        return Err(CaseError::UnfinishedSteps);
+    }
+    Ok(())
+}
+
+fn step_status_reminder(steps: &[Step]) -> serde_json::Value {
+    let unfinished: Vec<_> = steps
+        .iter()
+        .filter(|step| !matches!(step.status, StepStatus::Done))
+        .map(output::step_json)
+        .collect();
+
+    if unfinished.is_empty() {
+        json!("all steps are complete; if the goal is met, you can close the case")
+    } else {
+        json!(format!(
+            "{} unfinished step(s) remain; review them before closing the case",
+            unfinished.len()
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1981,6 +2027,100 @@ mod tests {
         assert_eq!(entries[0]["summary"].as_str(), Some("record summary"));
         assert_eq!(entries[0]["context"].as_str(), Some("record context"));
         assert_eq!(entries[0]["kind"].as_str(), Some("finding"));
+    }
+
+    #[tokio::test]
+    async fn close_rejects_when_any_step_is_unfinished() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_step_add(&client, &case_id, "unfinished step", None, false)
+            .await
+            .expect("step add should succeed");
+
+        let error = cmd_close(&client, &case_id, "done")
+            .await
+            .expect_err("close should reject unfinished steps");
+
+        assert!(matches!(error, CaseError::UnfinishedSteps));
+
+        let error_value = build_error_value(
+            &client,
+            &CaseCommand::Close {
+                id: case_id.clone(),
+                summary: "done".to_string(),
+            },
+            &error,
+        )
+        .await;
+
+        let unfinished = error_value["unfinished_steps"]
+            .as_array()
+            .expect("unfinished steps should be present");
+        assert_eq!(unfinished.len(), 1);
+        assert_eq!(unfinished[0]["title"].as_str(), Some("unfinished step"));
+    }
+
+    #[tokio::test]
+    async fn step_done_returns_reminder_before_case_close() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let added = cmd_step_add(&client, &case_id, "only step", None, true)
+            .await
+            .expect("step add should succeed");
+        let step_id = added["step"]["id"]
+            .as_str()
+            .expect("step id should exist")
+            .to_string();
+
+        let done = cmd_step_done(&client, &case_id, &step_id)
+            .await
+            .expect("step done should succeed");
+
+        assert_eq!(
+            done["reminder"].as_str(),
+            Some("all steps are complete; if the goal is met, you can close the case")
+        );
+        assert_eq!(done["next"]["suggested_command"].as_str(), Some("close"));
     }
 
     #[tokio::test]
