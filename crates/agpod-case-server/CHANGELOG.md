@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/towry/agpod/compare/agpod-case-server-v0.2.0...agpod-case-server-v0.2.1) (2026-03-23)
+
+
+### Bug Fixes
+
+* publish agpod-case-server release artifacts ([#106](https://github.com/towry/agpod/issues/106)) ([f3268bb](https://github.com/towry/agpod/commit/f3268bbd1d7df72afc8b2c0573bcf72036afd9a2))
+
 ## [0.2.0](https://github.com/towry/agpod/compare/agpod-case-server-v0.1.0...agpod-case-server-v0.2.0) (2026-03-23)
 
 
