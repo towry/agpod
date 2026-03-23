@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/towry/agpod/compare/v0.10.2...v0.11.0) (2026-03-23)
+
+
+### Features
+
+* improve case output and MCP guidance ([#104](https://github.com/towry/agpod/issues/104)) ([be855d7](https://github.com/towry/agpod/commit/be855d7d38cee4783467f0307cdf23cef226d1ae))
+
 ## [0.10.2](https://github.com/towry/agpod/compare/v0.10.1...v0.10.2) (2026-03-21)
 
 ## [0.10.1](https://github.com/towry/agpod/compare/v0.10.0...v0.10.1) (2026-03-21)
