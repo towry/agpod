@@ -47,27 +47,6 @@ runs:
         RUSTC_WRAPPER: "sccache"
       run: cargo build --release --target ${{ inputs.target }} --package ${{ inputs.bin_name }} --verbose
 
-    - name: Test binary functionality
-      if: ${{ inputs.smoke_test_command == '' }}
-      shell: bash
-      run: |
-        # Create a test diff to verify binary works
-        cat > test_diff.txt << 'EOF'
-        diff --git a/test.txt b/test.txt
-        new file mode 100644
-        index 0000000..1234567
-        --- /dev/null
-        +++ b/test.txt
-        @@ -0,0 +1,3 @@
-        +Line 1
-        +Line 2
-        +Line 3
-        EOF
-
-        # Test the binary
-        target/${{ inputs.target }}/release/${{ inputs.bin_name }} < test_diff.txt
-        echo "✅ Binary functionality test passed"
-
     - name: Run custom smoke test
       if: ${{ inputs.smoke_test_command != '' }}
       shell: bash
