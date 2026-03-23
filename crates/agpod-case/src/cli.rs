@@ -11,11 +11,27 @@ pub enum GoalDriftFlag {
     No,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseStatusArg {
+    Open,
+    Closed,
+    Abandoned,
+}
+
 #[derive(Debug, Args)]
 pub struct CaseArgs {
     /// SurrealDB data directory (default: $XDG_DATA_HOME/agpod/case.db)
     #[arg(long, env = "AGPOD_CASE_DATA_DIR", global = true)]
     pub data_dir: Option<String>,
+
+    /// Case server address (default: 127.0.0.1:6142)
+    #[arg(long, env = "AGPOD_CASE_SERVER_ADDR", global = true)]
+    pub server_addr: Option<String>,
+
+    /// Override repo root for identity resolution (default: current directory)
+    #[arg(long, global = true)]
+    pub repo_root: Option<String>,
 
     /// Output as JSON
     #[arg(long, global = true)]
@@ -25,7 +41,7 @@ pub struct CaseArgs {
     pub command: CaseCommand,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Subcommand)]
 pub enum CaseCommand {
     /// Open a new exploration case
     Open {
@@ -169,10 +185,34 @@ pub enum CaseCommand {
     Recall {
         /// Search query
         query: String,
+
+        /// Filter by case status
+        #[arg(long, value_enum)]
+        status: Option<CaseStatusArg>,
+
+        /// Limit result count
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Only include cases updated within the last N days
+        #[arg(long = "recent-days")]
+        recent_days: Option<u32>,
     },
 
     /// List all cases for this repository
-    List,
+    List {
+        /// Filter by case status
+        #[arg(long, value_enum)]
+        status: Option<CaseStatusArg>,
+
+        /// Limit result count
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Only include cases updated within the last N days
+        #[arg(long = "recent-days")]
+        recent_days: Option<u32>,
+    },
 
     /// Resume brief for handoff
     Resume {
@@ -182,7 +222,7 @@ pub enum CaseCommand {
     },
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Subcommand)]
 pub enum StepCommand {
     /// Add a new step to the current direction
     Add {

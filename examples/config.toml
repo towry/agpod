@@ -9,3 +9,11 @@ output_dir = "llm/diff"
 large_file_changes_threshold = 100
 large_file_lines_threshold = 500
 max_consecutive_empty_lines = 2
+
+[case]
+server_addr = "127.0.0.1:6142"
+auto_start = true
+access_mode = "local_server"
+semantic_recall_enabled = false
+vector_digest_job_enabled = false
+# data_dir = "~/.local/share/agpod/case.db"

@@ -2,6 +2,7 @@
 //!
 //! Supports feature-specific configuration sections:
 //! - [diff] - Git diff minimization settings
+//! - [case] - Case server settings
 
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -25,6 +26,10 @@ pub struct Config {
     /// Diff minimization configuration.
     #[serde(default)]
     pub diff: Option<DiffConfig>,
+
+    /// Case workflow configuration.
+    #[serde(default)]
+    pub case: Option<CaseConfig>,
 }
 
 impl Default for Config {
@@ -32,8 +37,32 @@ impl Default for Config {
         Self {
             version: default_config_version(),
             diff: None,
+            case: None,
         }
     }
+}
+
+/// Configuration for case server / client access.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseConfig {
+    #[serde(default)]
+    pub data_dir: Option<String>,
+
+    #[serde(default)]
+    pub server_addr: Option<String>,
+
+    #[serde(default)]
+    pub auto_start: Option<bool>,
+
+    #[serde(default)]
+    pub access_mode: Option<String>,
+
+    #[serde(default)]
+    pub semantic_recall_enabled: Option<bool>,
+
+    #[serde(default)]
+    pub vector_digest_job_enabled: Option<bool>,
 }
 
 /// Configuration for diff minimization.
@@ -182,6 +211,10 @@ impl Config {
             self.diff = other.diff;
         }
 
+        if other.case.is_some() {
+            self.case = other.case;
+        }
+
         self
     }
 }
@@ -198,6 +231,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.version, "1");
         assert!(config.diff.is_none());
+        assert!(config.case.is_none());
     }
 
     #[test]
@@ -205,6 +239,7 @@ mod tests {
         let config = Config {
             version: "1".to_string(),
             diff: None,
+            case: None,
         };
         assert!(config.is_version_supported());
         assert!(config.version_warning().is_none());
@@ -212,6 +247,7 @@ mod tests {
         let unsupported_config = Config {
             version: "999".to_string(),
             diff: None,
+            case: None,
         };
         assert!(!unsupported_config.is_version_supported());
         assert!(unsupported_config.version_warning().is_some());
@@ -225,16 +261,22 @@ version = "1"
 [diff]
 output_dir = "custom/diff"
 large_file_changes_threshold = 200
+
+[case]
+server_addr = "127.0.0.1:6142"
 "#;
 
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.version, "1");
         assert!(config.is_version_supported());
         assert!(config.diff.is_some());
+        assert!(config.case.is_some());
 
         let diff = config.diff.unwrap();
         assert_eq!(diff.output_dir, "custom/diff");
         assert_eq!(diff.large_file_changes_threshold, 200);
+        let case = config.case.unwrap();
+        assert_eq!(case.server_addr.as_deref(), Some("127.0.0.1:6142"));
     }
 
     #[test]

@@ -46,6 +46,20 @@ pub enum CaseError {
     #[error("invalid constraint JSON: {0}")]
     InvalidConstraint(String),
 
+    #[error("invalid query: {0}")]
+    InvalidQuery(String),
+
+    #[error("invalid list option: {0}")]
+    InvalidListOption(String),
+
+    #[error("cannot close case with unfinished steps")]
+    UnfinishedSteps,
+
+    #[error(
+        "invalid record kind: {0}; use one of note, finding, evidence, blocker, or call `case_decide` for decisions"
+    )]
+    InvalidRecordKind(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

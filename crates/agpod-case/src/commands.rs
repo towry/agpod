@@ -2,15 +2,17 @@
 //!
 //! Keywords: commands, execute, dispatch, open, record, decide, redirect, close, step
 
-use crate::cli::{CaseArgs, CaseCommand, StepCommand};
+use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, StepCommand};
 use crate::client::CaseClient;
-use crate::config::DbConfig;
+use crate::config::{CaseConfig, CaseOverrides};
 use crate::error::{CaseError, CaseResult};
 use crate::output;
 use crate::repo_id::RepoIdentity;
+use crate::server_client::execute_via_server;
 use crate::types::*;
 use crate::GoalDriftFlag;
 use anyhow::Result;
+use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -32,10 +34,15 @@ pub async fn execute(args: CaseArgs) -> Result<()> {
 
 pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let json_mode = args.json;
-    let setup = setup_client(args.data_dir.as_deref()).await;
+    let setup = setup_runtime(
+        args.data_dir.as_deref(),
+        args.server_addr.as_deref(),
+        args.repo_root.as_deref(),
+    )
+    .await;
 
-    let client = match setup {
-        Ok(client) => client,
+    let (config, identity) = match setup {
+        Ok(runtime) => runtime,
         Err(e) => {
             let mut err_value = output::error_json("error", &e.to_string(), None);
             err_value["_meta"] = json!({ "json_mode": json_mode });
@@ -43,23 +50,29 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
         }
     };
 
-    finish_json_value(
-        execute_command_json(&client, &args.command).await,
-        &client,
-        &args.command,
-        json_mode,
-    )
-    .await
+    match execute_via_server(&config, identity, args.command.clone()).await {
+        Ok(mut value) => {
+            value["_meta"] = json!({ "json_mode": json_mode });
+            value
+        }
+        Err(e) => {
+            let mut err_value = output::error_json("error", &e.to_string(), None);
+            err_value["_meta"] = json!({ "json_mode": json_mode });
+            err_value
+        }
+    }
 }
 
 pub async fn execute_json_batch(
     data_dir: Option<&str>,
+    server_addr: Option<&str>,
+    repo_root: Option<&str>,
     commands: Vec<CaseCommand>,
 ) -> Vec<serde_json::Value> {
-    let setup = setup_client(data_dir).await;
+    let setup = setup_runtime(data_dir, server_addr, repo_root).await;
 
-    let client = match setup {
-        Ok(client) => client,
+    let (config, identity) = match setup {
+        Ok(runtime) => runtime,
         Err(e) => {
             let mut err_value = output::error_json("error", &e.to_string(), None);
             err_value["_meta"] = json!({ "json_mode": true });
@@ -67,9 +80,30 @@ pub async fn execute_json_batch(
         }
     };
 
-    execute_json_batch_with_client(&client, commands, true).await
+    let mut values = Vec::with_capacity(commands.len());
+    for command in commands {
+        match execute_via_server(&config, identity.clone(), command).await {
+            Ok(mut value) => {
+                value["_meta"] = json!({ "json_mode": true });
+                let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                values.push(value);
+                if !ok {
+                    break;
+                }
+            }
+            Err(e) => {
+                let mut err_value = output::error_json("error", &e.to_string(), None);
+                err_value["_meta"] = json!({ "json_mode": true });
+                values.push(err_value);
+                break;
+            }
+        }
+    }
+
+    values
 }
 
+#[cfg(test)]
 async fn execute_json_batch_with_client(
     client: &CaseClient,
     commands: Vec<CaseCommand>,
@@ -94,14 +128,24 @@ async fn execute_json_batch_with_client(
     values
 }
 
-async fn setup_client(data_dir: Option<&str>) -> Result<CaseClient> {
-    let config = DbConfig::from_data_dir(data_dir);
-    let cwd = std::env::current_dir()?;
-    let identity = RepoIdentity::resolve_from(&cwd)?;
-    Ok(CaseClient::new(&config, identity).await?)
+async fn setup_runtime(
+    data_dir: Option<&str>,
+    server_addr: Option<&str>,
+    repo_root: Option<&str>,
+) -> Result<(CaseConfig, RepoIdentity)> {
+    let config = CaseConfig::load(CaseOverrides {
+        data_dir,
+        server_addr,
+    });
+    let root = match repo_root {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    let identity = RepoIdentity::resolve_from(&root)?;
+    Ok((config, identity))
 }
 
-async fn finish_json_value(
+pub(crate) async fn finish_json_value(
     result: CaseResult<serde_json::Value>,
     client: &CaseClient,
     command: &CaseCommand,
@@ -120,7 +164,7 @@ async fn finish_json_value(
     }
 }
 
-async fn execute_command_json(
+pub(crate) async fn execute_command_json(
     client: &CaseClient,
     command: &CaseCommand,
 ) -> CaseResult<serde_json::Value> {
@@ -190,8 +234,24 @@ async fn execute_command_json(
         CaseCommand::Close { id, summary } => cmd_close(client, id, summary).await,
         CaseCommand::Abandon { id, summary } => cmd_abandon(client, id, summary).await,
         CaseCommand::Step { command } => cmd_step(client, command).await,
-        CaseCommand::Recall { query } => cmd_recall(client, query).await,
-        CaseCommand::List => cmd_list(client).await,
+        CaseCommand::Recall {
+            query,
+            status,
+            limit,
+            recent_days,
+        } => {
+            cmd_recall(
+                client,
+                query,
+                CaseListOptions::new(*status, *limit, *recent_days),
+            )
+            .await
+        }
+        CaseCommand::List {
+            status,
+            limit,
+            recent_days,
+        } => cmd_list(client, CaseListOptions::new(*status, *limit, *recent_days)).await,
         CaseCommand::Resume { id } => cmd_resume(client, id.as_deref()).await,
     }
 }
@@ -214,7 +274,8 @@ async fn build_error_value(
         err_value["requested_before_step_id"] = json!(before_id);
     }
 
-    if let Ok(cases) = client.list_cases().await {
+    if let Ok(mut cases) = client.list_cases().await {
+        cases.sort_by(compare_case_recency);
         if !cases.is_empty() {
             err_value["cases"] = json!(cases.iter().map(output::case_json).collect::<Vec<_>>());
         }
@@ -233,6 +294,13 @@ async fn build_error_value(
 
         if let Ok(steps) = client.get_steps(&case.id, case.current_direction_seq).await {
             err_value["steps"] = output::steps_json(&steps);
+            if matches!(error, CaseError::UnfinishedSteps) {
+                err_value["unfinished_steps"] = json!(steps
+                    .iter()
+                    .filter(|step| !matches!(step.status, StepStatus::Done))
+                    .map(output::step_json)
+                    .collect::<Vec<_>>());
+            }
         }
     }
 
@@ -243,6 +311,7 @@ fn error_state(error: &CaseError) -> &'static str {
     match error {
         CaseError::RepoHasOpenCase(_) => "conflict",
         CaseError::GoalDriftRequiresNewCase => "goal_drift",
+        CaseError::UnfinishedSteps => "unfinished_steps",
         CaseError::NoOpenCase => "none",
         CaseError::CaseNotFound(_) | CaseError::StepNotFound(_) => "missing",
         CaseError::CaseNotOpen(_) => "not_open",
@@ -267,6 +336,15 @@ fn error_next_action(error: &CaseError) -> Option<NextAction> {
         CaseError::CaseNotFound(_) => Some(NextAction {
             suggested_command: "list".to_string(),
             why: "inspect available case IDs before retrying".to_string(),
+        }),
+        CaseError::UnfinishedSteps => Some(NextAction {
+            suggested_command: "step done".to_string(),
+            why: "review unfinished steps, then mark them done or blocked before closing the case"
+                .to_string(),
+        }),
+        CaseError::InvalidRecordKind(kind) if kind == "decision" => Some(NextAction {
+            suggested_command: "decide".to_string(),
+            why: "decisions belong in `case_decide`, which also requires a reason".to_string(),
         }),
         CaseError::StepNotFound(_) => Some(NextAction {
             suggested_command: "current".to_string(),
@@ -320,7 +398,7 @@ fn command_case_id(command: &CaseCommand) -> Option<&str> {
         CaseCommand::Open { .. }
         | CaseCommand::Current
         | CaseCommand::Recall { .. }
-        | CaseCommand::List => None,
+        | CaseCommand::List { .. } => None,
     }
 }
 
@@ -533,8 +611,7 @@ async fn cmd_record(
         return Err(CaseError::Other("summary must not be empty".to_string()));
     }
 
-    RecordKind::from_str(kind)
-        .ok_or_else(|| CaseError::Other(format!("invalid record kind: {kind}")))?;
+    RecordKind::from_str(kind).ok_or_else(|| CaseError::InvalidRecordKind(kind.to_string()))?;
 
     let seq = next_entry_seq(client, case_id).await?;
     let entry = client
@@ -714,6 +791,7 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
     let case = resolve_case(client, id).await?;
     let directions = client.get_directions(&case.id).await?;
     let all_steps = client.get_all_steps(&case.id).await?;
+    let entries = client.get_entries(&case.id).await?;
     let (dir_history, steps_by_dir) =
         build_direction_tree_payload(&directions, &all_steps, Some(case.current_direction_seq));
 
@@ -721,7 +799,8 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
         "ok": true,
         "case": output::case_json(&case),
         "direction_history": dir_history,
-        "steps_by_direction": steps_by_dir
+        "steps_by_direction": steps_by_dir,
+        "entries": entries.iter().map(output::entry_json).collect::<Vec<_>>()
     }))
 }
 
@@ -732,6 +811,7 @@ async fn cmd_close(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    ensure_no_unfinished_steps(client, &case).await?;
 
     client
         .update_case_status(case_id, CaseStatus::Closed, summary)
@@ -761,6 +841,7 @@ async fn cmd_abandon(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
+    ensure_no_unfinished_steps(client, &case).await?;
 
     client
         .update_case_status(case_id, CaseStatus::Abandoned, summary)
@@ -895,6 +976,7 @@ async fn cmd_step_start(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -956,6 +1038,7 @@ async fn cmd_step_done(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -1016,6 +1099,7 @@ async fn cmd_step_move(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
@@ -1047,33 +1131,102 @@ async fn cmd_step_block(
     Ok(json!({
         "ok": true,
         "steps": output::steps_json(&steps),
+        "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, case.current_direction_seq),
         "next": output::next_json(&next)
     }))
 }
 
-// TODO: recall currently lists all cases (no semantic search).
+async fn ensure_no_unfinished_steps(client: &CaseClient, case: &Case) -> CaseResult<()> {
+    let steps = client
+        .get_steps(&case.id, case.current_direction_seq)
+        .await?;
+    if steps
+        .iter()
+        .any(|step| !matches!(step.status, StepStatus::Done))
+    {
+        return Err(CaseError::UnfinishedSteps);
+    }
+    Ok(())
+}
+
+fn step_status_reminder(steps: &[Step]) -> serde_json::Value {
+    let unfinished: Vec<_> = steps
+        .iter()
+        .filter(|step| !matches!(step.status, StepStatus::Done))
+        .map(output::step_json)
+        .collect();
+
+    if unfinished.is_empty() {
+        json!("all steps are complete; if the goal is met, you can close the case")
+    } else {
+        json!(format!(
+            "{} unfinished step(s) remain; review them before closing the case",
+            unfinished.len()
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CaseListOptions {
+    status: Option<CaseStatusArg>,
+    limit: Option<usize>,
+    recent_days: Option<u32>,
+}
+
+impl CaseListOptions {
+    fn new(status: Option<CaseStatusArg>, limit: Option<usize>, recent_days: Option<u32>) -> Self {
+        Self {
+            status,
+            limit,
+            recent_days,
+        }
+    }
+}
+
+// TODO: recall currently uses weighted text matching only (no semantic search).
 // Phase 4 will add vector search via CaseSearchIndex.
-async fn cmd_recall(client: &CaseClient, query: &str) -> CaseResult<serde_json::Value> {
-    let cases = client.search_cases(query).await?;
+async fn cmd_recall(
+    client: &CaseClient,
+    query: &str,
+    options: CaseListOptions,
+) -> CaseResult<serde_json::Value> {
+    validate_list_options(options)?;
+    validate_recall_query(query)?;
+
+    let mut cases = client.search_cases(query).await?;
+    filter_recall_results(&mut cases, options);
+    cases.sort_by(|left, right| compare_recall_results(left, right, query));
+    if let Some(limit) = options.limit {
+        cases.truncate(limit);
+    }
+
+    let case_list: Vec<_> = cases.iter().map(output::case_search_json).collect();
+
+    Ok(json!({
+        "ok": true,
+        "cases": case_list,
+        "query": query,
+        "_meta": list_meta_json(options)
+    }))
+}
+
+async fn cmd_list(client: &CaseClient, options: CaseListOptions) -> CaseResult<serde_json::Value> {
+    validate_list_options(options)?;
+
+    let mut cases = client.list_cases().await?;
+    filter_cases(&mut cases, options);
+    cases.sort_by(compare_case_recency);
+    if let Some(limit) = options.limit {
+        cases.truncate(limit);
+    }
 
     let case_list: Vec<_> = cases.iter().map(output::case_json).collect();
 
     Ok(json!({
         "ok": true,
         "cases": case_list,
-        "query": query
-    }))
-}
-
-async fn cmd_list(client: &CaseClient) -> CaseResult<serde_json::Value> {
-    let cases = client.list_cases().await?;
-
-    let case_list: Vec<_> = cases.iter().map(output::case_json).collect();
-
-    Ok(json!({
-        "ok": true,
-        "cases": case_list
+        "_meta": list_meta_json(options)
     }))
 }
 
@@ -1154,6 +1307,133 @@ fn split_steps(steps: &[Step]) -> (Option<Step>, Vec<Step>) {
         .cloned()
         .collect();
     (current, pending)
+}
+
+fn validate_list_options(options: CaseListOptions) -> CaseResult<()> {
+    if matches!(options.limit, Some(0)) {
+        return Err(CaseError::InvalidListOption(
+            "limit must be at least 1".to_string(),
+        ));
+    }
+
+    if matches!(options.recent_days, Some(0)) {
+        return Err(CaseError::InvalidListOption(
+            "recent_days must be at least 1".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_recall_query(query: &str) -> CaseResult<()> {
+    if query.trim().is_empty() {
+        return Err(CaseError::InvalidQuery(
+            "recall query must not be empty".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn filter_recall_results(results: &mut Vec<CaseSearchResult>, options: CaseListOptions) {
+    results.retain(|result| matches_case_filters(&result.case, options));
+}
+
+fn filter_cases(cases: &mut Vec<Case>, options: CaseListOptions) {
+    cases.retain(|case| matches_case_filters(case, options));
+}
+
+fn matches_case_filters(case: &Case, options: CaseListOptions) -> bool {
+    if let Some(status) = options.status {
+        let expected = match status {
+            CaseStatusArg::Open => CaseStatus::Open,
+            CaseStatusArg::Closed => CaseStatus::Closed,
+            CaseStatusArg::Abandoned => CaseStatus::Abandoned,
+        };
+        if case.status != expected {
+            return false;
+        }
+    }
+
+    if let Some(recent_days) = options.recent_days {
+        let Some(updated_at) = parse_case_timestamp(&case.updated_at) else {
+            return false;
+        };
+        let cutoff = Utc::now() - Duration::days(recent_days as i64);
+        if updated_at < cutoff {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn compare_recall_results(
+    left: &CaseSearchResult,
+    right: &CaseSearchResult,
+    query: &str,
+) -> std::cmp::Ordering {
+    let left_score = recall_score(left, query);
+    let right_score = recall_score(right, query);
+
+    right_score
+        .cmp(&left_score)
+        .then_with(|| compare_case_recency(&left.case, &right.case))
+        .then_with(|| left.case.id.cmp(&right.case.id))
+}
+
+fn recall_score(result: &CaseSearchResult, query: &str) -> i64 {
+    let query_lower = query.to_lowercase();
+    let exact_goal_match = i64::from(result.case.goal.to_lowercase().contains(&query_lower)) * 40;
+    let match_score: i64 = result
+        .matches
+        .iter()
+        .map(
+            |matched| match (matched.scope.as_str(), matched.field.as_str()) {
+                ("case", "goal") => 12,
+                ("case", "close_summary" | "abandon_summary") => 8,
+                ("direction", "summary") => 7,
+                ("direction", "success_condition" | "abort_condition") => 6,
+                ("entry", "summary") => 5,
+                ("entry", "context") => 4,
+                ("direction", "context" | "reason") => 3,
+                ("entry", "reason" | "kind") => 2,
+                _ => 1,
+            },
+        )
+        .sum();
+    let recency_bonus = parse_case_timestamp(&result.case.updated_at)
+        .map(|updated_at| {
+            let age_days = (Utc::now() - updated_at).num_days();
+            (30 - age_days).clamp(0, 30)
+        })
+        .unwrap_or(0);
+
+    exact_goal_match + match_score + recency_bonus
+}
+
+fn compare_case_recency(left: &Case, right: &Case) -> std::cmp::Ordering {
+    parse_case_timestamp(&right.updated_at)
+        .cmp(&parse_case_timestamp(&left.updated_at))
+        .then_with(|| right.id.cmp(&left.id))
+}
+
+fn parse_case_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn list_meta_json(options: CaseListOptions) -> serde_json::Value {
+    json!({
+        "status": options.status.map(|value| match value {
+            CaseStatusArg::Open => "open",
+            CaseStatusArg::Closed => "closed",
+            CaseStatusArg::Abandoned => "abandoned",
+        }),
+        "limit": options.limit,
+        "recent_days": options.recent_days
+    })
 }
 
 fn build_direction_tree_payload(
@@ -1423,6 +1703,461 @@ mod tests {
             Some(6)
         );
         assert_eq!(values[5]["step"]["title"].as_str(), Some("step 6"));
+    }
+
+    #[tokio::test]
+    async fn recall_matches_record_summary_and_context() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(
+            &client,
+            "stabilize inference rollout",
+            "inspect prod readiness",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            "sample report shows one toxic audit outlier",
+            "finding",
+            &[],
+            Some("audit csv was only a sample, not the full pool"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let recalled = cmd_recall(&client, "audit", CaseListOptions::new(None, None, None))
+            .await
+            .expect("recall should succeed");
+        let cases = recalled["cases"]
+            .as_array()
+            .expect("cases should be returned");
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0]["id"].as_str(), Some(case_id.as_str()));
+        let matches = cases[0]["matches"]
+            .as_array()
+            .expect("recall should include match details");
+        assert!(
+            matches.iter().any(|m| {
+                m["scope"].as_str() == Some("entry")
+                    && m["field"].as_str() == Some("summary")
+                    && m["excerpt"]
+                        .as_str()
+                        .is_some_and(|excerpt| excerpt.contains("audit outlier"))
+            }),
+            "record summary match should be surfaced"
+        );
+        assert!(
+            matches.iter().any(|m| {
+                m["scope"].as_str() == Some("entry")
+                    && m["field"].as_str() == Some("context")
+                    && m["excerpt"]
+                        .as_str()
+                        .is_some_and(|excerpt| excerpt.contains("audit csv"))
+            }),
+            "record context match should be surfaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_status_and_limit() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let first = cmd_open(&client, "goal a", "direction a", &[], &[], None, None)
+            .await
+            .expect("first case should open");
+        let first_id = first["case"]["id"]
+            .as_str()
+            .expect("first case id should exist")
+            .to_string();
+        cmd_close(&client, &first_id, "done")
+            .await
+            .expect("first case should close");
+
+        cmd_open(&client, "goal b", "direction b", &[], &[], None, None)
+            .await
+            .expect("second case should open");
+
+        let listed = cmd_list(
+            &client,
+            CaseListOptions::new(Some(CaseStatusArg::Open), Some(1), None),
+        )
+        .await
+        .expect("list should succeed");
+        let cases = listed["cases"]
+            .as_array()
+            .expect("cases should be an array");
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0]["status"].as_str(), Some("open"));
+        assert_eq!(listed["_meta"]["limit"].as_u64(), Some(1));
+        assert_eq!(listed["_meta"]["status"].as_str(), Some("open"));
+    }
+
+    #[tokio::test]
+    async fn recall_prioritizes_goal_matches_and_applies_limit() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let direct = cmd_open(
+            &client,
+            "financial coverage decision",
+            "inspect coverage",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("direct case should open");
+        let direct_id = direct["case"]["id"]
+            .as_str()
+            .expect("direct case id should exist")
+            .to_string();
+        cmd_close(&client, &direct_id, "done")
+            .await
+            .expect("direct case should close");
+
+        let indirect = cmd_open(
+            &client,
+            "audit follow-up",
+            "inspect notes",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("indirect case should open");
+        let indirect_id = indirect["case"]["id"]
+            .as_str()
+            .expect("indirect case id should exist")
+            .to_string();
+        cmd_record(
+            &client,
+            &indirect_id,
+            "captured a mention of financial coverage in notes",
+            "finding",
+            &[],
+            None,
+        )
+        .await
+        .expect("record should succeed");
+        cmd_close(&client, &indirect_id, "done")
+            .await
+            .expect("indirect case should close");
+
+        let recalled = cmd_recall(
+            &client,
+            "financial coverage",
+            CaseListOptions::new(None, Some(1), None),
+        )
+        .await
+        .expect("recall should succeed");
+        let cases = recalled["cases"]
+            .as_array()
+            .expect("cases should be an array");
+
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0]["id"].as_str(), Some(direct_id.as_str()));
+        assert_eq!(recalled["_meta"]["limit"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn list_rejects_zero_limit() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let error = cmd_list(&client, CaseListOptions::new(None, Some(0), None))
+            .await
+            .expect_err("zero limit should be rejected");
+
+        assert!(
+            matches!(error, CaseError::InvalidListOption(message) if message.contains("limit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn list_rejects_zero_recent_days() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let error = cmd_list(&client, CaseListOptions::new(None, None, Some(0)))
+            .await
+            .expect_err("zero recent days should be rejected");
+
+        assert!(
+            matches!(error, CaseError::InvalidListOption(message) if message.contains("recent_days"))
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_rejects_empty_query() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let error = cmd_recall(&client, "   ", CaseListOptions::new(None, None, None))
+            .await
+            .expect_err("empty recall query should be rejected");
+
+        assert!(
+            matches!(error, CaseError::InvalidQuery(message) if message.contains("must not be empty"))
+        );
+    }
+
+    #[tokio::test]
+    async fn show_includes_record_entries_for_case_review() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            "record summary",
+            "finding",
+            &[],
+            Some("record context"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let shown = cmd_show(&client, Some(&case_id))
+            .await
+            .expect("show should succeed");
+        let entries = shown["entries"]
+            .as_array()
+            .expect("show should include entries");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["summary"].as_str(), Some("record summary"));
+        assert_eq!(entries[0]["context"].as_str(), Some("record context"));
+        assert_eq!(entries[0]["kind"].as_str(), Some("finding"));
+    }
+
+    #[tokio::test]
+    async fn close_rejects_when_any_step_is_unfinished() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_step_add(&client, &case_id, "unfinished step", None, false)
+            .await
+            .expect("step add should succeed");
+
+        let error = cmd_close(&client, &case_id, "done")
+            .await
+            .expect_err("close should reject unfinished steps");
+
+        assert!(matches!(error, CaseError::UnfinishedSteps));
+
+        let error_value = build_error_value(
+            &client,
+            &CaseCommand::Close {
+                id: case_id.clone(),
+                summary: "done".to_string(),
+            },
+            &error,
+        )
+        .await;
+
+        let unfinished = error_value["unfinished_steps"]
+            .as_array()
+            .expect("unfinished steps should be present");
+        assert_eq!(unfinished.len(), 1);
+        assert_eq!(unfinished[0]["title"].as_str(), Some("unfinished step"));
+    }
+
+    #[tokio::test]
+    async fn step_done_returns_reminder_before_case_close() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let added = cmd_step_add(&client, &case_id, "only step", None, true)
+            .await
+            .expect("step add should succeed");
+        let step_id = added["step"]["id"]
+            .as_str()
+            .expect("step id should exist")
+            .to_string();
+
+        let done = cmd_step_done(&client, &case_id, &step_id)
+            .await
+            .expect("step done should succeed");
+
+        assert_eq!(
+            done["reminder"].as_str(),
+            Some("all steps are complete; if the goal is met, you can close the case")
+        );
+        assert_eq!(done["next"]["suggested_command"].as_str(), Some("close"));
+    }
+
+    #[tokio::test]
+    async fn record_rejects_decision_kind_with_decide_hint() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let error = cmd_record(&client, &case_id, "decision summary", "decision", &[], None)
+            .await
+            .expect_err("decision kind should be rejected in record");
+
+        assert!(matches!(error, CaseError::InvalidRecordKind(ref kind) if kind == "decision"));
+        let next = error_next_action(&error).expect("decision misuse should provide hint");
+        assert_eq!(next.suggested_command, "decide");
+        assert!(next.why.contains("case_decide"));
     }
 
     #[tokio::test]

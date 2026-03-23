@@ -2,37 +2,41 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
-use agpod_case::{CaseArgs, CaseCommand, GoalDriftFlag, StepCommand};
+use agpod_case::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, StepCommand};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
-use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
-use tokio::process::Command;
-use uuid::Uuid;
-
-const AGENT_OPUS_SYSTEM_PROMPT: &str = include_str!("../prompts/agent_opus.md");
-const AGENT_OPUS_ALLOWED_TOOLS: &str = "Read,Bash(rg:*),Bash(fd:*)";
 
 #[derive(Debug, Clone)]
 pub struct AgpodMcpServer {
     data_dir: Option<String>,
+    server_addr: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
 impl AgpodMcpServer {
     pub fn new() -> Self {
-        Self::with_data_dir(std::env::var("AGPOD_CASE_DATA_DIR").ok())
+        Self::with_case_config(
+            std::env::var("AGPOD_CASE_DATA_DIR").ok(),
+            std::env::var("AGPOD_CASE_SERVER_ADDR").ok(),
+        )
     }
 
+    #[cfg(test)]
     fn with_data_dir(data_dir: Option<String>) -> Self {
+        Self::with_case_config(data_dir, None)
+    }
+
+    fn with_case_config(data_dir: Option<String>, server_addr: Option<String>) -> Self {
         Self {
             data_dir,
+            server_addr,
             tool_router: Self::tool_router(),
         }
     }
@@ -59,6 +63,8 @@ impl AgpodMcpServer {
     ) -> Result<Map<String, Value>, ErrorData> {
         let args = CaseArgs {
             data_dir: self.data_dir.clone(),
+            server_addr: self.server_addr.clone(),
+            repo_root: None,
             json: true,
             command,
         };
@@ -81,88 +87,6 @@ impl AgpodMcpServer {
             result: ToolEnvelope::from_raw(kind, case_id_hint, result),
         }
         .into_call_tool_result()
-    }
-
-    async fn run_agent_opus_tool(
-        &self,
-        prompt: String,
-        resume_id: Option<String>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let is_resume = resume_id.is_some();
-        let resume_id = match resolve_resume_id(resume_id) {
-            Ok(resume_id) => resume_id,
-            Err(message) => {
-                return AgentTextToolResponse {
-                    result: AgentTextEnvelope {
-                        is_error: true,
-                        kind: "agent_opus".to_string(),
-                        text: None,
-                        message: Some(message),
-                        resume_id: Uuid::new_v4().to_string(),
-                    },
-                }
-                .into_call_tool_result();
-            }
-        };
-
-        let mut command = Command::new("claude");
-        command
-            .arg("-p")
-            .arg("--model")
-            .arg("opus")
-            .arg("--effort")
-            .arg("high")
-            .arg("--strict-mcp-config")
-            .arg("--system-prompt")
-            .arg(AGENT_OPUS_SYSTEM_PROMPT)
-            .arg("--allowed-tools")
-            .arg(AGENT_OPUS_ALLOWED_TOOLS)
-            .arg("--")
-            .arg(prompt)
-            .stdin(Stdio::null());
-
-        if is_resume {
-            command.arg("--resume").arg(&resume_id);
-        } else {
-            command.arg("--session-id").arg(&resume_id);
-        }
-
-        let output = command.output().await;
-
-        let result = match output {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                AgentTextEnvelope {
-                    is_error: false,
-                    kind: "agent_opus".to_string(),
-                    text: Some(text),
-                    message: None,
-                    resume_id,
-                }
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let message = if !stderr.is_empty() { stderr } else { stdout };
-
-                AgentTextEnvelope {
-                    is_error: true,
-                    kind: "agent_opus".to_string(),
-                    text: None,
-                    message: Some(message),
-                    resume_id,
-                }
-            }
-            Err(err) => AgentTextEnvelope {
-                is_error: true,
-                kind: "agent_opus".to_string(),
-                text: None,
-                message: Some(format!("failed to execute claude: {err}")),
-                resume_id,
-            },
-        };
-
-        AgentTextToolResponse { result }.into_call_tool_result()
     }
 }
 
@@ -221,55 +145,11 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
         .clone()
 }
 
-fn agent_text_output_schema() -> Arc<JsonObject> {
-    static SCHEMA: OnceLock<Arc<JsonObject>> = OnceLock::new();
-
-    SCHEMA
-        .get_or_init(|| {
-            Arc::new(
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "result": {
-                            "type": "object",
-                            "properties": {
-                                "kind": {
-                                    "type": "string",
-                                    "description": "Stable result kind. Always `agent_opus`."
-                                },
-                                "text": {
-                                    "type": ["string", "null"],
-                                    "description": "Claude Opus text output on success."
-                                },
-                                "message": {
-                                    "type": ["string", "null"],
-                                    "description": "Failure message when the invocation did not succeed."
-                                },
-                                "resume_id": {
-                                    "type": "string",
-                                    "description": "Stable Claude session ID. Reuse it in later calls to continue the same discussion."
-                                }
-                            },
-                            "required": ["kind", "resume_id"]
-                        }
-                    },
-                    "required": ["result"],
-                    "$schema": "https://json-schema.org/draft/2020-12/schema",
-                    "title": "AgentTextToolResponse"
-                })
-                .as_object()
-                .expect("output schema should be an object")
-                .clone(),
-            )
-        })
-        .clone()
-}
-
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "agpod case MCP. One open case per repo. Flow: `case_open` -> step tools -> `case_record`/`case_decide`/`case_redirect` -> `case_close` or `case_abandon`. Tools return structured JSON aligned with `agpod case --json`.",
+            "agpod case MCP. One open case per repo. Start with `case_current`; if a case is open, call `case_resume` before deciding whether to use step tools, `case_record`, `case_decide`, or `case_redirect`. Call `case_open` only when `case_current` reports no open case. Tools return structured JSON aligned with `agpod case --json`.",
         )
     }
 }
@@ -277,20 +157,8 @@ impl ServerHandler for AgpodMcpServer {
 #[tool_router]
 impl AgpodMcpServer {
     #[tool(
-        name = "agent_opus",
-        description = "Read-only second opinion via Claude Opus. Input a prompt, output text.",
-        output_schema = agent_text_output_schema()
-    )]
-    async fn agent_opus(
-        &self,
-        Parameters(req): Parameters<AgentTextRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.run_agent_opus_tool(req.prompt, req.resume_id).await
-    }
-
-    #[tool(
         name = "case_current",
-        description = "Read active case state. Safe first call.",
+        description = "Read active case state. Preferred first call for a new session.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_current(
@@ -303,7 +171,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_open",
-        description = "Open the repo's only active case. Call first.",
+        description = "Open the repo's only active case, but only when `case_current` shows there is no open case.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_open(
@@ -339,7 +207,10 @@ impl AgpodMcpServer {
             CaseCommand::Record {
                 id: req.id.clone(),
                 summary: req.summary,
-                kind: req.kind.unwrap_or_else(|| "note".to_string()),
+                kind: req
+                    .kind
+                    .map(|kind| kind.as_str().to_string())
+                    .unwrap_or_else(|| "note".to_string()),
                 files: req.files.map(|files| files.join(",")),
                 context: req.context,
             },
@@ -442,29 +313,49 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_list",
-        description = "List repo cases. Safe discovery call.",
+        description = "List repo cases with optional status, recency, and limit filters. Safe discovery call.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_list(
         &self,
-        Parameters(_req): Parameters<CaseCurrentRequest>,
+        Parameters(req): Parameters<CaseListRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool("case_list", CaseCommand::List, None)
-            .await
+        validate_list_request(req.limit, req.recent_days)?;
+
+        self.run_case_tool(
+            "case_list",
+            CaseCommand::List {
+                status: req.status.map(Into::into),
+                limit: req.limit,
+                recent_days: req.recent_days,
+            },
+            None,
+        )
+        .await
     }
 
     #[tool(
         name = "case_recall",
-        description = "Search past cases by text.",
+        description = "Search past cases by weighted text match, with optional status, recency, and limit filters.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_recall(
         &self,
         Parameters(req): Parameters<CaseRecallRequest>,
     ) -> Result<CallToolResult, ErrorData> {
+        validate_list_request(req.limit, req.recent_days)?;
+        if req.query.trim().is_empty() {
+            return Err(ErrorData::invalid_params("query must not be empty", None));
+        }
+
         self.run_case_tool(
             "case_recall",
-            CaseCommand::Recall { query: req.query },
+            CaseCommand::Recall {
+                query: req.query,
+                status: req.status.map(Into::into),
+                limit: req.limit,
+                recent_days: req.recent_days,
+            },
             None,
         )
         .await
@@ -505,17 +396,22 @@ impl AgpodMcpServer {
         let commands: Vec<CaseCommand> = req
             .steps
             .iter()
-            .cloned()
             .map(|step| CaseCommand::Step {
                 command: StepCommand::Add {
                     id: case_id.clone(),
-                    title: step.title,
-                    reason: step.reason,
-                    start: step.start,
+                    title: step.title().to_string(),
+                    reason: step.reason().map(ToOwned::to_owned),
+                    start: step.start(),
                 },
             })
             .collect();
-        let results = agpod_case::run_json_batch(self.data_dir.clone(), commands).await;
+        let results = agpod_case::run_json_batch(
+            self.data_dir.clone(),
+            self.server_addr.clone(),
+            None,
+            commands,
+        )
+        .await;
 
         for (index, (step, mut result)) in req.steps.into_iter().zip(results).enumerate() {
             if let Some(obj) = result.as_object_mut() {
@@ -613,15 +509,6 @@ fn encode_constraints(constraints: Vec<ConstraintInput>) -> Vec<String> {
                 .expect("constraint should serialize")
         })
         .collect()
-}
-
-fn resolve_resume_id(resume_id: Option<String>) -> Result<String, String> {
-    match resume_id {
-        Some(resume_id) => Uuid::parse_str(&resume_id)
-            .map(|uuid| uuid.to_string())
-            .map_err(|err| format!("resume_id must be a valid UUID: {err}")),
-        None => Ok(Uuid::new_v4().to_string()),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -860,11 +747,52 @@ pub struct CaseRecordRequest {
     /// Fact summary.
     pub summary: String,
     /// note, finding, evidence, or blocker.
-    pub kind: Option<String>,
+    pub kind: Option<RecordKindArg>,
     /// Related file paths.
     pub files: Option<Vec<String>>,
     /// Extra context.
     pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordKindArg {
+    Note,
+    Finding,
+    Evidence,
+    Blocker,
+}
+
+impl RecordKindArg {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Finding => "finding",
+            Self::Evidence => "evidence",
+            Self::Blocker => "blocker",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordKindArg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        match raw.as_str() {
+            "note" => Ok(Self::Note),
+            "finding" => Ok(Self::Finding),
+            "evidence" => Ok(Self::Evidence),
+            "blocker" => Ok(Self::Blocker),
+            "decision" => Err(D::Error::custom(
+                "invalid record kind `decision`; use `case_decide` because decisions require a reason",
+            )),
+            _ => Err(D::Error::custom(format!(
+                "invalid record kind `{raw}`; expected one of `note`, `finding`, `evidence`, `blocker`"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -925,18 +853,82 @@ pub struct CaseFinishRequest {
 pub struct CaseRecallRequest {
     /// Search query.
     pub query: String,
+    /// Optional case status filter.
+    pub status: Option<CaseStatusInput>,
+    /// Limit result count.
+    pub limit: Option<usize>,
+    /// Only include cases updated within the last N days.
+    pub recent_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct CaseListRequest {
+    /// Optional case status filter.
+    pub status: Option<CaseStatusInput>,
+    /// Limit result count.
+    pub limit: Option<usize>,
+    /// Only include cases updated within the last N days.
+    pub recent_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseStatusInput {
+    Open,
+    Closed,
+    Abandoned,
+}
+
+impl From<CaseStatusInput> for CaseStatusArg {
+    fn from(value: CaseStatusInput) -> Self {
+        match value {
+            CaseStatusInput::Open => CaseStatusArg::Open,
+            CaseStatusInput::Closed => CaseStatusArg::Closed,
+            CaseStatusInput::Abandoned => CaseStatusArg::Abandoned,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseStepsAddRequest {
     /// Case ID.
     pub id: String,
-    /// Steps to add.
+    /// Steps to add. Accepts either plain strings like `"审阅报表"` or objects like `{"title":"审阅报表","reason":"补证","start":true}`.
     pub steps: Vec<StepInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct StepInput {
+#[serde(untagged)]
+pub enum StepInput {
+    Text(String),
+    Detailed(StepObjectInput),
+}
+
+impl StepInput {
+    fn title(&self) -> &str {
+        match self {
+            Self::Text(title) => title.as_str(),
+            Self::Detailed(step) => step.title.as_str(),
+        }
+    }
+
+    fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Text(_) => None,
+            Self::Detailed(step) => step.reason.as_deref(),
+        }
+    }
+
+    fn start(&self) -> bool {
+        match self {
+            Self::Text(_) => false,
+            Self::Detailed(step) => step.start,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct StepObjectInput {
     /// Step title.
     pub title: String,
     /// Why this step is needed.
@@ -968,44 +960,6 @@ pub struct CaseStepMoveRequest {
     pub before: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentTextRequest {
-    /// Prompt sent to the read-only Claude Opus second-opinion agent.
-    pub prompt: String,
-    /// Optional Claude session ID to continue a previous discussion.
-    pub resume_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentTextToolResponse {
-    pub result: AgentTextEnvelope,
-}
-
-impl AgentTextToolResponse {
-    fn into_call_tool_result(self) -> Result<CallToolResult, ErrorData> {
-        let is_error = self.result.is_error;
-        let text = self
-            .result
-            .text
-            .clone()
-            .or_else(|| self.result.message.clone())
-            .unwrap_or_else(|| self.result.kind.clone());
-        structured_tool_result(self, text, is_error)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentTextEnvelope {
-    #[serde(skip)]
-    is_error: bool,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    pub resume_id: String,
-}
-
 fn structured_tool_result<T>(
     payload: T,
     text: String,
@@ -1027,6 +981,21 @@ where
     Ok(result)
 }
 
+fn validate_list_request(limit: Option<usize>, recent_days: Option<u32>) -> Result<(), ErrorData> {
+    if matches!(limit, Some(0)) {
+        return Err(ErrorData::invalid_params("limit must be at least 1", None));
+    }
+
+    if matches!(recent_days, Some(0)) {
+        return Err(ErrorData::invalid_params(
+            "recent_days must be at least 1",
+            None,
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1040,7 +1009,6 @@ mod tests {
         assert!(tool_names.contains(&"case_current"));
         assert!(tool_names.contains(&"case_open"));
         assert!(tool_names.contains(&"case_steps_add"));
-        assert!(tool_names.contains(&"agent_opus"));
 
         let current_tool = tools
             .iter()
@@ -1051,6 +1019,12 @@ mod tests {
             .expect("schema should serialize");
         assert!(schema.contains("\"kind\""));
         assert!(schema.contains("\"raw\""));
+
+        let info = server.get_info();
+        assert!(info.instructions.is_some());
+        let instructions = info.instructions.expect("instructions should exist");
+        assert!(instructions.contains("case_current"));
+        assert!(instructions.contains("case_resume"));
     }
 
     #[test]
@@ -1065,10 +1039,6 @@ mod tests {
             .iter()
             .find(|tool| tool.name == "case_open")
             .expect("case_open tool should exist");
-        let agent_tool = tools
-            .iter()
-            .find(|tool| tool.name == "agent_opus")
-            .expect("agent_opus tool should exist");
 
         let current_schema =
             serde_json::to_value(&current_tool.input_schema).expect("schema should serialize");
@@ -1080,14 +1050,61 @@ mod tests {
             .expect("case_redirect tool should exist");
         let redirect_schema =
             serde_json::to_value(&redirect_tool.input_schema).expect("schema should serialize");
-        let agent_schema =
-            serde_json::to_value(&agent_tool.input_schema).expect("schema should serialize");
+        let recall_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_recall")
+            .expect("case_recall tool should exist");
+        let recall_schema =
+            serde_json::to_value(&recall_tool.input_schema).expect("schema should serialize");
+        let list_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_list")
+            .expect("case_list tool should exist");
+        let list_schema =
+            serde_json::to_value(&list_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
-        assert!(agent_schema.to_string().contains("prompt"));
-        assert!(agent_schema.to_string().contains("resume_id"));
+        assert!(recall_schema.to_string().contains("recent_days"));
+        assert!(recall_schema.to_string().contains("status"));
+        assert!(list_schema.to_string().contains("limit"));
+
+        let record_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_record")
+            .expect("case_record tool should exist");
+        let record_schema =
+            serde_json::to_value(&record_tool.input_schema).expect("schema should serialize");
+        let record_schema_text = record_schema.to_string();
+        assert!(record_schema_text.contains("\"note\""));
+        assert!(record_schema_text.contains("\"finding\""));
+        assert!(record_schema_text.contains("\"evidence\""));
+        assert!(record_schema_text.contains("\"blocker\""));
+        assert!(!record_schema_text.contains("\"decision\""));
+    }
+
+    #[test]
+    fn record_kind_deserialize_points_decision_to_case_decide() {
+        let error = serde_json::from_value::<CaseRecordRequest>(serde_json::json!({
+            "id": "C-1",
+            "summary": "bad call",
+            "kind": "decision"
+        }))
+        .expect_err("decision should not deserialize as record kind");
+
+        assert!(error.to_string().contains("use `case_decide`"));
+    }
+
+    #[test]
+    fn list_request_validation_rejects_zero_values() {
+        let limit_error =
+            validate_list_request(Some(0), None).expect_err("zero limit should be rejected");
+        assert!(limit_error.message.contains("limit"));
+
+        let recent_error =
+            validate_list_request(None, Some(0)).expect_err("zero recent_days should be rejected");
+        assert!(recent_error.message.contains("recent_days"));
     }
 
     #[test]
@@ -1216,11 +1233,11 @@ mod tests {
 
         let raw = build_case_steps_add_partial_error(
             2,
-            StepInput {
+            StepInput::Detailed(StepObjectInput {
                 title: "second".to_string(),
                 reason: Some("because".to_string()),
                 start: false,
-            },
+            }),
             vec![serde_json::json!({"id": "case/S-001", "title": "first"})],
             failed_result,
         );
@@ -1239,6 +1256,40 @@ mod tests {
             Some("second")
         );
         assert!(raw.get("failure").is_some());
+    }
+
+    #[test]
+    fn case_steps_add_request_accepts_string_steps() {
+        let request: CaseStepsAddRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "steps": ["first step", "second step"]
+        }))
+        .expect("string shorthand should deserialize");
+
+        assert_eq!(request.steps.len(), 2);
+        assert_eq!(request.steps[0].title(), "first step");
+        assert_eq!(request.steps[0].reason(), None);
+        assert!(!request.steps[0].start());
+    }
+
+    #[test]
+    fn case_steps_add_request_keeps_object_steps() {
+        let request: CaseStepsAddRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "steps": [
+                {
+                    "title": "first step",
+                    "reason": "because",
+                    "start": true
+                }
+            ]
+        }))
+        .expect("object form should deserialize");
+
+        assert_eq!(request.steps.len(), 1);
+        assert_eq!(request.steps[0].title(), "first step");
+        assert_eq!(request.steps[0].reason(), Some("because"));
+        assert!(request.steps[0].start());
     }
 
     #[tokio::test]
@@ -1286,82 +1337,5 @@ mod tests {
                 }
             }))
         );
-    }
-
-    #[test]
-    fn agent_tool_response_sets_mcp_is_error() {
-        let result = AgentTextToolResponse {
-            result: AgentTextEnvelope {
-                is_error: true,
-                kind: "agent_opus".to_string(),
-                text: None,
-                message: Some("resume_id must be a valid UUID".to_string()),
-                resume_id: "123e4567-e89b-12d3-a456-426614174000".to_string(),
-            },
-        }
-        .into_call_tool_result()
-        .expect("agent response should serialize");
-
-        assert_eq!(result.is_error, Some(true));
-        assert_eq!(
-            result.content,
-            vec![Content::text("resume_id must be a valid UUID")]
-        );
-    }
-
-    #[tokio::test]
-    async fn agent_opus_invalid_resume_id_sets_mcp_is_error() {
-        let server = AgpodMcpServer::new();
-        let result = server
-            .run_agent_opus_tool("ping".to_string(), Some("not-a-uuid".to_string()))
-            .await
-            .expect("invalid resume_id should return tool error payload");
-        let structured = result
-            .structured_content
-            .clone()
-            .expect("structured content should be present");
-        let message = structured
-            .get("result")
-            .and_then(|value| value.get("message"))
-            .and_then(|value| value.as_str())
-            .expect("message should be present");
-        let resume_id = structured
-            .get("result")
-            .and_then(|value| value.get("resume_id"))
-            .and_then(|value| value.as_str())
-            .expect("resume_id should be present");
-
-        assert_eq!(result.is_error, Some(true));
-        assert_eq!(result.content.len(), 1);
-        assert!(message.contains("resume_id must be a valid UUID"));
-        assert_eq!(
-            structured,
-            serde_json::json!({
-                "result": {
-                    "kind": "agent_opus",
-                    "message": message,
-                    "resume_id": resume_id,
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn agent_opus_prompt_is_loaded_from_markdown() {
-        assert!(AGENT_OPUS_SYSTEM_PROMPT.contains("第二意见代理"));
-        assert!(AGENT_OPUS_SYSTEM_PROMPT.contains("只读"));
-    }
-
-    #[test]
-    fn resolve_resume_id_reuses_valid_uuid() {
-        let input = "123e4567-e89b-12d3-a456-426614174000".to_string();
-        let result = resolve_resume_id(Some(input.clone())).expect("uuid should be valid");
-        assert_eq!(result, input);
-    }
-
-    #[test]
-    fn resolve_resume_id_rejects_invalid_uuid() {
-        let err = resolve_resume_id(Some("not-a-uuid".to_string())).expect_err("uuid invalid");
-        assert!(err.contains("resume_id must be a valid UUID"));
     }
 }

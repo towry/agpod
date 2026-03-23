@@ -5,9 +5,14 @@ mod config;
 mod error;
 mod output;
 mod repo_id;
+mod rpc;
+mod server;
+mod server_client;
 mod types;
 
-pub use cli::{CaseArgs, CaseCommand, GoalDriftFlag, StepCommand};
+pub use cli::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, StepCommand};
+pub use config::{CaseAccessMode, CaseConfig, CaseOverrides, DbConfig, DEFAULT_CASE_SERVER_ADDR};
+pub use server::CaseServer;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -20,6 +25,17 @@ pub async fn run_json(args: CaseArgs) -> Value {
     commands::execute_json(args).await
 }
 
-pub async fn run_json_batch(data_dir: Option<String>, commands: Vec<CaseCommand>) -> Vec<Value> {
-    commands::execute_json_batch(data_dir.as_deref(), commands).await
+pub async fn run_json_batch(
+    data_dir: Option<String>,
+    server_addr: Option<String>,
+    repo_root: Option<String>,
+    commands: Vec<CaseCommand>,
+) -> Vec<Value> {
+    commands::execute_json_batch(
+        data_dir.as_deref(),
+        server_addr.as_deref(),
+        repo_root.as_deref(),
+        commands,
+    )
+    .await
 }
