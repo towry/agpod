@@ -1,3 +1,4 @@
+use crate::types::RecordKind;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -56,9 +57,15 @@ pub enum CaseError {
     UnfinishedSteps,
 
     #[error(
-        "invalid record kind: {0}; use one of note, finding, evidence, blocker, or call `case_decide` for decisions"
+        "invalid record kind: {kind}; use one of {allowed}, or call `case_decide` for decisions"
     )]
-    InvalidRecordKind(String),
+    InvalidRecordKind { kind: String, allowed: String },
+
+    #[error("record kind `goal_constraint_update` requires at least one `goal_constraint`")]
+    GoalConstraintUpdateRequiresConstraints,
+
+    #[error("`goal_constraint` is only allowed when record kind is `goal_constraint_update`")]
+    GoalConstraintsOnlyAllowedForGoalConstraintUpdate,
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -71,3 +78,12 @@ pub enum CaseError {
 }
 
 pub type CaseResult<T> = Result<T, CaseError>;
+
+impl CaseError {
+    pub fn invalid_record_kind(kind: impl Into<String>) -> Self {
+        Self::InvalidRecordKind {
+            kind: kind.into(),
+            allowed: RecordKind::allowed_values_display(),
+        }
+    }
+}

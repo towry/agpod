@@ -53,6 +53,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",

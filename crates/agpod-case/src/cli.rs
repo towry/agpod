@@ -83,9 +83,13 @@ pub enum CaseCommand {
         #[arg(long)]
         summary: String,
 
-        /// Kind: note, finding, evidence, blocker
+        /// Kind of record to append
         #[arg(long, default_value = "note")]
         kind: String,
+
+        /// Goal-level constraint update payload (JSON: {"rule":"...","reason":"..."})
+        #[arg(long = "goal-constraint")]
+        goal_constraints: Vec<String>,
 
         /// Related file paths (comma-separated)
         #[arg(long)]

@@ -277,6 +277,29 @@ impl CaseClient {
         Ok(())
     }
 
+    pub async fn update_case_goal_constraints(
+        &self,
+        case_id: &str,
+        goal_constraints: &[Constraint],
+    ) -> CaseResult<()> {
+        let now = Utc::now().to_rfc3339();
+        let constraints_json =
+            serde_json::to_string(goal_constraints).map_err(|e| CaseError::Other(e.to_string()))?;
+
+        self.query_raw(
+            "UPDATE case SET goal_constraints = $goal_constraints, updated_at = $updated_at \
+             WHERE case_id = $case_id",
+            json!({
+                "case_id": case_id,
+                "goal_constraints": constraints_json,
+                "updated_at": now,
+            }),
+        )
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn update_case_direction(&self, case_id: &str, direction_seq: u32) -> CaseResult<()> {
         let now = Utc::now().to_rfc3339();
         self.query_raw(
