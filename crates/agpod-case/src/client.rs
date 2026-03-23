@@ -353,7 +353,9 @@ impl CaseClient {
         let now = Utc::now().to_rfc3339();
         self.query_raw(
             "UPDATE case SET current_direction_seq = $seq, current_step_id = '', \
-             updated_at = $updated_at WHERE case_id = $case_id",
+             updated_at = $updated_at, \
+             close_confirm_token = '', close_confirm_action = '', close_confirm_summary = '' \
+             WHERE case_id = $case_id",
             json!({
                 "case_id": case_id,
                 "seq": direction_seq,
@@ -450,6 +452,16 @@ impl CaseClient {
             .first()
             .and_then(parse_single_direction)
             .ok_or_else(|| CaseError::Other("no direction found".to_string()))
+    }
+
+    pub async fn find_direction(&self, case_id: &str, seq: u32) -> CaseResult<Option<Direction>> {
+        let results = self
+            .query_raw(
+                "SELECT * FROM direction WHERE case_id = $case_id AND seq = $seq LIMIT 1",
+                json!({ "case_id": case_id, "seq": seq }),
+            )
+            .await?;
+        Ok(results.first().and_then(parse_single_direction))
     }
 
     // ── Step operations ──
@@ -1197,5 +1209,52 @@ mod tests {
         assert!(Arc::ptr_eq(&first_lock, &second_lock));
         drop(first_lock);
         drop(second_lock);
+    }
+
+    #[tokio::test]
+    async fn update_case_direction_clears_close_confirmation_fields() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        client
+            .create_case("C-legacy", "goal", &[])
+            .await
+            .expect("case should be created");
+
+        client
+            .set_close_confirmation("C-legacy", "close", "summary", "token")
+            .await
+            .expect("close confirmation should be set");
+
+        client
+            .update_case_direction("C-legacy", 2)
+            .await
+            .expect("case update should clear close confirmation fields");
+
+        let raw = client
+            .query_raw(
+                "SELECT close_confirm_token, close_confirm_action, close_confirm_summary, current_direction_seq \
+                 FROM case WHERE case_id = $case_id LIMIT 1",
+                json!({ "case_id": "C-legacy" }),
+            )
+            .await
+            .expect("query should succeed");
+        let case = raw.first().expect("legacy case should exist");
+
+        assert_eq!(case["close_confirm_token"].as_str(), Some(""));
+        assert_eq!(case["close_confirm_action"].as_str(), Some(""));
+        assert_eq!(case["close_confirm_summary"].as_str(), Some(""));
+        assert_eq!(case["current_direction_seq"].as_u64(), Some(2));
     }
 }
