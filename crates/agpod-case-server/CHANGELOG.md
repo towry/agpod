@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/towry/agpod/compare/agpod-case-server-v0.2.1...agpod-case-server-v0.2.2) (2026-03-23)
+
+
+### Bug Fixes
+
+* remove default release smoke test ([#110](https://github.com/towry/agpod/issues/110)) ([42f5f44](https://github.com/towry/agpod/commit/42f5f44f8e0e015f6f7f95db7d379f3c5cc7a907))
+
 ## [0.2.1](https://github.com/towry/agpod/compare/agpod-case-server-v0.2.0...agpod-case-server-v0.2.1) (2026-03-23)
 
 
