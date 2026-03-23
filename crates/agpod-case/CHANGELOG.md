@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/towry/agpod/compare/agpod-case-v0.4.0...agpod-case-v0.4.1) (2026-03-23)
+
+
+### Bug Fixes
+
+* **case:** handle legacy data recovery for interrupted redirects ([429c749](https://github.com/towry/agpod/commit/429c7491ea42f21b2417d3ff36ba63af2a0311b7))
+
 ## [0.4.0](https://github.com/towry/agpod/compare/agpod-case-v0.3.0...agpod-case-v0.4.0) (2026-03-23)
 
 
