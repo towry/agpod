@@ -7,7 +7,8 @@ use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
+    schemars,
+    tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -292,21 +293,15 @@ impl AgpodMcpServer {
         &self,
         Parameters(req): Parameters<CaseFinishRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let command = match req.outcome.as_str() {
-            "completed" => CaseCommand::Close {
+        let command = match req.outcome {
+            CaseFinishOutcomeInput::Completed => CaseCommand::Close {
                 id: req.id.clone(),
                 summary: req.summary,
             },
-            "abandoned" => CaseCommand::Abandon {
+            CaseFinishOutcomeInput::Abandoned => CaseCommand::Abandon {
                 id: req.id.clone(),
                 summary: req.summary,
             },
-            other => {
-                return Err(ErrorData::invalid_params(
-                    format!("invalid outcome \"{other}\": expected \"completed\" or \"abandoned\""),
-                    None,
-                ));
-            }
         };
         self.run_case_tool("case_finish", command, Some(req.id))
             .await
@@ -377,7 +372,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_steps_add",
-        description = "Add one or more steps to the current direction. Use after `case_open` or `case_redirect`.",
+        description = "Add one or more steps to the current direction. Use after `case_open` or `case_redirect`. This batch call may partially succeed; inspect `created_steps`, `created_count`, and any failure details before retrying.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_steps_add(
@@ -449,26 +444,20 @@ impl AgpodMcpServer {
         &self,
         Parameters(req): Parameters<CaseStepMarkAsRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let command = match req.status.as_str() {
-            "started" => StepCommand::Start {
+        let command = match req.status {
+            StepStatusInput::Started => StepCommand::Start {
                 id: req.id.clone(),
                 step_id: req.step_id,
             },
-            "done" => StepCommand::Done {
+            StepStatusInput::Done => StepCommand::Done {
                 id: req.id.clone(),
                 step_id: req.step_id,
             },
-            "blocked" => StepCommand::Block {
+            StepStatusInput::Blocked => StepCommand::Block {
                 id: req.id.clone(),
                 step_id: req.step_id,
                 reason: req.reason.unwrap_or_default(),
             },
-            other => {
-                return Err(ErrorData::invalid_params(
-                    format!("invalid status \"{other}\": expected \"started\", \"done\", or \"blocked\""),
-                    None,
-                ));
-            }
         };
         self.run_case_tool(
             "case_step_mark_as",
@@ -720,6 +709,65 @@ fn copy_case_steps_add_passthrough_fields(
     }
 }
 
+fn describe_case_record_kind_schema(schema: &mut schemars::Schema) {
+    schema.ensure_object().insert(
+        "description".to_string(),
+        Value::String(format!(
+            "Kind of record to append. Supported values: {}. Omit this field to default to `note`. `decision` is not allowed here; use `case_decide` instead.",
+            RecordKind::allowed_values_code_span()
+        )),
+    );
+}
+
+fn describe_case_record_request_schema(schema: &mut schemars::Schema) {
+    let object = schema.ensure_object();
+    object.insert(
+        "allOf".to_string(),
+        serde_json::json!([
+            {
+                "if": {
+                    "properties": {
+                        "kind": { "const": "goal_constraint_update" }
+                    },
+                    "required": ["kind"]
+                },
+                "then": {
+                    "properties": {
+                        "goal_constraints": { "minItems": 1 }
+                    }
+                },
+                "else": {
+                    "properties": {
+                        "goal_constraints": { "maxItems": 0 }
+                    }
+                }
+            }
+        ]),
+    );
+}
+
+fn describe_case_step_mark_as_request_schema(schema: &mut schemars::Schema) {
+    let object = schema.ensure_object();
+    object.insert(
+        "allOf".to_string(),
+        serde_json::json!([
+            {
+                "if": {
+                    "properties": {
+                        "status": { "const": "blocked" }
+                    }
+                },
+                "then": {
+                    "required": ["reason"],
+                    "properties": {
+                        "reason": { "minLength": 1 }
+                    }
+                }
+            }
+        ]),
+    );
+}
+
 fn deserialize_optional_record_kind<'de, D>(deserializer: D) -> Result<Option<RecordKind>, D::Error>
 where
     D: Deserializer<'de>,
@@ -761,15 +809,17 @@ pub struct CaseOpenRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = describe_case_record_request_schema)]
 pub struct CaseRecordRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
     /// Fact summary.
     pub summary: String,
     /// Kind of record to append.
     #[serde(default, deserialize_with = "deserialize_optional_record_kind")]
+    #[schemars(transform = describe_case_record_kind_schema)]
     pub kind: Option<RecordKind>,
-    /// Goal constraint payloads. Only valid when `kind` is `goal_constraint_update`.
+    /// Goal constraint payloads. Required and non-empty when `kind` is `goal_constraint_update`; otherwise omit this field.
     #[serde(default)]
     pub goal_constraints: Vec<ConstraintInput>,
     /// Related file paths.
@@ -780,7 +830,7 @@ pub struct CaseRecordRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseDecideRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
     /// Decision summary.
     pub summary: String,
@@ -790,7 +840,7 @@ pub struct CaseDecideRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseRedirectRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
     /// New direction summary.
     pub direction: String,
@@ -818,29 +868,39 @@ pub enum GoalDriftInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseShowRequest {
-    /// Case ID. Omit to use the open case.
+    /// Case ID. Omit to use the open case returned by `case_current`.
     pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseFinishOutcomeInput {
+    Completed,
+    Abandoned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseFinishRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
-    /// Outcome: "completed" or "abandoned".
-    pub outcome: String,
+    /// Outcome for closing the case.
+    pub outcome: CaseFinishOutcomeInput,
     /// Closing or abandonment summary.
     pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseRecallRequest {
-    /// Search query.
+    /// Search query. Must not be empty or whitespace-only.
+    #[schemars(length(min = 1))]
     pub query: String,
     /// Optional case status filter.
     pub status: Option<CaseStatusInput>,
-    /// Limit result count.
+    /// Limit result count. Must be at least 1 when provided.
+    #[schemars(range(min = 1))]
     pub limit: Option<usize>,
-    /// Only include cases updated within the last N days.
+    /// Only include cases updated within the last N days. Must be at least 1 when provided.
+    #[schemars(range(min = 1))]
     pub recent_days: Option<u32>,
 }
 
@@ -848,9 +908,11 @@ pub struct CaseRecallRequest {
 pub struct CaseListRequest {
     /// Optional case status filter.
     pub status: Option<CaseStatusInput>,
-    /// Limit result count.
+    /// Limit result count. Must be at least 1 when provided.
+    #[schemars(range(min = 1))]
     pub limit: Option<usize>,
-    /// Only include cases updated within the last N days.
+    /// Only include cases updated within the last N days. Must be at least 1 when provided.
+    #[schemars(range(min = 1))]
     pub recent_days: Option<u32>,
 }
 
@@ -874,9 +936,10 @@ impl From<CaseStatusInput> for CaseStatusArg {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseStepsAddRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
-    /// Steps to add. Accepts either plain strings like `"审阅报表"` or objects like `{"title":"审阅报表","reason":"补证","start":true}`.
+    /// Steps to add. Must be non-empty. Accepts either plain strings like `"审阅报表"` or objects like `{"title":"审阅报表","reason":"补证","start":true}`.
+    #[schemars(length(min = 1))]
     pub steps: Vec<StepInput>,
 }
 
@@ -913,6 +976,7 @@ impl StepInput {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct StepObjectInput {
     /// Step title.
+    #[schemars(length(min = 1))]
     pub title: String,
     /// Why this step is needed.
     pub reason: Option<String>,
@@ -922,24 +986,35 @@ pub struct StepObjectInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = describe_case_step_mark_as_request_schema)]
+#[serde(rename_all = "lowercase")]
+pub enum StepStatusInput {
+    Started,
+    Done,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = describe_case_step_mark_as_request_schema)]
 pub struct CaseStepMarkAsRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
-    /// Step ID.
+    /// Step ID from the case step list, such as `steps.current.id` or one entry in `steps.ordered`.
     pub step_id: String,
-    /// Target status: "started", "done", or "blocked".
-    pub status: String,
-    /// Required when status is "blocked". Reason the step cannot proceed.
+    /// Target status for the step.
+    pub status: StepStatusInput,
+    /// Required and non-empty when `status` is `blocked`. Explains why the step cannot proceed.
+    #[schemars(length(min = 1))]
     pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseStepMoveRequest {
-    /// Case ID.
+    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
     pub id: String,
-    /// Step to move.
+    /// Step ID to move.
     pub step_id: String,
-    /// Place before this step ID.
+    /// Insert the moved step immediately before this step ID.
     pub before: String,
 }
 
@@ -1045,6 +1120,24 @@ mod tests {
             .expect("case_list tool should exist");
         let list_schema =
             serde_json::to_value(&list_tool.input_schema).expect("schema should serialize");
+        let finish_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_finish")
+            .expect("case_finish tool should exist");
+        let finish_schema =
+            serde_json::to_value(&finish_tool.input_schema).expect("schema should serialize");
+        let step_mark_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_step_mark_as")
+            .expect("case_step_mark_as tool should exist");
+        let step_mark_schema =
+            serde_json::to_value(&step_mark_tool.input_schema).expect("schema should serialize");
+        let steps_add_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_steps_add")
+            .expect("case_steps_add tool should exist");
+        let steps_add_schema =
+            serde_json::to_value(&steps_add_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
@@ -1052,6 +1145,15 @@ mod tests {
         assert!(recall_schema.to_string().contains("recent_days"));
         assert!(recall_schema.to_string().contains("status"));
         assert!(list_schema.to_string().contains("limit"));
+        assert!(list_schema.to_string().contains("\"minimum\":1"));
+        assert!(recall_schema.to_string().contains("\"minimum\":1"));
+        assert!(finish_schema.to_string().contains("\"completed\""));
+        assert!(finish_schema.to_string().contains("\"abandoned\""));
+        assert!(step_mark_schema.to_string().contains("\"started\""));
+        assert!(step_mark_schema.to_string().contains("\"done\""));
+        assert!(step_mark_schema.to_string().contains("\"blocked\""));
+        assert!(step_mark_schema.to_string().contains("\"required\":[\"reason\"]"));
+        assert!(steps_add_schema.to_string().contains("\"minItems\":1"));
 
         let record_tool = tools
             .iter()
@@ -1060,12 +1162,17 @@ mod tests {
         let record_schema =
             serde_json::to_value(&record_tool.input_schema).expect("schema should serialize");
         let record_schema_text = record_schema.to_string();
-        assert!(record_schema_text.contains("\"note\""));
-        assert!(record_schema_text.contains("\"finding\""));
-        assert!(record_schema_text.contains("\"evidence\""));
-        assert!(record_schema_text.contains("\"blocker\""));
-        assert!(record_schema_text.contains("\"goal_constraint_update\""));
+        assert!(record_schema_text.contains("Kind of record to append. Supported values:"));
+        assert!(record_schema_text.contains("Omit this field to default to `note`"));
+        assert!(record_schema_text.contains("use `case_decide` instead"));
+        assert!(record_schema_text.contains("`note`"));
+        assert!(record_schema_text.contains("`finding`"));
+        assert!(record_schema_text.contains("`evidence`"));
+        assert!(record_schema_text.contains("`blocker`"));
+        assert!(record_schema_text.contains("`goal_constraint_update`"));
         assert!(!record_schema_text.contains("\"decision\""));
+        assert!(record_schema_text.contains("\"minItems\":1"));
+        assert!(record_schema_text.contains("\"maxItems\":0"));
     }
 
     #[test]
@@ -1293,6 +1400,32 @@ mod tests {
         assert_eq!(request.steps[0].title(), "first step");
         assert_eq!(request.steps[0].reason(), Some("because"));
         assert!(request.steps[0].start());
+    }
+
+    #[test]
+    fn case_finish_request_accepts_known_outcomes() {
+        let request: CaseFinishRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "outcome": "completed",
+            "summary": "done"
+        }))
+        .expect("known finish outcome should deserialize");
+
+        assert!(matches!(request.outcome, CaseFinishOutcomeInput::Completed));
+    }
+
+    #[test]
+    fn case_step_mark_as_request_accepts_known_statuses() {
+        let request: CaseStepMarkAsRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "step_id": "case/S-001",
+            "status": "blocked",
+            "reason": "waiting"
+        }))
+        .expect("known step status should deserialize");
+
+        assert!(matches!(request.status, StepStatusInput::Blocked));
+        assert_eq!(request.reason.as_deref(), Some("waiting"));
     }
 
     #[tokio::test]
