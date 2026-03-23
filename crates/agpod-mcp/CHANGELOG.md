@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/towry/agpod/compare/agpod-mcp-v0.4.0...agpod-mcp-v0.4.1) (2026-03-23)
+
+
+### Bug Fixes
+
+* **mcp:** enhance server info and update tool instructions ([#115](https://github.com/towry/agpod/issues/115)) ([027f9fd](https://github.com/towry/agpod/commit/027f9fd2df2d0e9d057685f756ec13764c807937))
+
 ## [0.4.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.3.0...agpod-mcp-v0.4.0) (2026-03-23)
 
 
