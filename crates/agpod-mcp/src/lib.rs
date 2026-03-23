@@ -2,13 +2,14 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
-use agpod_case::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, RecordKind, StepCommand};
+use agpod_case::{
+    CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, OpenModeArg, RecordKind, StepCommand,
+};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo},
-    schemars,
-    tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
+    schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -172,7 +173,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_open",
-        description = "Open the repo's only active case, but only when `case_current` shows there is no open case.",
+        description = "Open a case. Use `mode=new` to create a fresh case when `case_current` shows none is open. Use `mode=reopen` with `case_id` to reopen a previously closed or abandoned case. Never call this if another case is already open for the repo.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_open(
@@ -182,6 +183,11 @@ impl AgpodMcpServer {
         self.run_case_tool(
             "case_open",
             CaseCommand::Open {
+                mode: match req.mode {
+                    CaseOpenModeInput::New => OpenModeArg::New,
+                    CaseOpenModeInput::Reopen => OpenModeArg::Reopen,
+                },
+                case_id: req.case_id,
                 goal: req.goal,
                 direction: req.direction,
                 goal_constraints: encode_constraints(req.goal_constraints),
@@ -721,6 +727,37 @@ fn describe_case_record_kind_schema(schema: &mut schemars::Schema) {
     );
 }
 
+fn describe_case_open_request_schema(schema: &mut schemars::Schema) {
+    let object = schema.ensure_object();
+    object.insert(
+        "allOf".to_string(),
+        serde_json::json!([
+            {
+                "if": {
+                    "properties": {
+                        "mode": { "const": "new" }
+                    }
+                },
+                "then": {
+                    "required": ["goal", "direction"],
+                    "properties": {
+                        "case_id": { "maxLength": 0 }
+                    }
+                },
+                "else": {
+                    "required": ["case_id"],
+                    "properties": {
+                        "goal": { "maxLength": 0 },
+                        "direction": { "maxLength": 0 },
+                        "goal_constraints": { "maxItems": 0 },
+                        "constraints": { "maxItems": 0 }
+                    }
+                }
+            }
+        ]),
+    );
+}
+
 fn describe_case_record_request_schema(schema: &mut schemars::Schema) {
     let object = schema.ensure_object();
     object.insert(
@@ -793,11 +830,17 @@ where
 pub struct CaseCurrentRequest {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = describe_case_open_request_schema)]
 pub struct CaseOpenRequest {
-    /// Immutable case goal.
-    pub goal: String,
-    /// Initial direction summary.
-    pub direction: String,
+    /// Open mode: create a new case or reopen an existing closed/abandoned case.
+    #[serde(default)]
+    pub mode: CaseOpenModeInput,
+    /// Existing case ID to reopen. Required when `mode` is `reopen`.
+    pub case_id: Option<String>,
+    /// Immutable case goal. Required when `mode` is `new`.
+    pub goal: Option<String>,
+    /// Initial direction summary. Required when `mode` is `new`.
+    pub direction: Option<String>,
     /// Case-wide constraints. Accepts either plain strings like `"先证据后推断"` or objects like `{"rule":"先证据后推断","reason":"避免过早下结论"}`.
     #[serde(default)]
     pub goal_constraints: Vec<ConstraintInput>,
@@ -808,6 +851,14 @@ pub struct CaseOpenRequest {
     pub success_condition: Option<String>,
     /// Condition for aborting this direction.
     pub abort_condition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseOpenModeInput {
+    #[default]
+    New,
+    Reopen,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1145,6 +1196,11 @@ mod tests {
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
+        assert!(open_schema.to_string().contains("\"reopen\""));
+        assert!(open_schema.to_string().contains("\"case_id\""));
+        assert!(open_schema
+            .to_string()
+            .contains("\"required\":[\"goal\",\"direction\"]"));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
         assert!(recall_schema.to_string().contains("recent_days"));
         assert!(recall_schema.to_string().contains("status"));
@@ -1156,7 +1212,9 @@ mod tests {
         assert!(step_mark_schema.to_string().contains("\"started\""));
         assert!(step_mark_schema.to_string().contains("\"done\""));
         assert!(step_mark_schema.to_string().contains("\"blocked\""));
-        assert!(step_mark_schema.to_string().contains("\"required\":[\"reason\"]"));
+        assert!(step_mark_schema
+            .to_string()
+            .contains("\"required\":[\"reason\"]"));
         assert!(steps_add_schema.to_string().contains("\"minItems\":1"));
 
         let record_tool = tools
@@ -1418,6 +1476,19 @@ mod tests {
 
         assert!(matches!(request.outcome, CaseFinishOutcomeInput::Completed));
         assert_eq!(request.confirm_token.as_deref(), Some("token-1"));
+    }
+
+    #[test]
+    fn case_open_request_accepts_reopen_mode() {
+        let request: CaseOpenRequest = serde_json::from_value(serde_json::json!({
+            "mode": "reopen",
+            "case_id": "C-1"
+        }))
+        .expect("reopen request should deserialize");
+
+        assert!(matches!(request.mode, CaseOpenModeInput::Reopen));
+        assert_eq!(request.case_id.as_deref(), Some("C-1"));
+        assert!(request.goal.is_none());
     }
 
     #[test]

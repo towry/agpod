@@ -2,7 +2,7 @@
 //!
 //! Keywords: commands, execute, dispatch, open, record, decide, redirect, close, step
 
-use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, StepCommand};
+use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, OpenModeArg, StepCommand};
 use crate::client::CaseClient;
 use crate::config::{CaseConfig, CaseOverrides};
 use crate::error::{CaseError, CaseResult};
@@ -170,6 +170,8 @@ pub(crate) async fn execute_command_json(
 ) -> CaseResult<serde_json::Value> {
     match command {
         CaseCommand::Open {
+            mode,
+            case_id,
             goal,
             direction,
             goal_constraints,
@@ -179,12 +181,16 @@ pub(crate) async fn execute_command_json(
         } => {
             cmd_open(
                 client,
-                goal,
-                direction,
-                goal_constraints,
-                constraints,
-                success_condition.as_deref(),
-                abort_condition.as_deref(),
+                OpenRequest {
+                    mode: *mode,
+                    reopen_case_id: case_id.as_deref(),
+                    goal: goal.as_deref(),
+                    direction: direction.as_deref(),
+                    goal_constraint_strs: goal_constraints,
+                    constraint_strs: constraints,
+                    success_condition: success_condition.as_deref(),
+                    abort_condition: abort_condition.as_deref(),
+                },
             )
             .await
         }
@@ -552,7 +558,147 @@ fn ensure_open(case: &Case) -> CaseResult<()> {
 
 // ── Command implementations ──
 
-async fn cmd_open(
+struct OpenRequest<'a> {
+    mode: OpenModeArg,
+    reopen_case_id: Option<&'a str>,
+    goal: Option<&'a str>,
+    direction: Option<&'a str>,
+    goal_constraint_strs: &'a [String],
+    constraint_strs: &'a [String],
+    success_condition: Option<&'a str>,
+    abort_condition: Option<&'a str>,
+}
+
+async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<serde_json::Value> {
+    // Check no open case exists
+    if let Some(existing) = client.find_open_case().await? {
+        return Err(CaseError::RepoHasOpenCase(existing.id));
+    }
+
+    match request.mode {
+        OpenModeArg::New => {
+            let goal = request.goal.ok_or_else(|| {
+                CaseError::InvalidOpenMode("`goal` is required when mode is `new`".to_string())
+            })?;
+            let direction = request.direction.ok_or_else(|| {
+                CaseError::InvalidOpenMode("`direction` is required when mode is `new`".to_string())
+            })?;
+            let goal_constraints = parse_constraints(request.goal_constraint_strs)?;
+            let direction_constraints = parse_constraints(request.constraint_strs)?;
+
+            let case_id = generate_case_id(client).await?;
+            let case = client
+                .create_case(&case_id, goal, &goal_constraints)
+                .await?;
+
+            let dir = client
+                .create_direction(
+                    &case_id,
+                    1,
+                    direction,
+                    &direction_constraints,
+                    request.success_condition.unwrap_or(""),
+                    request.abort_condition.unwrap_or(""),
+                    None,
+                    None,
+                )
+                .await?;
+
+            let next = NextAction {
+                suggested_command: "step add".to_string(),
+                why: "the case is open but the execution queue is still empty".to_string(),
+            };
+
+            Ok(json!({
+                "ok": true,
+                "case": output::case_json(&case),
+                "direction": output::direction_json(&dir),
+                "steps": output::steps_json(&[]),
+                "context": output::context_json(&case_id, 1),
+                "next": output::next_json(&next)
+            }))
+        }
+        OpenModeArg::Reopen => {
+            let case_id = request.reopen_case_id.ok_or_else(|| {
+                CaseError::InvalidOpenMode(
+                    "`case_id` is required when mode is `reopen`".to_string(),
+                )
+            })?;
+            if request.goal.is_some()
+                || request.direction.is_some()
+                || !request.goal_constraint_strs.is_empty()
+                || !request.constraint_strs.is_empty()
+                || request.success_condition.is_some()
+                || request.abort_condition.is_some()
+            {
+                return Err(CaseError::InvalidOpenMode(
+                    "`goal`, `direction`, constraints, and exit conditions are only allowed when mode is `new`"
+                        .to_string(),
+                ));
+            }
+
+            let case = client.get_case(case_id).await?;
+            if case.status == CaseStatus::Open {
+                return Err(CaseError::RepoHasOpenCase(case.id));
+            }
+
+            client.reopen_case(case_id).await?;
+            let reopened = client.get_case(case_id).await?;
+            let directions = client.get_directions(case_id).await?;
+            let dir = directions
+                .iter()
+                .find(|direction| direction.seq == reopened.current_direction_seq)
+                .cloned()
+                .ok_or_else(|| CaseError::Other("no direction found".to_string()))?;
+            let steps = client
+                .get_steps(case_id, reopened.current_direction_seq)
+                .await?;
+
+            let next = suggest_next(
+                &reopened,
+                steps.iter().find(|step| step.status == StepStatus::Active),
+                &steps
+                    .iter()
+                    .filter(|step| step.status == StepStatus::Pending)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &Health::OnTrack,
+            );
+
+            let next_entry_seq = client
+                .get_latest_entry(case_id)
+                .await?
+                .map(|entry| entry.seq + 1)
+                .unwrap_or(1);
+            let _ = client
+                .create_entry(
+                    case_id,
+                    next_entry_seq,
+                    EntryType::Record,
+                    Some("note"),
+                    "reopened case",
+                    None,
+                    Some("case reopened via case_open mode=reopen"),
+                    &[],
+                    &[],
+                )
+                .await?;
+
+            Ok(json!({
+                "ok": true,
+                "case": output::case_json(&reopened),
+                "direction": output::direction_json(&dir),
+                "steps": output::steps_json(&steps),
+                "context": output::context_json(case_id, reopened.current_direction_seq),
+                "message": "case reopened",
+                "next": output::next_json(&next)
+            }))
+        }
+    }
+}
+
+#[cfg(test)]
+async fn cmd_open_new(
     client: &CaseClient,
     goal: &str,
     direction: &str,
@@ -561,45 +707,20 @@ async fn cmd_open(
     success_condition: Option<&str>,
     abort_condition: Option<&str>,
 ) -> CaseResult<serde_json::Value> {
-    // Check no open case exists
-    if let Some(existing) = client.find_open_case().await? {
-        return Err(CaseError::RepoHasOpenCase(existing.id));
-    }
-
-    let goal_constraints = parse_constraints(goal_constraint_strs)?;
-    let direction_constraints = parse_constraints(constraint_strs)?;
-
-    let case_id = generate_case_id(client).await?;
-    let case = client
-        .create_case(&case_id, goal, &goal_constraints)
-        .await?;
-
-    let dir = client
-        .create_direction(
-            &case_id,
-            1,
-            direction,
-            &direction_constraints,
-            success_condition.unwrap_or(""),
-            abort_condition.unwrap_or(""),
-            None,
-            None,
-        )
-        .await?;
-
-    let next = NextAction {
-        suggested_command: "step add".to_string(),
-        why: "the case is open but the execution queue is still empty".to_string(),
-    };
-
-    Ok(json!({
-        "ok": true,
-        "case": output::case_json(&case),
-        "direction": output::direction_json(&dir),
-        "steps": output::steps_json(&[]),
-        "context": output::context_json(&case_id, 1),
-        "next": output::next_json(&next)
-    }))
+    cmd_open(
+        client,
+        OpenRequest {
+            mode: OpenModeArg::New,
+            reopen_case_id: None,
+            goal: Some(goal),
+            direction: Some(direction),
+            goal_constraint_strs,
+            constraint_strs,
+            success_condition,
+            abort_condition,
+        },
+    )
+    .await
 }
 
 async fn cmd_current(client: &CaseClient) -> CaseResult<serde_json::Value> {
@@ -1011,7 +1132,11 @@ async fn ensure_close_confirmation(
 }
 
 #[cfg(test)]
-async fn confirm_and_close(client: &CaseClient, case_id: &str, summary: &str) -> CaseResult<serde_json::Value> {
+async fn confirm_and_close(
+    client: &CaseClient,
+    case_id: &str,
+    summary: &str,
+) -> CaseResult<serde_json::Value> {
     let confirm_token = match cmd_close(client, case_id, summary, None).await {
         Err(CaseError::CloseConfirmationRequired { confirm_token, .. }) => confirm_token,
         Err(other) => return Err(other),
@@ -1713,10 +1838,10 @@ mod tests {
             .expect("repo A client should initialize");
         let client_b = client_a.clone_with_identity(identity_b);
 
-        let result_a = cmd_open(&client_a, "goal a", "direction a", &[], &[], None, None)
+        let result_a = cmd_open_new(&client_a, "goal a", "direction a", &[], &[], None, None)
             .await
             .expect("repo A should open its first case");
-        let result_b = cmd_open(&client_b, "goal b", "direction b", &[], &[], None, None)
+        let result_b = cmd_open_new(&client_b, "goal b", "direction b", &[], &[], None, None)
             .await
             .expect("repo B should open its first case on the same shared DB");
 
@@ -1755,7 +1880,7 @@ mod tests {
             .expect("repo A client should initialize");
         let client_b = client_a.clone_with_identity(identity_b);
 
-        let result_a = cmd_open(&client_a, "goal a", "direction a", &[], &[], None, None)
+        let result_a = cmd_open_new(&client_a, "goal a", "direction a", &[], &[], None, None)
             .await
             .expect("repo A should open its case");
         let case_id_a = result_a["case"]["id"]
@@ -1785,7 +1910,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -1821,7 +1946,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -1878,7 +2003,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(
+        let opened = cmd_open_new(
             &client,
             "stabilize inference rollout",
             "inspect prod readiness",
@@ -1956,7 +2081,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let first = cmd_open(&client, "goal a", "direction a", &[], &[], None, None)
+        let first = cmd_open_new(&client, "goal a", "direction a", &[], &[], None, None)
             .await
             .expect("first case should open");
         let first_id = first["case"]["id"]
@@ -1967,7 +2092,7 @@ mod tests {
             .await
             .expect("first case should close");
 
-        cmd_open(&client, "goal b", "direction b", &[], &[], None, None)
+        cmd_open_new(&client, "goal b", "direction b", &[], &[], None, None)
             .await
             .expect("second case should open");
 
@@ -2003,7 +2128,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let direct = cmd_open(
+        let direct = cmd_open_new(
             &client,
             "financial coverage decision",
             "inspect coverage",
@@ -2022,7 +2147,7 @@ mod tests {
             .await
             .expect("direct case should close");
 
-        let indirect = cmd_open(
+        let indirect = cmd_open_new(
             &client,
             "audit follow-up",
             "inspect notes",
@@ -2159,7 +2284,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2208,7 +2333,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2260,7 +2385,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2288,10 +2413,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            error_value["state"].as_str(),
-            Some("confirmation_required")
-        );
+        assert_eq!(error_value["state"].as_str(), Some("confirmation_required"));
         assert_eq!(
             error_value["confirmation"]["confirm_token"].as_str(),
             Some(confirm_token.as_str())
@@ -2319,7 +2441,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2342,6 +2464,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_mode_reopen_reopens_closed_case_without_new_tool() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        confirm_and_close(&client, &case_id, "done")
+            .await
+            .expect("close should succeed");
+
+        let reopened = cmd_open(
+            &client,
+            OpenRequest {
+                mode: OpenModeArg::Reopen,
+                reopen_case_id: Some(&case_id),
+                goal: None,
+                direction: None,
+                goal_constraint_strs: &[],
+                constraint_strs: &[],
+                success_condition: None,
+                abort_condition: None,
+            },
+        )
+        .await
+        .expect("reopen should succeed");
+
+        assert_eq!(reopened["case"]["id"].as_str(), Some(case_id.as_str()));
+        assert_eq!(reopened["case"]["status"].as_str(), Some("open"));
+        assert_eq!(reopened["message"].as_str(), Some("case reopened"));
+    }
+
+    #[tokio::test]
     async fn step_done_returns_reminder_before_case_close() {
         let temp_dir = TempDir::new().expect("temporary directory should be created");
         let config = temp_db_config(&temp_dir);
@@ -2357,7 +2528,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2400,7 +2571,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2447,7 +2618,7 @@ mod tests {
 
         let initial_constraints =
             vec![r#"{"rule":"先证据后推断","reason":"避免臆断"}"#.to_string()];
-        let opened = cmd_open(
+        let opened = cmd_open_new(
             &client,
             "goal",
             "direction",
@@ -2521,7 +2692,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2563,7 +2734,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]
@@ -2605,7 +2776,7 @@ mod tests {
         .await
         .expect("client should initialize");
 
-        let opened = cmd_open(&client, "goal", "direction", &[], &[], None, None)
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
             .await
             .expect("case should open");
         let case_id = opened["case"]["id"]

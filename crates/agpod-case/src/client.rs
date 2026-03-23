@@ -310,6 +310,22 @@ impl CaseClient {
         Ok(())
     }
 
+    pub async fn reopen_case(&self, case_id: &str) -> CaseResult<()> {
+        let now = Utc::now().to_rfc3339();
+        self.query_raw(
+            "UPDATE case SET status = 'open', updated_at = $updated_at, \
+             closed_at = '', close_summary = '', abandoned_at = '', abandon_summary = '', \
+             close_confirm_token = '', close_confirm_action = '', close_confirm_summary = '' \
+             WHERE case_id = $case_id",
+            json!({
+                "case_id": case_id,
+                "updated_at": now,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn update_case_goal_constraints(
         &self,
         case_id: &str,

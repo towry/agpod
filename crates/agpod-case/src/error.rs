@@ -32,6 +32,9 @@ pub enum CaseError {
     #[error("case is not open: {0}")]
     CaseNotOpen(String),
 
+    #[error("invalid open mode: {0}")]
+    InvalidOpenMode(String),
+
     #[error("redirect requires both success_condition and abort_condition")]
     MissingDirectionExitConditions,
 
@@ -65,10 +68,7 @@ pub enum CaseError {
     },
 
     #[error("invalid close confirmation token")]
-    InvalidCloseConfirmationToken {
-        case_id: String,
-        action: String,
-    },
+    InvalidCloseConfirmationToken { case_id: String, action: String },
 
     #[error(
         "invalid record kind: {kind}; use one of {allowed}, or call `case_decide` for decisions"
