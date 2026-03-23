@@ -8,8 +8,13 @@ use agpod_case::{
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
+    model::{
+        CallToolResult, Content, Implementation, InitializeRequestParams, InitializeResult,
+        JsonObject, ProtocolVersion, ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -150,9 +155,20 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "agpod case MCP. One open case per repo. Start with `case_current`; if a case is open, call `case_resume` before deciding whether to use step tools, `case_record`, `case_decide`, or `case_redirect`. Call `case_open` only when `case_current` reports no open case. Tools return structured JSON aligned with `agpod case --json`.",
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
+            .with_server_info(Implementation::from_build_env())
+            .with_instructions(
+                "agpod case MCP. One open case per repo. Start each session with `case_current`. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_list` and `case_recall` for safe discovery across past cases. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
+            )
+    }
+
+    async fn initialize(
+        &self,
+        _request: InitializeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        Ok(self.get_info())
     }
 }
 
@@ -750,7 +766,9 @@ fn describe_case_open_request_schema(schema: &mut schemars::Schema) {
                         "goal": { "maxLength": 0 },
                         "direction": { "maxLength": 0 },
                         "goal_constraints": { "maxItems": 0 },
-                        "constraints": { "maxItems": 0 }
+                        "constraints": { "maxItems": 0 },
+                        "success_condition": { "maxLength": 0 },
+                        "abort_condition": { "maxLength": 0 }
                     }
                 }
             }
@@ -1201,6 +1219,12 @@ mod tests {
         assert!(open_schema
             .to_string()
             .contains("\"required\":[\"goal\",\"direction\"]"));
+        assert!(open_schema
+            .to_string()
+            .contains("\"success_condition\":{\"maxLength\":0}"));
+        assert!(open_schema
+            .to_string()
+            .contains("\"abort_condition\":{\"maxLength\":0}"));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
         assert!(recall_schema.to_string().contains("recent_days"));
         assert!(recall_schema.to_string().contains("status"));
