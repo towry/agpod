@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Case server for shared agpod case database access"
+keywords = ["agpod", "case", "server"]
 
 [[bin]]
 name = "agpod-case-server"

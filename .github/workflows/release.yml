@@ -23,6 +23,8 @@ jobs:
       agpod_release_created: ${{ steps.release.outputs['crates/agpod--release_created'] }}
       agpod_mcp_tag_name: ${{ steps.release.outputs['crates/agpod-mcp--tag_name'] }}
       agpod_mcp_release_created: ${{ steps.release.outputs['crates/agpod-mcp--release_created'] }}
+      agpod_case_server_tag_name: ${{ steps.release.outputs['crates/agpod-case-server--tag_name'] }}
+      agpod_case_server_release_created: ${{ steps.release.outputs['crates/agpod-case-server--release_created'] }}
     steps:
       - name: Run release-please
         id: release
@@ -56,3 +58,13 @@ jobs:
       smoke_test_command: |
         npx -y @modelcontextprotocol/inspector --cli --transport stdio --method tools/list target/aarch64-apple-darwin/release/agpod-mcp > /tmp/agpod-mcp-tools-list.json
         test -s /tmp/agpod-mcp-tools-list.json
+
+
+  build_artifacts_agpod_case_server:
+    name: Build Artifacts agpod-case-server
+    needs: release_please
+    if: ${{ needs.release_please.outputs.agpod_case_server_release_created == 'true' }}
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      tag_name: ${{ needs.release_please.outputs.agpod_case_server_tag_name }}
+      bin_name: agpod-case-server
