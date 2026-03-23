@@ -30,6 +30,12 @@
       "changelog-path": "CHANGELOG.md",
       "component": "agpod-case"
     },
+    "crates/agpod-case-server": {
+      "release-type": "rust",
+      "package-name": "agpod-case-server",
+      "changelog-path": "CHANGELOG.md",
+      "component": "agpod-case-server"
+    },
     "crates/agpod-vcs-path": {
       "release-type": "rust",
       "package-name": "agpod-vcs-path",

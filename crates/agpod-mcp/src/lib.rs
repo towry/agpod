@@ -16,17 +16,27 @@ use std::sync::{Arc, OnceLock};
 #[derive(Debug, Clone)]
 pub struct AgpodMcpServer {
     data_dir: Option<String>,
+    server_addr: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
 impl AgpodMcpServer {
     pub fn new() -> Self {
-        Self::with_data_dir(std::env::var("AGPOD_CASE_DATA_DIR").ok())
+        Self::with_case_config(
+            std::env::var("AGPOD_CASE_DATA_DIR").ok(),
+            std::env::var("AGPOD_CASE_SERVER_ADDR").ok(),
+        )
     }
 
+    #[cfg(test)]
     fn with_data_dir(data_dir: Option<String>) -> Self {
+        Self::with_case_config(data_dir, None)
+    }
+
+    fn with_case_config(data_dir: Option<String>, server_addr: Option<String>) -> Self {
         Self {
             data_dir,
+            server_addr,
             tool_router: Self::tool_router(),
         }
     }
@@ -53,6 +63,8 @@ impl AgpodMcpServer {
     ) -> Result<Map<String, Value>, ErrorData> {
         let args = CaseArgs {
             data_dir: self.data_dir.clone(),
+            server_addr: self.server_addr.clone(),
+            repo_root: None,
             json: true,
             command,
         };
@@ -76,7 +88,6 @@ impl AgpodMcpServer {
         }
         .into_call_tool_result()
     }
-
 }
 
 impl Default for AgpodMcpServer {
@@ -371,7 +382,13 @@ impl AgpodMcpServer {
                 },
             })
             .collect();
-        let results = agpod_case::run_json_batch(self.data_dir.clone(), commands).await;
+        let results = agpod_case::run_json_batch(
+            self.data_dir.clone(),
+            self.server_addr.clone(),
+            None,
+            commands,
+        )
+        .await;
 
         for (index, (step, mut result)) in req.steps.into_iter().zip(results).enumerate() {
             if let Some(obj) = result.as_object_mut() {
@@ -1151,5 +1168,4 @@ mod tests {
             }))
         );
     }
-
 }

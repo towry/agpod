@@ -3,6 +3,7 @@ members = [
     "crates/agpod-core",
     "crates/agpod-diff",
     "crates/agpod-case",
+    "crates/agpod-case-server",
     "crates/agpod-vcs-path",
     "crates/agpod-mcp",
     "crates/agpod",
@@ -21,6 +22,7 @@ repository = "https://github.com/towry/agpod"
 agpod-core = { path = "crates/agpod-core" }
 agpod-diff = { path = "crates/agpod-diff" }
 agpod-case = { path = "crates/agpod-case" }
+agpod-case-server = { path = "crates/agpod-case-server" }
 agpod-vcs-path = { path = "crates/agpod-vcs-path" }
 agpod-mcp = { path = "crates/agpod-mcp" }
 

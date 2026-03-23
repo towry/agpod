@@ -19,6 +19,13 @@ use surrealdb::Surreal;
 const DB_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const DB_LOCK_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Clone)]
+pub struct SharedDbHandle {
+    db: Surreal<Db>,
+    db_lock: Arc<File>,
+}
+
+#[derive(Clone)]
 pub struct CaseClient {
     db: Surreal<Db>,
     _db_lock: Arc<File>,
@@ -36,17 +43,14 @@ impl CaseClient {
                 .map_err(|e| CaseError::DbInit(format!("failed to create data directory: {e}")))?;
         }
 
-        let db_lock = acquire_db_lock(config).await?;
-        let db = connect_with_retry(config).await?;
+        let shared = SharedDbHandle::connect(config).await?;
+        Self::from_shared(shared, identity).await
+    }
 
-        db.use_ns("agpod")
-            .use_db("case")
-            .await
-            .map_err(|e| CaseError::DbInit(format!("namespace/db init: {e}")))?;
-
+    pub async fn from_shared(shared: SharedDbHandle, identity: RepoIdentity) -> CaseResult<Self> {
         let client = Self {
-            db,
-            _db_lock: db_lock,
+            db: shared.db,
+            _db_lock: shared.db_lock,
             repo_id: identity.repo_id,
             repo_label: identity.repo_label,
             worktree_id: identity.worktree_id,
@@ -56,6 +60,32 @@ impl CaseClient {
         Ok(client)
     }
 
+    pub fn clone_with_identity(&self, identity: RepoIdentity) -> Self {
+        Self {
+            db: self.db.clone(),
+            _db_lock: self._db_lock.clone(),
+            repo_id: identity.repo_id,
+            repo_label: identity.repo_label,
+            worktree_id: identity.worktree_id,
+            worktree_root: identity.worktree_root,
+        }
+    }
+}
+
+impl SharedDbHandle {
+    pub async fn connect(config: &DbConfig) -> CaseResult<Self> {
+        let db_lock = acquire_db_lock(config).await?;
+        let db = connect_with_retry(config).await?;
+        db.use_ns("agpod")
+            .use_db("case")
+            .await
+            .map_err(|e| CaseError::DbInit(format!("namespace/db init: {e}")))?;
+
+        Ok(Self { db, db_lock })
+    }
+}
+
+impl CaseClient {
     async fn ensure_schema(&self) -> CaseResult<()> {
         let schema = "
             DEFINE TABLE IF NOT EXISTS case SCHEMAFULL;
@@ -124,18 +154,6 @@ impl CaseClient {
             .map_err(|e| CaseError::DbInit(format!("schema init: {e}")))?;
 
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clone_with_identity(&self, identity: RepoIdentity) -> Self {
-        Self {
-            db: self.db.clone(),
-            _db_lock: self._db_lock.clone(),
-            repo_id: identity.repo_id,
-            repo_label: identity.repo_label,
-            worktree_id: identity.worktree_id,
-            worktree_root: identity.worktree_root,
-        }
     }
 
     // ── Internal query helper ──

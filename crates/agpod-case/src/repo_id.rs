@@ -3,13 +3,14 @@
 //! Keywords: repo-id, repository identity, git remote, normalize url
 
 use crate::error::{CaseError, CaseResult};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 /// Normalized repo identity derived from git remote URL.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoIdentity {
     /// Stable hex hash: hex(sha256("v1:" + normalized))[0..16]
     pub repo_id: String,

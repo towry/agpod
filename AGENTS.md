@@ -9,6 +9,14 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 - `cargo clippy -p <crate> -- -D warnings` — lint (CI enforces `-D warnings`)
 - `cargo fmt -p <crate> -- --check` — format check (CI enforces)
 - Before committing: run `cargo fmt` and `cargo clippy -- -D warnings` on changed crates
+- For quick dev smoke on local build artifacts: first run `cargo build -p agpod -p agpod-mcp -p agpod-case-server`
+- For case CLI smoke with isolated data: use `AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke.db AGPOD_CASE_SERVER_ADDR=127.0.0.1:6142 target/debug/agpod case list --json`
+- For cross-repo case smoke: use `AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke.db target/debug/agpod case --repo-root <abs-repo-path> list --json`
+- For explicit server smoke: run `target/debug/agpod-case-server --data-dir /tmp/agpod-case-smoke.db --server-addr 127.0.0.1:6142`, then in another shell run `target/debug/agpod case current --json`
+- For concurrent multi-repo smoke against case-server: create two temp git repos with different remotes, point both to one `AGPOD_CASE_DATA_DIR` and one `AGPOD_CASE_SERVER_ADDR`, then run `target/debug/agpod case --repo-root <repo-a> open ...` and `target/debug/agpod case --repo-root <repo-b> open ...` in parallel; both `open` and follow-up `list --json` should succeed, proving the server reuses one DB client across requests
+- For MCP smoke on local build output: run `target/debug/agpod-mcp` and verify `case_current` / `case_open` over stdio; if you need example command patterns, see `.agents/docs/feedback.md`
+- For MCP stdio debugging: keep stdin open and send one JSON-RPC per line in order `initialize` -> `notifications/initialized` -> `tools/list` -> `tools/call`; a working local smoke is `cd <repo> && AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke-stdio.db python3 - <<'PY'` then spawn `target/debug/agpod-mcp`, write JSON lines, and read line responses
+- For MCP stdio call shape: `tools/call` uses `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"case_current","arguments":{}}}`; local smoke should return structured `isError: true` with message `no open case in this repository` on an empty temp DB
 
 ## Workspace Structure
 

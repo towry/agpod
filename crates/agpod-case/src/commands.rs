@@ -4,10 +4,11 @@
 
 use crate::cli::{CaseArgs, CaseCommand, StepCommand};
 use crate::client::CaseClient;
-use crate::config::DbConfig;
+use crate::config::{CaseConfig, CaseOverrides};
 use crate::error::{CaseError, CaseResult};
 use crate::output;
 use crate::repo_id::RepoIdentity;
+use crate::server_client::execute_via_server;
 use crate::types::*;
 use crate::GoalDriftFlag;
 use anyhow::Result;
@@ -32,10 +33,15 @@ pub async fn execute(args: CaseArgs) -> Result<()> {
 
 pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let json_mode = args.json;
-    let setup = setup_client(args.data_dir.as_deref()).await;
+    let setup = setup_runtime(
+        args.data_dir.as_deref(),
+        args.server_addr.as_deref(),
+        args.repo_root.as_deref(),
+    )
+    .await;
 
-    let client = match setup {
-        Ok(client) => client,
+    let (config, identity) = match setup {
+        Ok(runtime) => runtime,
         Err(e) => {
             let mut err_value = output::error_json("error", &e.to_string(), None);
             err_value["_meta"] = json!({ "json_mode": json_mode });
@@ -43,23 +49,29 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
         }
     };
 
-    finish_json_value(
-        execute_command_json(&client, &args.command).await,
-        &client,
-        &args.command,
-        json_mode,
-    )
-    .await
+    match execute_via_server(&config, identity, args.command.clone()).await {
+        Ok(mut value) => {
+            value["_meta"] = json!({ "json_mode": json_mode });
+            value
+        }
+        Err(e) => {
+            let mut err_value = output::error_json("error", &e.to_string(), None);
+            err_value["_meta"] = json!({ "json_mode": json_mode });
+            err_value
+        }
+    }
 }
 
 pub async fn execute_json_batch(
     data_dir: Option<&str>,
+    server_addr: Option<&str>,
+    repo_root: Option<&str>,
     commands: Vec<CaseCommand>,
 ) -> Vec<serde_json::Value> {
-    let setup = setup_client(data_dir).await;
+    let setup = setup_runtime(data_dir, server_addr, repo_root).await;
 
-    let client = match setup {
-        Ok(client) => client,
+    let (config, identity) = match setup {
+        Ok(runtime) => runtime,
         Err(e) => {
             let mut err_value = output::error_json("error", &e.to_string(), None);
             err_value["_meta"] = json!({ "json_mode": true });
@@ -67,9 +79,30 @@ pub async fn execute_json_batch(
         }
     };
 
-    execute_json_batch_with_client(&client, commands, true).await
+    let mut values = Vec::with_capacity(commands.len());
+    for command in commands {
+        match execute_via_server(&config, identity.clone(), command).await {
+            Ok(mut value) => {
+                value["_meta"] = json!({ "json_mode": true });
+                let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                values.push(value);
+                if !ok {
+                    break;
+                }
+            }
+            Err(e) => {
+                let mut err_value = output::error_json("error", &e.to_string(), None);
+                err_value["_meta"] = json!({ "json_mode": true });
+                values.push(err_value);
+                break;
+            }
+        }
+    }
+
+    values
 }
 
+#[cfg(test)]
 async fn execute_json_batch_with_client(
     client: &CaseClient,
     commands: Vec<CaseCommand>,
@@ -94,14 +127,24 @@ async fn execute_json_batch_with_client(
     values
 }
 
-async fn setup_client(data_dir: Option<&str>) -> Result<CaseClient> {
-    let config = DbConfig::from_data_dir(data_dir);
-    let cwd = std::env::current_dir()?;
-    let identity = RepoIdentity::resolve_from(&cwd)?;
-    Ok(CaseClient::new(&config, identity).await?)
+async fn setup_runtime(
+    data_dir: Option<&str>,
+    server_addr: Option<&str>,
+    repo_root: Option<&str>,
+) -> Result<(CaseConfig, RepoIdentity)> {
+    let config = CaseConfig::load(CaseOverrides {
+        data_dir,
+        server_addr,
+    });
+    let root = match repo_root {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    let identity = RepoIdentity::resolve_from(&root)?;
+    Ok((config, identity))
 }
 
-async fn finish_json_value(
+pub(crate) async fn finish_json_value(
     result: CaseResult<serde_json::Value>,
     client: &CaseClient,
     command: &CaseCommand,
@@ -120,7 +163,7 @@ async fn finish_json_value(
     }
 }
 
-async fn execute_command_json(
+pub(crate) async fn execute_command_json(
     client: &CaseClient,
     command: &CaseCommand,
 ) -> CaseResult<serde_json::Value> {
