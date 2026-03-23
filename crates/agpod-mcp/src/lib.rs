@@ -2,14 +2,14 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
-use agpod_case::{CaseArgs, CaseCommand, GoalDriftFlag, StepCommand};
+use agpod_case::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, StepCommand};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, JsonObject, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use std::sync::{Arc, OnceLock};
 
@@ -149,7 +149,7 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "agpod case MCP. One open case per repo. Flow: `case_open` -> step tools -> `case_record`/`case_decide`/`case_redirect` -> `case_close` or `case_abandon`. Tools return structured JSON aligned with `agpod case --json`.",
+            "agpod case MCP. One open case per repo. Start with `case_current`; if a case is open, call `case_resume` before deciding whether to use step tools, `case_record`, `case_decide`, or `case_redirect`. Call `case_open` only when `case_current` reports no open case. Tools return structured JSON aligned with `agpod case --json`.",
         )
     }
 }
@@ -158,7 +158,7 @@ impl ServerHandler for AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "case_current",
-        description = "Read active case state. Safe first call.",
+        description = "Read active case state. Preferred first call for a new session.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_current(
@@ -171,7 +171,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_open",
-        description = "Open the repo's only active case. Call first.",
+        description = "Open the repo's only active case, but only when `case_current` shows there is no open case.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_open(
@@ -207,7 +207,10 @@ impl AgpodMcpServer {
             CaseCommand::Record {
                 id: req.id.clone(),
                 summary: req.summary,
-                kind: req.kind.unwrap_or_else(|| "note".to_string()),
+                kind: req
+                    .kind
+                    .map(|kind| kind.as_str().to_string())
+                    .unwrap_or_else(|| "note".to_string()),
                 files: req.files.map(|files| files.join(",")),
                 context: req.context,
             },
@@ -310,29 +313,49 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_list",
-        description = "List repo cases. Safe discovery call.",
+        description = "List repo cases with optional status, recency, and limit filters. Safe discovery call.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_list(
         &self,
-        Parameters(_req): Parameters<CaseCurrentRequest>,
+        Parameters(req): Parameters<CaseListRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool("case_list", CaseCommand::List, None)
-            .await
+        validate_list_request(req.limit, req.recent_days)?;
+
+        self.run_case_tool(
+            "case_list",
+            CaseCommand::List {
+                status: req.status.map(Into::into),
+                limit: req.limit,
+                recent_days: req.recent_days,
+            },
+            None,
+        )
+        .await
     }
 
     #[tool(
         name = "case_recall",
-        description = "Search past cases by text.",
+        description = "Search past cases by weighted text match, with optional status, recency, and limit filters.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_recall(
         &self,
         Parameters(req): Parameters<CaseRecallRequest>,
     ) -> Result<CallToolResult, ErrorData> {
+        validate_list_request(req.limit, req.recent_days)?;
+        if req.query.trim().is_empty() {
+            return Err(ErrorData::invalid_params("query must not be empty", None));
+        }
+
         self.run_case_tool(
             "case_recall",
-            CaseCommand::Recall { query: req.query },
+            CaseCommand::Recall {
+                query: req.query,
+                status: req.status.map(Into::into),
+                limit: req.limit,
+                recent_days: req.recent_days,
+            },
             None,
         )
         .await
@@ -724,11 +747,52 @@ pub struct CaseRecordRequest {
     /// Fact summary.
     pub summary: String,
     /// note, finding, evidence, or blocker.
-    pub kind: Option<String>,
+    pub kind: Option<RecordKindArg>,
     /// Related file paths.
     pub files: Option<Vec<String>>,
     /// Extra context.
     pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordKindArg {
+    Note,
+    Finding,
+    Evidence,
+    Blocker,
+}
+
+impl RecordKindArg {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Finding => "finding",
+            Self::Evidence => "evidence",
+            Self::Blocker => "blocker",
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordKindArg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        match raw.as_str() {
+            "note" => Ok(Self::Note),
+            "finding" => Ok(Self::Finding),
+            "evidence" => Ok(Self::Evidence),
+            "blocker" => Ok(Self::Blocker),
+            "decision" => Err(D::Error::custom(
+                "invalid record kind `decision`; use `case_decide` because decisions require a reason",
+            )),
+            _ => Err(D::Error::custom(format!(
+                "invalid record kind `{raw}`; expected one of `note`, `finding`, `evidence`, `blocker`"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -789,6 +853,40 @@ pub struct CaseFinishRequest {
 pub struct CaseRecallRequest {
     /// Search query.
     pub query: String,
+    /// Optional case status filter.
+    pub status: Option<CaseStatusInput>,
+    /// Limit result count.
+    pub limit: Option<usize>,
+    /// Only include cases updated within the last N days.
+    pub recent_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct CaseListRequest {
+    /// Optional case status filter.
+    pub status: Option<CaseStatusInput>,
+    /// Limit result count.
+    pub limit: Option<usize>,
+    /// Only include cases updated within the last N days.
+    pub recent_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseStatusInput {
+    Open,
+    Closed,
+    Abandoned,
+}
+
+impl From<CaseStatusInput> for CaseStatusArg {
+    fn from(value: CaseStatusInput) -> Self {
+        match value {
+            CaseStatusInput::Open => CaseStatusArg::Open,
+            CaseStatusInput::Closed => CaseStatusArg::Closed,
+            CaseStatusInput::Abandoned => CaseStatusArg::Abandoned,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -883,6 +981,21 @@ where
     Ok(result)
 }
 
+fn validate_list_request(limit: Option<usize>, recent_days: Option<u32>) -> Result<(), ErrorData> {
+    if matches!(limit, Some(0)) {
+        return Err(ErrorData::invalid_params("limit must be at least 1", None));
+    }
+
+    if matches!(recent_days, Some(0)) {
+        return Err(ErrorData::invalid_params(
+            "recent_days must be at least 1",
+            None,
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,6 +1019,12 @@ mod tests {
             .expect("schema should serialize");
         assert!(schema.contains("\"kind\""));
         assert!(schema.contains("\"raw\""));
+
+        let info = server.get_info();
+        assert!(info.instructions.is_some());
+        let instructions = info.instructions.expect("instructions should exist");
+        assert!(instructions.contains("case_current"));
+        assert!(instructions.contains("case_resume"));
     }
 
     #[test]
@@ -931,10 +1050,61 @@ mod tests {
             .expect("case_redirect tool should exist");
         let redirect_schema =
             serde_json::to_value(&redirect_tool.input_schema).expect("schema should serialize");
+        let recall_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_recall")
+            .expect("case_recall tool should exist");
+        let recall_schema =
+            serde_json::to_value(&recall_tool.input_schema).expect("schema should serialize");
+        let list_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_list")
+            .expect("case_list tool should exist");
+        let list_schema =
+            serde_json::to_value(&list_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
+        assert!(recall_schema.to_string().contains("recent_days"));
+        assert!(recall_schema.to_string().contains("status"));
+        assert!(list_schema.to_string().contains("limit"));
+
+        let record_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_record")
+            .expect("case_record tool should exist");
+        let record_schema =
+            serde_json::to_value(&record_tool.input_schema).expect("schema should serialize");
+        let record_schema_text = record_schema.to_string();
+        assert!(record_schema_text.contains("\"note\""));
+        assert!(record_schema_text.contains("\"finding\""));
+        assert!(record_schema_text.contains("\"evidence\""));
+        assert!(record_schema_text.contains("\"blocker\""));
+        assert!(!record_schema_text.contains("\"decision\""));
+    }
+
+    #[test]
+    fn record_kind_deserialize_points_decision_to_case_decide() {
+        let error = serde_json::from_value::<CaseRecordRequest>(serde_json::json!({
+            "id": "C-1",
+            "summary": "bad call",
+            "kind": "decision"
+        }))
+        .expect_err("decision should not deserialize as record kind");
+
+        assert!(error.to_string().contains("use `case_decide`"));
+    }
+
+    #[test]
+    fn list_request_validation_rejects_zero_values() {
+        let limit_error =
+            validate_list_request(Some(0), None).expect_err("zero limit should be rejected");
+        assert!(limit_error.message.contains("limit"));
+
+        let recent_error =
+            validate_list_request(None, Some(0)).expect_err("zero recent_days should be rejected");
+        assert!(recent_error.message.contains("recent_days"));
     }
 
     #[test]

@@ -11,6 +11,14 @@ pub enum GoalDriftFlag {
     No,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseStatusArg {
+    Open,
+    Closed,
+    Abandoned,
+}
+
 #[derive(Debug, Args)]
 pub struct CaseArgs {
     /// SurrealDB data directory (default: $XDG_DATA_HOME/agpod/case.db)
@@ -177,10 +185,34 @@ pub enum CaseCommand {
     Recall {
         /// Search query
         query: String,
+
+        /// Filter by case status
+        #[arg(long, value_enum)]
+        status: Option<CaseStatusArg>,
+
+        /// Limit result count
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Only include cases updated within the last N days
+        #[arg(long = "recent-days")]
+        recent_days: Option<u32>,
     },
 
     /// List all cases for this repository
-    List,
+    List {
+        /// Filter by case status
+        #[arg(long, value_enum)]
+        status: Option<CaseStatusArg>,
+
+        /// Limit result count
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Only include cases updated within the last N days
+        #[arg(long = "recent-days")]
+        recent_days: Option<u32>,
+    },
 
     /// Resume brief for handoff
     Resume {

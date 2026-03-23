@@ -138,23 +138,110 @@ fn render_case_list(cases: &[Value], query: Option<&str>) {
         }
         return;
     }
-    for case in cases {
-        let id = case.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        let status = case.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-        let goal = case.get("goal").and_then(|v| v.as_str()).unwrap_or("?");
-        println!("{id}  [{status}]  {goal}");
-        if let Some(matches) = case.get("matches").and_then(|v| v.as_array()) {
-            for matched in matches.iter().take(3) {
-                let scope = matched.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
-                let field = matched.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                let excerpt = matched
-                    .get("excerpt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                println!("  - match {scope}.{field}: {excerpt}");
-            }
+
+    let grouped_cases = group_cases_by_status(cases);
+    for (index, (label, cases_in_group)) in grouped_cases.iter().enumerate() {
+        let case_count = cases_in_group.len();
+        let mut group_tree = Tree::new(format!("{label} ({case_count}, newest first)"));
+        for (case_index, case) in cases_in_group.iter().enumerate() {
+            group_tree.push(render_case_list_item_tree(case, case_index + 1));
+        }
+        println!("{group_tree}");
+        if index + 1 < grouped_cases.len() {
+            println!();
         }
     }
+}
+
+fn render_case_list_item_tree(case: &Value, index: usize) -> Tree<String> {
+    let id = case.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+    let goal = case.get("goal").and_then(|v| v.as_str()).unwrap_or("?");
+    let updated_at = case
+        .get("timestamps")
+        .and_then(|timestamps| compact_timestamp_text(timestamps, "updated_at"))
+        .unwrap_or_else(|| "?".to_string());
+
+    let mut node = Tree::new(format!("{index}. {id}"));
+    node.push(Tree::new(format!("updated_at: {updated_at}")));
+    node.push(Tree::new(format!("goal: {goal}")));
+    if let Some(timestamps) = case.get("timestamps") {
+        if let Some(opened_at) = compact_timestamp_text(timestamps, "opened_at") {
+            node.push(Tree::new(format!("opened_at: {opened_at}")));
+        }
+    }
+    if let Some(matches) = case.get("matches").and_then(|v| v.as_array()) {
+        for matched in matches.iter().take(3) {
+            let scope = matched.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
+            let field = matched.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+            let excerpt = matched
+                .get("excerpt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            node.push(Tree::new(format!("match {scope}.{field}: {excerpt}")));
+        }
+    }
+    node
+}
+
+fn group_cases_by_status<'a>(cases: &'a [Value]) -> Vec<(&'static str, Vec<&'a Value>)> {
+    let mut open_cases = Vec::new();
+    let mut closed_cases = Vec::new();
+    let mut abandoned_cases = Vec::new();
+    let mut other_cases = Vec::new();
+
+    for case in cases {
+        match case.get("status").and_then(|v| v.as_str()).unwrap_or("?") {
+            "open" => open_cases.push(case),
+            "closed" => closed_cases.push(case),
+            "abandoned" => abandoned_cases.push(case),
+            _ => other_cases.push(case),
+        }
+    }
+
+    sort_case_values_by_recency(&mut open_cases);
+    sort_case_values_by_recency(&mut closed_cases);
+    sort_case_values_by_recency(&mut abandoned_cases);
+    sort_case_values_by_recency(&mut other_cases);
+
+    let mut groups = Vec::new();
+    if !open_cases.is_empty() {
+        groups.push(("open cases", open_cases));
+    }
+    if !closed_cases.is_empty() {
+        groups.push(("closed cases", closed_cases));
+    }
+    if !abandoned_cases.is_empty() {
+        groups.push(("abandoned cases", abandoned_cases));
+    }
+    if !other_cases.is_empty() {
+        groups.push(("other cases", other_cases));
+    }
+
+    groups
+}
+
+fn sort_case_values_by_recency(cases: &mut Vec<&Value>) {
+    cases.sort_by(|left, right| compare_case_value_recency(left, right));
+}
+
+fn compare_case_value_recency(left: &Value, right: &Value) -> std::cmp::Ordering {
+    case_value_updated_at(right)
+        .cmp(&case_value_updated_at(left))
+        .then_with(|| case_value_id(right).cmp(case_value_id(left)))
+}
+
+fn case_value_updated_at(case: &Value) -> Option<DateTime<chrono::Utc>> {
+    case.get("timestamps")
+        .and_then(|timestamps| timestamp_utc_value(timestamps, "updated_at"))
+        .or_else(|| {
+            case.get("timestamps")
+                .and_then(|timestamps| timestamp_local_value(timestamps, "updated_at"))
+        })
+        .and_then(parse_rfc3339_utc)
+}
+
+fn case_value_id(case: &Value) -> &str {
+    case.get("id").and_then(|v| v.as_str()).unwrap_or("")
 }
 
 fn render_case_header(case: &Value) {
@@ -621,16 +708,38 @@ pub fn context_json(case_id: &str, direction_seq: u32) -> Value {
 }
 
 fn render_timestamp_line(label: &str, timestamps: &Value, key: &str) {
-    let local_key = format!("{key}_local");
-    let utc_key = format!("{key}_utc");
-    let local = timestamps.get(&local_key).and_then(|v| v.as_str());
-    let utc = timestamps.get(&utc_key).and_then(|v| v.as_str());
+    let local = timestamp_local_value(timestamps, key);
+    let utc = timestamp_utc_value(timestamps, key);
     match (local, utc) {
         (Some(local), Some(utc)) => println!("{label}: {local} (utc: {utc})"),
         (Some(local), None) => println!("{label}: {local}"),
         (None, Some(utc)) => println!("{label}_utc: {utc}"),
         (None, None) => {}
     }
+}
+
+fn compact_timestamp_text(timestamps: &Value, key: &str) -> Option<String> {
+    timestamp_local_value(timestamps, key)
+        .map(ToOwned::to_owned)
+        .or_else(|| timestamp_utc_value(timestamps, key).map(ToOwned::to_owned))
+}
+
+fn timestamp_local_value<'a>(timestamps: &'a Value, key: &str) -> Option<&'a str> {
+    timestamps
+        .get(format!("{key}_local"))
+        .and_then(|value| value.as_str())
+}
+
+fn timestamp_utc_value<'a>(timestamps: &'a Value, key: &str) -> Option<&'a str> {
+    timestamps
+        .get(format!("{key}_utc"))
+        .and_then(|value| value.as_str())
+}
+
+fn parse_rfc3339_utc(raw: &str) -> Option<DateTime<chrono::Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc))
 }
 
 fn localize_timestamp(raw: &str) -> Option<String> {
@@ -746,5 +855,82 @@ mod tests {
             "2026-03-21T00:00:00Z"
         );
         assert!(result["timestamps"]["opened_at_local"].as_str().is_some());
+    }
+
+    #[test]
+    fn compact_timestamp_text_prefers_local_time() {
+        let timestamps = json!({
+            "updated_at_local": "2026-03-21T09:00:00+08:00",
+            "updated_at_utc": "2026-03-21T01:00:00Z"
+        });
+
+        let rendered =
+            compact_timestamp_text(&timestamps, "updated_at").expect("timestamp should exist");
+
+        assert_eq!(rendered, "2026-03-21T09:00:00+08:00");
+    }
+
+    #[test]
+    fn group_cases_by_status_orders_sections_open_closed_abandoned() {
+        let cases = vec![
+            json!({"id":"C-3","status":"abandoned","goal":"third"}),
+            json!({"id":"C-1","status":"closed","goal":"first"}),
+            json!({"id":"C-2","status":"open","goal":"second"}),
+            json!({"id":"C-4","status":"closed","goal":"fourth"}),
+        ];
+
+        let grouped = group_cases_by_status(&cases);
+
+        assert_eq!(grouped.len(), 3);
+        assert_eq!(grouped[0].0, "open cases");
+        assert_eq!(grouped[0].1[0]["id"], "C-2");
+        assert_eq!(grouped[1].0, "closed cases");
+        assert_eq!(grouped[1].1.len(), 2);
+        assert_eq!(grouped[2].0, "abandoned cases");
+        assert_eq!(grouped[2].1[0]["id"], "C-3");
+    }
+
+    #[test]
+    fn group_cases_by_status_sorts_each_group_by_updated_at_desc() {
+        let cases = vec![
+            json!({
+                "id":"C-older",
+                "status":"closed",
+                "goal":"older",
+                "timestamps":{"updated_at_utc":"2026-03-21T01:00:00Z"}
+            }),
+            json!({
+                "id":"C-newer",
+                "status":"closed",
+                "goal":"newer",
+                "timestamps":{"updated_at_utc":"2026-03-23T01:00:00Z"}
+            }),
+        ];
+
+        let grouped = group_cases_by_status(&cases);
+
+        assert_eq!(grouped[0].0, "closed cases");
+        assert_eq!(grouped[0].1[0]["id"], "C-newer");
+        assert_eq!(grouped[0].1[1]["id"], "C-older");
+    }
+
+    #[test]
+    fn render_case_list_item_tree_includes_goal_and_updated_at() {
+        let case = json!({
+            "id":"C-1",
+            "status":"closed",
+            "goal":"improve terminal readability",
+            "timestamps":{
+                "updated_at_local":"2026-03-23T15:30:00+08:00",
+                "opened_at_local":"2026-03-23T14:00:00+08:00"
+            }
+        });
+
+        let tree = render_case_list_item_tree(&case, 1).to_string();
+
+        assert!(tree.contains("1. C-1"));
+        assert!(tree.contains("updated_at: 2026-03-23T15:30:00+08:00"));
+        assert!(tree.contains("goal: improve terminal readability"));
+        assert!(tree.contains("opened_at: 2026-03-23T14:00:00+08:00"));
     }
 }

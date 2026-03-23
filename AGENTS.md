@@ -10,6 +10,7 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 - `cargo fmt -p <crate> -- --check` — format check (CI enforces)
 - Before committing: run `cargo fmt` and `cargo clippy -- -D warnings` on changed crates
 - For quick dev smoke on local build artifacts: first run `cargo build -p agpod -p agpod-mcp -p agpod-case-server`
+- If you changed `agpod-case` CLI/RPC shapes, rebuild `agpod-case-server` too before MCP smoke, because `agpod-mcp` auto-starts that sibling binary and stale builds can reject new request payloads
 - For case CLI smoke with isolated data: use `AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke.db AGPOD_CASE_SERVER_ADDR=127.0.0.1:6142 target/debug/agpod case list --json`
 - For cross-repo case smoke: use `AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke.db target/debug/agpod case --repo-root <abs-repo-path> list --json`
 - For explicit server smoke: run `target/debug/agpod-case-server --data-dir /tmp/agpod-case-smoke.db --server-addr 127.0.0.1:6142`, then in another shell run `target/debug/agpod case current --json`
