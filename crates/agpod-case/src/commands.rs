@@ -339,7 +339,8 @@ fn error_next_action(error: &CaseError) -> Option<NextAction> {
         }),
         CaseError::UnfinishedSteps => Some(NextAction {
             suggested_command: "step done".to_string(),
-            why: "review unfinished steps, then mark them done or blocked before closing the case".to_string(),
+            why: "review unfinished steps, then mark them done or blocked before closing the case"
+                .to_string(),
         }),
         CaseError::InvalidRecordKind(kind) if kind == "decision" => Some(NextAction {
             suggested_command: "decide".to_string(),
@@ -1137,7 +1138,9 @@ async fn cmd_step_block(
 }
 
 async fn ensure_no_unfinished_steps(client: &CaseClient, case: &Case) -> CaseResult<()> {
-    let steps = client.get_steps(&case.id, case.current_direction_seq).await?;
+    let steps = client
+        .get_steps(&case.id, case.current_direction_seq)
+        .await?;
     if steps
         .iter()
         .any(|step| !matches!(step.status, StepStatus::Done))
