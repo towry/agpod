@@ -183,7 +183,7 @@ fn render_case_list_item_tree(case: &Value, index: usize) -> Tree<String> {
     node
 }
 
-fn group_cases_by_status<'a>(cases: &'a [Value]) -> Vec<(&'static str, Vec<&'a Value>)> {
+fn group_cases_by_status(cases: &[Value]) -> Vec<(&'static str, Vec<&Value>)> {
     let mut open_cases = Vec::new();
     let mut closed_cases = Vec::new();
     let mut abandoned_cases = Vec::new();

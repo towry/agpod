@@ -239,6 +239,7 @@ mod tests {
         let config = Config {
             version: "1".to_string(),
             diff: None,
+            case: None,
         };
         assert!(config.is_version_supported());
         assert!(config.version_warning().is_none());
@@ -246,6 +247,7 @@ mod tests {
         let unsupported_config = Config {
             version: "999".to_string(),
             diff: None,
+            case: None,
         };
         assert!(!unsupported_config.is_version_supported());
         assert!(unsupported_config.version_warning().is_some());
