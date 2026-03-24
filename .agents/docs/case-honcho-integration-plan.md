@@ -86,6 +86,14 @@ Honcho 只作：
 
 此可防未来被 Honcho API 绑死。
 
+并当补一义：
+
+- `HonchoBackend` 只是首个官方 adapter
+- 非所有用户之强制依赖
+- 最宜以 cargo feature 控之
+- 关闭 feature 时，系统仍应保有 local recall / local context 能力
+- 用户若接自家后端，最小只需三步：实现 trait、注册 runtime、由配置选用
+
 ## 4. 目标架构
 
 ```mermaid
@@ -182,11 +190,19 @@ pub trait CaseSemanticSearchBackend {
 - `LocalTextSearchBackend`
 - `HonchoSearchBackend`
 
+将来亦可有：
+
+- `PgVectorSearchBackend`
+- `LanceDbSearchBackend`
+- `CustomHttpSearchBackend`
+
 ### 路由逻辑
 
 - `semantic_recall_enabled = false` → 走本地文本 recall
 - `semantic_recall_enabled = true` 且 Honcho 可用 → 走 Honcho
 - Honcho 故障 → 快失败于 semantic 命令，但勿破坏 case 正常写入
+
+若编译时无 `honcho` feature，则“Honcho 可用”恒为否，应静退至本地实现，而非逼用户安装无关依赖。
 
 ## 6. Honcho 映射方案
 
@@ -532,6 +548,8 @@ MCP 层今已有 stable envelope。
 ## 14. 最短可行版本
 
 若求最快见效，我建议 MVP 如下：
+
+若 `honcho` feature 未开，或 `honcho_enabled=false`，则此 MVP 自然退化为仅保留 local recall / local context，而不要求用户安装或接入 Honcho。
 
 1. 新增 `CaseSemanticSearchBackend` trait
 2. 新增 `HonchoSearchBackend`
