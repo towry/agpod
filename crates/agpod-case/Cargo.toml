@@ -22,6 +22,7 @@ sha2 = { workspace = true }
 termtree = { workspace = true }
 uuid = { workspace = true }
 schemars = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

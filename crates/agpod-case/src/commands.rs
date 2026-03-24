@@ -5,9 +5,14 @@
 use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, OpenModeArg, StepCommand};
 use crate::client::CaseClient;
 use crate::config::{CaseConfig, CaseOverrides};
+use crate::context::{CaseContextProvider, LocalCaseContextProvider};
 use crate::error::{CaseError, CaseResult};
+use crate::events::{CaseDomainEvent, CaseEventEnvelope};
+use crate::honcho::HonchoBackend;
+use crate::hooks::{CaseDispatchReport, CaseEventDispatcher, CaseHookStatus};
 use crate::output;
 use crate::repo_id::RepoIdentity;
+use crate::search::{CaseSearchBackend, LocalTextSearchBackend};
 use crate::server_client::execute_via_server;
 use crate::types::*;
 use crate::GoalDriftFlag;
@@ -15,6 +20,51 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use uuid::Uuid;
+
+async fn dispatch_event(client: &CaseClient, event: CaseDomainEvent) -> CaseDispatchReport {
+    let (dispatcher, mut report) = build_dispatcher(client);
+    let envelope = CaseEventEnvelope::new(client, event);
+    let mut dispatched = dispatcher.dispatch(&envelope).await;
+    report.statuses.append(&mut dispatched.statuses);
+    report
+}
+
+fn append_dispatch_report(value: &mut serde_json::Value, report: &CaseDispatchReport) {
+    if report.is_empty() {
+        return;
+    }
+
+    value["hooks"] = json!(report);
+    if report.has_failures() {
+        value["warnings"] = json!(report.warnings());
+    }
+}
+
+fn build_dispatcher(client: &CaseClient) -> (CaseEventDispatcher, CaseDispatchReport) {
+    let mut sinks: Vec<std::sync::Arc<dyn crate::hooks::CaseEventSink>> = Vec::new();
+    let mut report = CaseDispatchReport::default();
+    if client.config().honcho_enabled && client.config().honcho_sync_enabled {
+        match HonchoBackend::from_config(client.config()) {
+            Ok(Some(honcho)) => sinks.push(std::sync::Arc::new(honcho)),
+            Ok(None) => {}
+            Err(error) => report.statuses.push(CaseHookStatus {
+                sink: "honcho".to_string(),
+                ok: false,
+                message: Some(error.to_string()),
+            }),
+        }
+    }
+    (CaseEventDispatcher::new(sinks), report)
+}
+
+fn context_provider_for_client(client: &CaseClient) -> CaseResult<Box<dyn CaseContextProvider>> {
+    if client.config().honcho_enabled && client.config().semantic_recall_enabled {
+        if let Some(honcho) = HonchoBackend::from_config(client.config())? {
+            return Ok(Box::new(honcho));
+        }
+    }
+    Ok(Box::new(LocalCaseContextProvider::new(client.clone())))
+}
 
 pub async fn execute(args: CaseArgs) -> Result<()> {
     let value = execute_json(args).await;
@@ -271,6 +321,21 @@ pub(crate) async fn execute_command_json(
             )
             .await
         }
+        CaseCommand::Context {
+            id,
+            query,
+            limit,
+            token_limit,
+        } => {
+            cmd_context(
+                client,
+                id.as_deref(),
+                query.as_deref(),
+                *limit,
+                *token_limit,
+            )
+            .await
+        }
         CaseCommand::List {
             status,
             limit,
@@ -463,6 +528,7 @@ fn command_case_id(command: &CaseCommand) -> Option<&str> {
             | StepCommand::Move { id, .. }
             | StepCommand::Block { id, .. } => Some(id.as_str()),
         },
+        CaseCommand::Context { id, .. } => id.as_deref(),
         CaseCommand::Open { .. }
         | CaseCommand::Current
         | CaseCommand::Recall { .. }
@@ -603,20 +669,30 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                     None,
                 )
                 .await?;
+            let dispatch = dispatch_event(
+                client,
+                CaseDomainEvent::CaseOpened {
+                    case: case.clone(),
+                    direction: dir.clone(),
+                },
+            )
+            .await;
 
             let next = NextAction {
                 suggested_command: "step add".to_string(),
                 why: "the case is open but the execution queue is still empty".to_string(),
             };
 
-            Ok(json!({
+            let mut value = json!({
                 "ok": true,
                 "case": output::case_json(&case),
                 "direction": output::direction_json(&dir),
                 "steps": output::steps_json(&[]),
                 "context": output::context_json(&case_id, 1),
                 "next": output::next_json(&next)
-            }))
+            });
+            append_dispatch_report(&mut value, &dispatch);
+            Ok(value)
         }
         OpenModeArg::Reopen => {
             let case_id = request.reopen_case_id.ok_or_else(|| {
@@ -670,7 +746,7 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                 .await?
                 .map(|entry| entry.seq + 1)
                 .unwrap_or(1);
-            let _ = client
+            let reopened_entry = client
                 .create_entry(
                     case_id,
                     next_entry_seq,
@@ -683,8 +759,17 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                     &[],
                 )
                 .await?;
+            let dispatch = dispatch_event(
+                client,
+                CaseDomainEvent::CaseReopened {
+                    case: reopened.clone(),
+                    direction: dir.clone(),
+                    reopened_entry: reopened_entry.clone(),
+                },
+            )
+            .await;
 
-            Ok(json!({
+            let mut value = json!({
                 "ok": true,
                 "case": output::case_json(&reopened),
                 "direction": output::direction_json(&dir),
@@ -692,7 +777,9 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                 "context": output::context_json(case_id, reopened.current_direction_seq),
                 "message": "case reopened",
                 "next": output::next_json(&next)
-            }))
+            });
+            append_dispatch_report(&mut value, &dispatch);
+            Ok(value)
         }
     }
 }
@@ -843,6 +930,14 @@ async fn cmd_record(
             &artifacts,
         )
         .await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::RecordAppended {
+            case: case.clone(),
+            entry: entry.clone(),
+        },
+    )
+    .await;
 
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
@@ -873,6 +968,7 @@ async fn cmd_record(
         result["event"]["goal_constraints"] = json!(goal_constraints);
         result["case"] = output::case_json(&case);
     }
+    append_dispatch_report(&mut result, &dispatch);
 
     Ok(result)
 }
@@ -904,6 +1000,14 @@ async fn cmd_decide(
             &[],
         )
         .await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::DecisionAppended {
+            case: case.clone(),
+            entry: entry.clone(),
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "step done".to_string(),
@@ -911,7 +1015,7 @@ async fn cmd_decide(
             .to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "event": {
             "seq": entry.seq,
@@ -920,7 +1024,9 @@ async fn cmd_decide(
             "reason": reason
         },
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -965,13 +1071,23 @@ async fn cmd_redirect(
             && existing_dir.context.as_deref() == Some(context)
         {
             client.update_case_direction(case_id, new_seq).await?;
+            let updated_case = client.get_case(case_id).await?;
+            let dispatch = dispatch_event(
+                client,
+                CaseDomainEvent::RedirectRecovered {
+                    case: updated_case,
+                    from_direction: prev_dir.clone(),
+                    to_direction: existing_dir.clone(),
+                },
+            )
+            .await;
 
             let next = NextAction {
                 suggested_command: "step add".to_string(),
                 why: "the recovered direction needs a fresh execution queue".to_string(),
             };
 
-            return Ok(json!({
+            let mut value = json!({
                 "ok": true,
                 "event": {
                     "seq": serde_json::Value::Null,
@@ -986,7 +1102,9 @@ async fn cmd_redirect(
                 "steps": output::steps_json(&[]),
                 "context": output::context_json(case_id, new_seq),
                 "next": output::next_json(&next)
-            }));
+            });
+            append_dispatch_report(&mut value, &dispatch);
+            return Ok(value);
         }
 
         return Err(CaseError::Other(format!(
@@ -996,7 +1114,7 @@ async fn cmd_redirect(
 
     // Create redirect entry
     let entry_seq = next_entry_seq(client, case_id).await?;
-    let _entry = client
+    let entry = client
         .create_entry(
             case_id,
             entry_seq,
@@ -1026,13 +1144,24 @@ async fn cmd_redirect(
 
     // Update case
     client.update_case_direction(case_id, new_seq).await?;
+    let updated_case = client.get_case(case_id).await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::RedirectCommitted {
+            case: updated_case,
+            from_direction: prev_dir.clone(),
+            to_direction: new_dir.clone(),
+            entry: entry.clone(),
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "step add".to_string(),
         why: "the new direction needs a fresh execution queue".to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "event": {
             "seq": entry_seq,
@@ -1046,7 +1175,9 @@ async fn cmd_redirect(
         "steps": output::steps_json(&[]),
         "context": output::context_json(case_id, new_seq),
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_json::Value> {
@@ -1080,13 +1211,22 @@ async fn cmd_close(
     client
         .update_case_status(case_id, CaseStatus::Closed, summary)
         .await?;
+    let closed_case = client.get_case(case_id).await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::CaseClosed {
+            case: closed_case,
+            summary: summary.to_string(),
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "open".to_string(),
         why: "the repository now has no active case".to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "case": {
             "id": case_id,
@@ -1095,7 +1235,9 @@ async fn cmd_close(
             "close_summary": summary
         },
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn cmd_abandon(
@@ -1112,13 +1254,22 @@ async fn cmd_abandon(
     client
         .update_case_status(case_id, CaseStatus::Abandoned, summary)
         .await?;
+    let abandoned_case = client.get_case(case_id).await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::CaseAbandoned {
+            case: abandoned_case,
+            summary: summary.to_string(),
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "open".to_string(),
         why: "the previous goal has been explicitly abandoned".to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "case": {
             "id": case_id,
@@ -1127,7 +1278,9 @@ async fn cmd_abandon(
             "abandon_summary": summary
         },
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn ensure_close_confirmation(
@@ -1247,6 +1400,15 @@ async fn cmd_step_add(
         .find(|candidate| candidate.id == step.id)
         .cloned()
         .expect("newly created step should be visible after reload");
+    let refreshed_case = client.get_case(case_id).await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::StepAdded {
+            case: refreshed_case.clone(),
+            step: step.clone(),
+        },
+    )
+    .await;
 
     let next = if start {
         NextAction {
@@ -1260,7 +1422,7 @@ async fn cmd_step_add(
         }
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "step": {
             "id": step.id,
@@ -1269,9 +1431,11 @@ async fn cmd_step_add(
             "status": step.status.as_str()
         },
         "steps": output::steps_json(&steps),
-        "context": output::context_json(case_id, case.current_direction_seq),
+        "context": output::context_json(case_id, refreshed_case.current_direction_seq),
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn cmd_step_start(
@@ -1281,26 +1445,43 @@ async fn cmd_step_start(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
-    client.get_step(step_id).await?;
+    let step = client.get_step(step_id).await?;
+    ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
 
     activate_step(client, &case, step_id).await?;
+    let refreshed_case = client.get_case(case_id).await?;
 
     let steps = client
-        .get_steps(case_id, case.current_direction_seq)
+        .get_steps(case_id, refreshed_case.current_direction_seq)
         .await?;
+    let started_step = steps
+        .iter()
+        .find(|step| step.id == step_id)
+        .cloned()
+        .ok_or_else(|| CaseError::StepNotFound(step_id.to_string()))?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::StepStarted {
+            case: refreshed_case.clone(),
+            step: started_step,
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "record".to_string(),
         why: "capture findings as you execute the step".to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
-        "context": output::context_json(case_id, case.current_direction_seq),
+        "context": output::context_json(case_id, refreshed_case.current_direction_seq),
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn activate_step(client: &CaseClient, case: &Case, step_id: &str) -> CaseResult<()> {
@@ -1330,7 +1511,8 @@ async fn cmd_step_done(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
-    client.get_step(step_id).await?;
+    let step = client.get_step(step_id).await?;
+    ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
 
     client.update_step(step_id, StepStatus::Done, None).await?;
 
@@ -1338,10 +1520,24 @@ async fn cmd_step_done(
     if case.current_step_id.as_deref() == Some(step_id) {
         client.update_case_step(case_id, "").await?;
     }
+    let refreshed_case = client.get_case(case_id).await?;
 
     let steps = client
-        .get_steps(case_id, case.current_direction_seq)
+        .get_steps(case_id, refreshed_case.current_direction_seq)
         .await?;
+    let done_step = steps
+        .iter()
+        .find(|step| step.id == step_id)
+        .cloned()
+        .ok_or_else(|| CaseError::StepNotFound(step_id.to_string()))?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::StepDone {
+            case: refreshed_case.clone(),
+            step: done_step,
+        },
+    )
+    .await;
     let (_, pending_steps) = split_steps(&steps);
 
     let next = if pending_steps.is_empty() {
@@ -1356,13 +1552,15 @@ async fn cmd_step_done(
         }
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
-        "context": output::context_json(case_id, case.current_direction_seq),
+        "context": output::context_json(case_id, refreshed_case.current_direction_seq),
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn cmd_step_move(
@@ -1408,22 +1606,35 @@ async fn cmd_step_move(
     }
 
     // Re-fetch to get updated data
+    let refreshed_case = client.get_case(case_id).await?;
     let steps = client
-        .get_steps(case_id, case.current_direction_seq)
+        .get_steps(case_id, refreshed_case.current_direction_seq)
         .await?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::StepsReordered {
+            case: refreshed_case.clone(),
+            moved_step_id: step_id.to_string(),
+            before_step_id: before_id.to_string(),
+            steps: steps.clone(),
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "step start".to_string(),
         why: "the reordered blocker-fix step should now run first".to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
-        "context": output::context_json(case_id, case.current_direction_seq),
+        "context": output::context_json(case_id, refreshed_case.current_direction_seq),
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn cmd_step_block(
@@ -1434,28 +1645,45 @@ async fn cmd_step_block(
 ) -> CaseResult<serde_json::Value> {
     let case = client.get_case(case_id).await?;
     ensure_open(&case)?;
-    client.get_step(step_id).await?;
+    let step = client.get_step(step_id).await?;
+    ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
 
     client
         .update_step(step_id, StepStatus::Blocked, Some(reason))
         .await?;
+    let refreshed_case = client.get_case(case_id).await?;
 
     let steps = client
-        .get_steps(case_id, case.current_direction_seq)
+        .get_steps(case_id, refreshed_case.current_direction_seq)
         .await?;
+    let blocked_step = steps
+        .iter()
+        .find(|step| step.id == step_id)
+        .cloned()
+        .ok_or_else(|| CaseError::StepNotFound(step_id.to_string()))?;
+    let dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::StepBlocked {
+            case: refreshed_case.clone(),
+            step: blocked_step,
+        },
+    )
+    .await;
 
     let next = NextAction {
         suggested_command: "step add".to_string(),
         why: "consider adding a step to resolve the blocker".to_string(),
     };
 
-    Ok(json!({
+    let mut value = json!({
         "ok": true,
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
-        "context": output::context_json(case_id, case.current_direction_seq),
+        "context": output::context_json(case_id, refreshed_case.current_direction_seq),
         "next": output::next_json(&next)
-    }))
+    });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
 }
 
 async fn ensure_no_unfinished_steps(client: &CaseClient, case: &Case) -> CaseResult<()> {
@@ -1488,6 +1716,17 @@ fn step_status_reminder(steps: &[Step]) -> serde_json::Value {
     }
 }
 
+fn ensure_step_belongs_to_current_direction(
+    step: &Step,
+    case: &Case,
+    step_id: &str,
+) -> CaseResult<()> {
+    if step.case_id != case.id || step.direction_seq != case.current_direction_seq {
+        return Err(CaseError::StepNotFound(step_id.to_string()));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CaseListOptions {
     status: Option<CaseStatusArg>,
@@ -1515,7 +1754,9 @@ async fn cmd_recall(
     validate_list_options(options)?;
     validate_recall_query(query)?;
 
-    let mut cases = client.search_cases(query).await?;
+    let mut cases = LocalTextSearchBackend::new(client.clone())
+        .recall_cases(query)
+        .await?;
     filter_recall_results(&mut cases, options);
     cases.sort_by(|left, right| compare_recall_results(left, right, query));
     if let Some(limit) = options.limit {
@@ -1529,6 +1770,32 @@ async fn cmd_recall(
         "cases": case_list,
         "query": query,
         "_meta": list_meta_json(options)
+    }))
+}
+
+async fn cmd_context(
+    client: &CaseClient,
+    id: Option<&str>,
+    query: Option<&str>,
+    limit: Option<usize>,
+    token_limit: Option<u32>,
+) -> CaseResult<serde_json::Value> {
+    if matches!(limit, Some(0)) {
+        return Err(CaseError::InvalidListOption(
+            "limit must be at least 1".to_string(),
+        ));
+    }
+    let case = resolve_case(client, id).await?;
+    let provider = context_provider_for_client(client)?;
+    let result = provider
+        .get_context(&case.id, query, limit.unwrap_or(5), token_limit)
+        .await?;
+
+    Ok(json!({
+        "ok": true,
+        "case": output::case_json(&case),
+        "case_context": output::case_context_json(&result),
+        "context": output::context_json(&case.id, case.current_direction_seq),
     }))
 }
 
@@ -3017,5 +3284,368 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("partial redirect residue"));
+    }
+
+    #[tokio::test]
+    async fn step_start_rejects_old_direction_step_before_mutation() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction a", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let added = cmd_step_add(&client, &case_id, "old step", None, false)
+            .await
+            .expect("step add should succeed");
+        let step_id = added["step"]["id"]
+            .as_str()
+            .expect("step id should exist")
+            .to_string();
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction b",
+            "need new direction",
+            "shift scope",
+            GoalDriftFlag::No,
+            &[],
+            "done",
+            "stop",
+        )
+        .await
+        .expect("redirect should succeed");
+
+        let error = cmd_step_start(&client, &case_id, &step_id)
+            .await
+            .expect_err("old direction step should be rejected");
+        assert!(matches!(error, CaseError::StepNotFound(ref id) if id == &step_id));
+
+        let stale_step = client
+            .get_step(&step_id)
+            .await
+            .expect("step should still exist");
+        assert_eq!(stale_step.status, StepStatus::Pending);
+
+        let current_case = client.get_case(&case_id).await.expect("case should reload");
+        assert_eq!(current_case.current_direction_seq, 2);
+        assert_eq!(current_case.current_step_id.as_deref(), None);
+    }
+
+    #[tokio::test]
+    async fn step_done_and_block_reject_old_direction_step_before_mutation() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction a", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let added = cmd_step_add(&client, &case_id, "old step", None, false)
+            .await
+            .expect("step add should succeed");
+        let step_id = added["step"]["id"]
+            .as_str()
+            .expect("step id should exist")
+            .to_string();
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction b",
+            "need new direction",
+            "shift scope",
+            GoalDriftFlag::No,
+            &[],
+            "done",
+            "stop",
+        )
+        .await
+        .expect("redirect should succeed");
+
+        let done_error = cmd_step_done(&client, &case_id, &step_id)
+            .await
+            .expect_err("old direction step done should be rejected");
+        assert!(matches!(done_error, CaseError::StepNotFound(ref id) if id == &step_id));
+
+        let blocked_error = cmd_step_block(&client, &case_id, &step_id, "blocked")
+            .await
+            .expect_err("old direction step block should be rejected");
+        assert!(matches!(blocked_error, CaseError::StepNotFound(ref id) if id == &step_id));
+
+        let stale_step = client
+            .get_step(&step_id)
+            .await
+            .expect("step should still exist");
+        assert_eq!(stale_step.status, StepStatus::Pending);
+        assert_eq!(stale_step.reason.as_deref(), None);
+    }
+
+    #[tokio::test]
+    async fn context_uses_local_provider_by_default() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(
+            &client,
+            "honcho integration",
+            "inspect docs",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            "Honcho session context supports token limit",
+            "evidence",
+            &[],
+            &[],
+            Some("官方文档言 summary 与 recent messages 混合"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let context = cmd_context(
+            &client,
+            Some(&case_id),
+            Some("token limit"),
+            Some(3),
+            Some(128),
+        )
+        .await
+        .expect("context should succeed");
+
+        assert_eq!(
+            context["case_context"]["backend"].as_str(),
+            Some("local_text")
+        );
+        assert_eq!(
+            context["case_context"]["query"].as_str(),
+            Some("token limit")
+        );
+        assert!(context["case_context"]["context"]
+            .as_str()
+            .is_some_and(|text| text.contains("Honcho")));
+    }
+
+    #[tokio::test]
+    async fn recall_stays_local_when_honcho_flags_are_enabled() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.honcho_enabled = true;
+        config.semantic_recall_enabled = true;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(
+            &client,
+            "semantic recall",
+            "inspect docs",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            "workspace search is future work",
+            "finding",
+            &[],
+            &[],
+            Some("recall should still use local text"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let recalled = cmd_recall(
+            &client,
+            "future work",
+            CaseListOptions::new(None, None, None),
+        )
+        .await
+        .expect("recall should succeed");
+        assert_eq!(recalled["cases"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn context_fails_fast_on_invalid_honcho_config() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.honcho_enabled = true;
+        config.semantic_recall_enabled = true;
+        config.honcho_workspace_id = None;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(
+            &client,
+            "semantic context",
+            "inspect docs",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let error = cmd_context(&client, Some(&case_id), Some("query"), Some(5), Some(256))
+            .await
+            .expect_err("invalid honcho config should fail fast");
+        assert!(matches!(error, CaseError::HonchoConfig(_)));
+    }
+
+    #[tokio::test]
+    async fn open_reports_honcho_warning_when_sync_config_invalid() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.honcho_enabled = true;
+        config.honcho_sync_enabled = true;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(
+            &client,
+            "sync warnings",
+            "inspect hooks",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let warnings = opened["warnings"]
+            .as_array()
+            .expect("warnings should be present");
+        assert!(!warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn context_rejects_zero_limit() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(
+            &client,
+            "semantic context",
+            "inspect docs",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let error = cmd_context(&client, Some(&case_id), Some("query"), Some(0), Some(128))
+            .await
+            .expect_err("zero limit should be rejected");
+        assert!(matches!(error, CaseError::InvalidListOption(_)));
     }
 }

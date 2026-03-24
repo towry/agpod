@@ -27,6 +27,12 @@ pub struct CaseConfig {
     pub access_mode: CaseAccessMode,
     pub semantic_recall_enabled: bool,
     pub vector_digest_job_enabled: bool,
+    pub honcho_enabled: bool,
+    pub honcho_sync_enabled: bool,
+    pub honcho_base_url: Option<String>,
+    pub honcho_workspace_id: Option<String>,
+    pub honcho_api_key_env: String,
+    pub honcho_peer_id: String,
 }
 
 impl Default for CaseConfig {
@@ -42,6 +48,12 @@ impl Default for CaseConfig {
             access_mode: CaseAccessMode::LocalServer,
             semantic_recall_enabled: false,
             vector_digest_job_enabled: false,
+            honcho_enabled: false,
+            honcho_sync_enabled: true,
+            honcho_base_url: None,
+            honcho_workspace_id: None,
+            honcho_api_key_env: "HONCHO_API_KEY".to_string(),
+            honcho_peer_id: "agpod-system".to_string(),
         }
     }
 }
@@ -55,6 +67,12 @@ pub struct CaseConfigFile {
     pub access_mode: Option<CaseAccessMode>,
     pub semantic_recall_enabled: Option<bool>,
     pub vector_digest_job_enabled: Option<bool>,
+    pub honcho_enabled: Option<bool>,
+    pub honcho_sync_enabled: Option<bool>,
+    pub honcho_base_url: Option<String>,
+    pub honcho_workspace_id: Option<String>,
+    pub honcho_api_key_env: Option<String>,
+    pub honcho_peer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -117,6 +135,42 @@ impl CaseConfig {
             }
         }
 
+        if let Ok(value) = std::env::var("AGPOD_CASE_HONCHO_ENABLED") {
+            if let Some(parsed) = parse_bool(&value) {
+                config.honcho_enabled = parsed;
+            }
+        }
+
+        if let Ok(value) = std::env::var("AGPOD_CASE_HONCHO_SYNC_ENABLED") {
+            if let Some(parsed) = parse_bool(&value) {
+                config.honcho_sync_enabled = parsed;
+            }
+        }
+
+        if let Ok(value) = std::env::var("HONCHO_BASE_URL") {
+            if !value.is_empty() {
+                config.honcho_base_url = Some(value);
+            }
+        }
+
+        if let Ok(value) = std::env::var("HONCHO_WORKSPACE_ID") {
+            if !value.is_empty() {
+                config.honcho_workspace_id = Some(value);
+            }
+        }
+
+        if let Ok(value) = std::env::var("AGPOD_CASE_HONCHO_API_KEY_ENV") {
+            if !value.is_empty() {
+                config.honcho_api_key_env = value;
+            }
+        }
+
+        if let Ok(value) = std::env::var("AGPOD_CASE_HONCHO_PEER_ID") {
+            if !value.is_empty() {
+                config.honcho_peer_id = value;
+            }
+        }
+
         if let Some(path) = overrides.data_dir {
             config.data_dir = PathBuf::from(path);
         }
@@ -146,6 +200,24 @@ impl CaseConfig {
         }
         if let Some(enabled) = file.vector_digest_job_enabled {
             self.vector_digest_job_enabled = enabled;
+        }
+        if let Some(enabled) = file.honcho_enabled {
+            self.honcho_enabled = enabled;
+        }
+        if let Some(enabled) = file.honcho_sync_enabled {
+            self.honcho_sync_enabled = enabled;
+        }
+        if let Some(base_url) = file.honcho_base_url {
+            self.honcho_base_url = Some(base_url);
+        }
+        if let Some(workspace_id) = file.honcho_workspace_id {
+            self.honcho_workspace_id = Some(workspace_id);
+        }
+        if let Some(api_key_env) = file.honcho_api_key_env {
+            self.honcho_api_key_env = api_key_env;
+        }
+        if let Some(peer_id) = file.honcho_peer_id {
+            self.honcho_peer_id = peer_id;
         }
     }
 }
@@ -191,6 +263,10 @@ mod tests {
         assert_eq!(config.access_mode, CaseAccessMode::LocalServer);
         assert!(!config.semantic_recall_enabled);
         assert!(!config.vector_digest_job_enabled);
+        assert!(!config.honcho_enabled);
+        assert!(config.honcho_sync_enabled);
+        assert_eq!(config.honcho_api_key_env, "HONCHO_API_KEY");
+        assert_eq!(config.honcho_peer_id, "agpod-system");
     }
 
     #[test]
@@ -209,14 +285,26 @@ mod tests {
         std::env::set_var("AGPOD_CASE_AUTO_START", "false");
         std::env::set_var("AGPOD_CASE_ACCESS_MODE", "remote");
         std::env::set_var("AGPOD_CASE_SEMANTIC_RECALL", "true");
+        std::env::set_var("AGPOD_CASE_HONCHO_ENABLED", "true");
+        std::env::set_var("HONCHO_BASE_URL", "https://example.test");
+        std::env::set_var("HONCHO_WORKSPACE_ID", "ws-123");
 
         let config = CaseConfig::load(CaseOverrides::default());
         assert!(!config.auto_start);
         assert_eq!(config.access_mode, CaseAccessMode::Remote);
         assert!(config.semantic_recall_enabled);
+        assert!(config.honcho_enabled);
+        assert_eq!(
+            config.honcho_base_url.as_deref(),
+            Some("https://example.test")
+        );
+        assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws-123"));
 
         std::env::remove_var("AGPOD_CASE_AUTO_START");
         std::env::remove_var("AGPOD_CASE_ACCESS_MODE");
         std::env::remove_var("AGPOD_CASE_SEMANTIC_RECALL");
+        std::env::remove_var("AGPOD_CASE_HONCHO_ENABLED");
+        std::env::remove_var("HONCHO_BASE_URL");
+        std::env::remove_var("HONCHO_WORKSPACE_ID");
     }
 }

@@ -51,3 +51,4 @@ sha2 = "0.10"
 rmcp = { version = "1.2.0", features = ["client", "transport-io"] }
 uuid = { version = "1", features = ["v4"] }
 schemars = "1.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

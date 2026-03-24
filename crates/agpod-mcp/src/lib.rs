@@ -159,7 +159,7 @@ impl ServerHandler for AgpodMcpServer {
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_server_info(Implementation::from_build_env())
             .with_instructions(
-                "agpod case MCP. One open case per repo. Start each session with `case_current`. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_list` and `case_recall` for safe discovery across past cases. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
+                "agpod case MCP. One open case per repo. Start each session with `case_current`. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_list` and `case_recall` for safe discovery across past cases. Use `case_context` to retrieve semantic context for the active case. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
             )
     }
 
@@ -377,6 +377,31 @@ impl AgpodMcpServer {
                 recent_days: req.recent_days,
             },
             None,
+        )
+        .await
+    }
+
+    #[tool(
+        name = "case_context",
+        description = "Get semantic context for the open case or a chosen case using a natural-language query.",
+        output_schema = case_tool_output_schema()
+    )]
+    async fn case_context(
+        &self,
+        Parameters(req): Parameters<CaseContextRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if matches!(req.limit, Some(0)) {
+            return Err(ErrorData::invalid_params("limit must be at least 1", None));
+        }
+        self.run_case_tool(
+            "case_context",
+            CaseCommand::Context {
+                id: req.id.clone(),
+                query: req.query,
+                limit: req.limit,
+                token_limit: req.token_limit,
+            },
+            req.id,
         )
         .await
     }
@@ -977,6 +1002,19 @@ pub struct CaseRecallRequest {
     pub recent_days: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CaseContextRequest {
+    /// Case ID. Omit to use the open case returned by `case_current`.
+    pub id: Option<String>,
+    /// Natural-language query for semantic retrieval.
+    pub query: Option<String>,
+    /// Limit result count. Must be at least 1 when provided.
+    #[schemars(range(min = 1))]
+    pub limit: Option<usize>,
+    /// Optional token budget for returned context.
+    pub token_limit: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct CaseListRequest {
     /// Optional case status filter.
@@ -1140,6 +1178,7 @@ mod tests {
         assert!(tool_names.contains(&"case_current"));
         assert!(tool_names.contains(&"case_open"));
         assert!(tool_names.contains(&"case_steps_add"));
+        assert!(tool_names.contains(&"case_context"));
 
         let current_tool = tools
             .iter()
@@ -1156,6 +1195,7 @@ mod tests {
         let instructions = info.instructions.expect("instructions should exist");
         assert!(instructions.contains("case_current"));
         assert!(instructions.contains("case_resume"));
+        assert!(instructions.contains("case_context"));
     }
 
     #[test]
@@ -1193,6 +1233,12 @@ mod tests {
             .expect("case_list tool should exist");
         let list_schema =
             serde_json::to_value(&list_tool.input_schema).expect("schema should serialize");
+        let context_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_context")
+            .expect("case_context tool should exist");
+        let context_schema =
+            serde_json::to_value(&context_tool.input_schema).expect("schema should serialize");
         let finish_tool = tools
             .iter()
             .find(|tool| tool.name == "case_finish")
@@ -1229,6 +1275,8 @@ mod tests {
         assert!(recall_schema.to_string().contains("recent_days"));
         assert!(recall_schema.to_string().contains("status"));
         assert!(list_schema.to_string().contains("limit"));
+        assert!(context_schema.to_string().contains("token_limit"));
+        assert!(context_schema.to_string().contains("query"));
         assert!(list_schema.to_string().contains("\"minimum\":1"));
         assert!(recall_schema.to_string().contains("\"minimum\":1"));
         assert!(finish_schema.to_string().contains("\"completed\""));

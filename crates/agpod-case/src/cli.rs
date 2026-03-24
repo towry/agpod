@@ -239,6 +239,25 @@ pub enum CaseCommand {
         recent_days: Option<u32>,
     },
 
+    /// Build semantic context for the current or chosen case
+    Context {
+        /// Case ID (defaults to open case)
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Natural language query used for semantic retrieval
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Max number of hits to return
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Optional token budget for returned context
+        #[arg(long = "token-limit")]
+        token_limit: Option<u32>,
+    },
+
     /// List all cases for this repository
     List {
         /// Filter by case status

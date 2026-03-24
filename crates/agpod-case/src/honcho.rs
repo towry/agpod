@@ -1,0 +1,352 @@
+//! Honcho v2 adapter for case event sync, semantic search, and context retrieval.
+//!
+//! Keywords: honcho, semantic search, vector digest, case context, hook sink
+
+use crate::config::CaseConfig;
+use crate::context::CaseContextProvider;
+use crate::error::{CaseError, CaseResult};
+use crate::events::CaseEventEnvelope;
+use crate::hooks::{CaseEventSink, HookFuture};
+use crate::search::{CaseSearchBackend, SearchFuture};
+use crate::types::{CaseContextHit, CaseContextResult, CaseSearchResult};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+#[derive(Clone)]
+pub struct HonchoBackend {
+    http: reqwest::Client,
+    base_url: String,
+    workspace_id: String,
+    api_key: String,
+    peer_id: String,
+}
+
+impl HonchoBackend {
+    pub fn from_config(config: &CaseConfig) -> CaseResult<Option<Self>> {
+        if !config.honcho_enabled {
+            return Ok(None);
+        }
+
+        let base_url = config
+            .honcho_base_url
+            .clone()
+            .ok_or_else(|| CaseError::HonchoConfig("missing `honcho_base_url`".to_string()))?;
+        let workspace_id = config
+            .honcho_workspace_id
+            .clone()
+            .ok_or_else(|| CaseError::HonchoConfig("missing `honcho_workspace_id`".to_string()))?;
+        let api_key_env = config.honcho_api_key_env.trim();
+        if api_key_env.is_empty() {
+            return Err(CaseError::HonchoConfig(
+                "`honcho_api_key_env` must not be empty".to_string(),
+            ));
+        }
+        let api_key = std::env::var(api_key_env).map_err(|_| {
+            CaseError::HonchoConfig(format!(
+                "missing env var `{api_key_env}` for Honcho API key"
+            ))
+        })?;
+        if config.honcho_peer_id.trim().is_empty() {
+            return Err(CaseError::HonchoConfig(
+                "`honcho_peer_id` must not be empty".to_string(),
+            ));
+        }
+
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|err| CaseError::HonchoHttp(err.to_string()))?;
+
+        Ok(Some(Self {
+            http,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            workspace_id,
+            api_key,
+            peer_id: config.honcho_peer_id.clone(),
+        }))
+    }
+
+    async fn post_json<T, R>(&self, path: &str, body: &T) -> CaseResult<R>
+    where
+        T: Serialize + ?Sized,
+        R: for<'de> Deserialize<'de>,
+    {
+        let response = self
+            .http
+            .post(format!("{}{}", self.base_url, path))
+            .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
+            .header(CONTENT_TYPE, "application/json")
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| CaseError::HonchoHttp(err.to_string()))?;
+        self.decode_response(response).await
+    }
+
+    async fn get_json<R>(&self, path: &str, query: &[(&str, String)]) -> CaseResult<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let response = self
+            .http
+            .get(format!("{}{}", self.base_url, path))
+            .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
+            .query(query)
+            .send()
+            .await
+            .map_err(|err| CaseError::HonchoHttp(err.to_string()))?;
+        self.decode_response(response).await
+    }
+
+    async fn decode_response<R>(&self, response: reqwest::Response) -> CaseResult<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown Honcho error".to_string());
+            return Err(CaseError::HonchoApi(format!("{status}: {body}")));
+        }
+        response
+            .json::<R>()
+            .await
+            .map_err(|err| CaseError::HonchoHttp(err.to_string()))
+    }
+
+    async fn ensure_session(
+        &self,
+        case_id: &str,
+        metadata: Value,
+    ) -> CaseResult<HonchoSessionResponse> {
+        self.post_json(
+            &format!("/v2/workspaces/{}/sessions", self.workspace_id),
+            &json!({
+                "session_id": case_id,
+                "metadata": metadata,
+            }),
+        )
+        .await
+    }
+
+    async fn create_message(&self, event: &CaseEventEnvelope) -> CaseResult<Value> {
+        let event_metadata = event.event.metadata();
+        self.post_json(
+            &format!(
+                "/v2/workspaces/{}/sessions/{}/messages",
+                self.workspace_id, event.case_id
+            ),
+            &json!({
+                "content": event.event.summary_text(),
+                "peer_id": self.peer_id,
+                "created_at": event.occurred_at,
+                "metadata": {
+                    "event_id": event.event_id,
+                    "event_type": event.event.event_type(),
+                    "repo_id": event.repo_id,
+                    "repo_label": event.repo_label,
+                    "worktree_id": event.worktree_id,
+                    "worktree_root": event.worktree_root,
+                    "direction_seq": event.direction_seq,
+                    "entry_seq": event_metadata.get("entry_seq").cloned(),
+                    "step_id": event_metadata.get("step_id").cloned(),
+                    "kind": event_metadata.get("kind").cloned(),
+                    "event": event_metadata,
+                },
+                "configuration": {
+                    "deriver": {
+                        "enabled": true
+                    }
+                }
+            }),
+        )
+        .await
+    }
+
+    pub async fn sync_event(&self, event: &CaseEventEnvelope) -> CaseResult<()> {
+        let _session = self
+            .ensure_session(
+                &event.case_id,
+                json!({
+                    "repo_id": event.repo_id,
+                    "repo_label": event.repo_label,
+                    "worktree_id": event.worktree_id,
+                    "worktree_root": event.worktree_root,
+                }),
+            )
+            .await?;
+        let _message = self.create_message(event).await?;
+        Ok(())
+    }
+
+    async fn search_session_raw(
+        &self,
+        case_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> CaseResult<HonchoSearchResponse> {
+        self.post_json(
+            &format!(
+                "/v2/workspaces/{}/sessions/{}/search",
+                self.workspace_id, case_id
+            ),
+            &json!({
+                "query": query,
+                "limit": limit,
+            }),
+        )
+        .await
+    }
+
+    async fn get_context_raw(
+        &self,
+        case_id: &str,
+        token_limit: Option<u32>,
+    ) -> CaseResult<HonchoContextResponse> {
+        let mut query = Vec::new();
+        if let Some(token_limit) = token_limit {
+            query.push(("token_limit", token_limit.to_string()));
+        }
+        self.get_json(
+            &format!(
+                "/v2/workspaces/{}/sessions/{}/context",
+                self.workspace_id, case_id
+            ),
+            &query,
+        )
+        .await
+    }
+}
+
+impl CaseEventSink for HonchoBackend {
+    fn name(&self) -> &'static str {
+        "honcho"
+    }
+
+    fn handle<'a>(&'a self, event: &'a CaseEventEnvelope) -> HookFuture<'a> {
+        Box::pin(async move { self.sync_event(event).await })
+    }
+}
+
+impl CaseSearchBackend for HonchoBackend {
+    fn backend_name(&self) -> &'static str {
+        "honcho"
+    }
+
+    fn recall_cases<'a>(&'a self, _query: &'a str) -> SearchFuture<'a, Vec<CaseSearchResult>> {
+        Box::pin(async move {
+            Err(CaseError::SemanticBackendUnavailable(
+                "Honcho workspace-wide recall is not wired yet; use local case recall".to_string(),
+            ))
+        })
+    }
+
+    fn search_case<'a>(
+        &'a self,
+        case_id: &'a str,
+        query: &'a str,
+        limit: usize,
+    ) -> SearchFuture<'a, Vec<CaseContextHit>> {
+        Box::pin(async move {
+            let response = self.search_session_raw(case_id, query, limit).await?;
+            let hits = response
+                .results
+                .into_iter()
+                .map(|hit| CaseContextHit {
+                    source: hit.source.unwrap_or_else(|| "honcho".to_string()),
+                    field: hit.field.unwrap_or_else(|| "content".to_string()),
+                    excerpt: hit.content,
+                    score: hit.score.unwrap_or(0.0) as i64,
+                    direction_seq: hit
+                        .metadata
+                        .get("direction_seq")
+                        .and_then(Value::as_u64)
+                        .map(|value| value as u32),
+                    entry_seq: hit
+                        .metadata
+                        .get("entry_seq")
+                        .and_then(Value::as_u64)
+                        .map(|value| value as u32),
+                    step_id: hit
+                        .metadata
+                        .get("step_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    kind: hit
+                        .metadata
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                })
+                .collect();
+            Ok(hits)
+        })
+    }
+}
+
+impl CaseContextProvider for HonchoBackend {
+    fn backend_name(&self) -> &'static str {
+        "honcho"
+    }
+
+    fn get_context<'a>(
+        &'a self,
+        case_id: &'a str,
+        query: Option<&'a str>,
+        limit: usize,
+        token_limit: Option<u32>,
+    ) -> SearchFuture<'a, CaseContextResult> {
+        Box::pin(async move {
+            let context = self.get_context_raw(case_id, token_limit).await?;
+            let hits = match query {
+                Some(query) if !query.trim().is_empty() => {
+                    self.search_case(case_id, query, limit).await?
+                }
+                _ => Vec::new(),
+            };
+
+            Ok(CaseContextResult {
+                backend: <Self as CaseContextProvider>::backend_name(self).to_string(),
+                case_id: case_id.to_string(),
+                query: query.map(ToOwned::to_owned),
+                token_limit,
+                generated_at: chrono::Utc::now().to_rfc3339(),
+                context: context.rendered_context,
+                hits,
+            })
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HonchoSessionResponse {
+    #[allow(dead_code)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HonchoSearchResponse {
+    #[serde(default)]
+    results: Vec<HonchoSearchHit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HonchoSearchHit {
+    content: String,
+    #[serde(default)]
+    score: Option<f64>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    field: Option<String>,
+    #[serde(default)]
+    metadata: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct HonchoContextResponse {
+    #[serde(default, alias = "context")]
+    rendered_context: String,
+}
