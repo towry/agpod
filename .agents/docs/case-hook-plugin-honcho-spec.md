@@ -517,3 +517,7 @@ Honcho 若不保证天然幂等，则本仓应至少保证：
 > `case` 管真相，event 管同步，plugin 管扩展，Honcho 管语义。
 
 四者不可越位。若守此界，则将来加 webhook、outbox、workspace search、agent native `.context()`，皆可顺流而下。
+
+## 15. 相关文档
+
+- hooks / external command / stdio 协议详案：`.agents/docs/case-external-hooks-stdio-protocol.md`

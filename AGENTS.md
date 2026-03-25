@@ -2,6 +2,8 @@
 
 Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS path formatting.
 
+Source local env: `source .env.sh && <cmd>`
+
 ## Build & Test
 
 - `cargo build -p agpod` — build binary
