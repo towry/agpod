@@ -3811,4 +3811,87 @@ mod tests {
             .iter()
             .any(|hit| hit["case_id"].as_str() == Some(&case_b)));
     }
+
+    #[tokio::test]
+    async fn repo_scope_can_be_used_as_default_shape() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened_a = cmd_open_new(&client, "goal a", "dir a", &[], &[], None, None)
+            .await
+            .expect("first case should open");
+        let case_a = opened_a["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+        cmd_record(
+            &client,
+            &case_a,
+            "alpha vector digest",
+            "note",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("record should succeed");
+        let close_token_a = match cmd_close(&client, &case_a, "done", None).await {
+            Err(CaseError::CloseConfirmationRequired { confirm_token, .. }) => confirm_token,
+            other => panic!("unexpected close response: {other:?}"),
+        };
+        cmd_close(&client, &case_a, "done", Some(&close_token_a))
+            .await
+            .expect("first case should close");
+
+        let opened_b = cmd_open_new(&client, "goal b", "dir b", &[], &[], None, None)
+            .await
+            .expect("second case should open");
+        let case_b = opened_b["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+        cmd_record(
+            &client,
+            &case_b,
+            "beta vector digest",
+            "finding",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("record should succeed");
+
+        let context = cmd_context(
+            &client,
+            Some(&case_b),
+            ContextScopeArg::Repo,
+            Some("vector digest"),
+            Some(5),
+            Some(128),
+        )
+        .await
+        .expect("repo context should succeed");
+
+        let hits = context["case_context"]["hits"]
+            .as_array()
+            .expect("hits should exist");
+        assert!(hits
+            .iter()
+            .any(|hit| hit["case_id"].as_str() == Some(&case_a)));
+        assert!(hits
+            .iter()
+            .any(|hit| hit["case_id"].as_str() == Some(&case_b)));
+    }
 }

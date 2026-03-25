@@ -398,12 +398,12 @@ impl AgpodMcpServer {
             "case_context",
             CaseCommand::Context {
                 id: req.id.clone(),
-                scope: req.scope.unwrap_or(CaseContextScopeInput::Case).into(),
+                scope: req.scope.unwrap_or(CaseContextScopeInput::Repo).into(),
                 query: req.query,
                 limit: req.limit,
                 token_limit: req.token_limit,
             },
-            match req.scope.unwrap_or(CaseContextScopeInput::Case) {
+            match req.scope.unwrap_or(CaseContextScopeInput::Repo) {
                 CaseContextScopeInput::Case => req.id,
                 CaseContextScopeInput::Repo => None,
             },
@@ -1448,6 +1448,18 @@ mod tests {
         assert!(!envelope.is_error());
         assert_eq!(envelope.case_id, None);
         assert!(envelope.message.is_none());
+    }
+
+    #[test]
+    fn case_context_scope_input_defaults_to_repo() {
+        let request: CaseContextRequest =
+            serde_json::from_value(serde_json::json!({"query":"vector digest"}))
+                .expect("request should deserialize");
+        assert!(request.scope.is_none());
+        assert!(matches!(
+            request.scope.unwrap_or(CaseContextScopeInput::Repo),
+            CaseContextScopeInput::Repo
+        ));
     }
 
     #[test]

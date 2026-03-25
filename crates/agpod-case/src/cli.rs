@@ -265,7 +265,7 @@ pub enum CaseCommand {
         id: Option<String>,
 
         /// Retrieval scope: current case or current repo across sessions
-        #[arg(long, value_enum, default_value = "case")]
+        #[arg(long, value_enum, default_value = "repo")]
         #[serde(default)]
         scope: ContextScopeArg,
 
