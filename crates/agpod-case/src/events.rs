@@ -230,74 +230,78 @@ impl CaseDomainEvent {
         .unwrap_or_default()
     }
 
-    pub fn summary_text(&self) -> String {
+    pub fn honcho_content(&self) -> String {
         match self {
-            Self::CaseOpened { case, direction } => {
-                format!(
-                    "Case {} opened. Goal: {}. Direction: {}.",
-                    case.id, case.goal, direction.summary
-                )
-            }
-            Self::CaseReopened {
-                case, direction, ..
-            } => {
-                format!(
-                    "Case {} reopened. Current direction {}: {}.",
-                    case.id, direction.seq, direction.summary
-                )
-            }
-            Self::RecordAppended { case, entry } => {
-                format!("Record appended to case {}: {}.", case.id, entry.summary)
-            }
-            Self::DecisionAppended { case, entry } => {
-                format!("Decision recorded for case {}: {}.", case.id, entry.summary)
-            }
-            Self::RedirectCommitted {
-                case,
-                from_direction,
-                to_direction,
-                ..
-            } => format!(
-                "Case {} redirected from direction {} to {}.",
-                case.id, from_direction.summary, to_direction.summary
+            Self::CaseOpened { case, direction } => format!(
+                "Opened case. Goal: {}. Direction: {}.",
+                compact_text(&case.goal),
+                compact_text(&direction.summary)
             ),
-            Self::RedirectRecovered {
-                case,
-                from_direction,
-                to_direction,
-            } => format!(
-                "Case {} recovered redirect from direction {} to {}.",
-                case.id, from_direction.summary, to_direction.summary
+            Self::CaseReopened { direction, .. } => format!(
+                "Reopened case. Direction {}: {}.",
+                direction.seq,
+                compact_text(&direction.summary)
             ),
-            Self::StepAdded { case, step } => {
-                format!("Step added to case {}: {}.", case.id, step.title)
+            Self::RecordAppended { entry, .. } => match entry.kind.as_deref() {
+                Some(kind) if !kind.trim().is_empty() => {
+                    format!("Recorded {kind}: {}.", compact_text(&entry.summary))
+                }
+                _ => format!("Recorded: {}.", compact_text(&entry.summary)),
+            },
+            Self::DecisionAppended { entry, .. } => {
+                format!("Decision: {}.", compact_text(&entry.summary))
             }
-            Self::StepStarted { case, step } => {
-                format!("Step started in case {}: {}.", case.id, step.title)
+            Self::RedirectCommitted { to_direction, .. } => format!(
+                "Redirected case. New direction: {}.",
+                compact_text(&to_direction.summary)
+            ),
+            Self::RedirectRecovered { to_direction, .. } => format!(
+                "Recovered redirect. Active direction: {}.",
+                compact_text(&to_direction.summary)
+            ),
+            Self::StepAdded { step, .. } => {
+                format!("Step added: {}.", compact_step_title(&step.title))
             }
-            Self::StepDone { case, step } => {
-                format!("Step done in case {}: {}.", case.id, step.title)
+            Self::StepStarted { step, .. } => {
+                format!("Step started: {}.", compact_step_title(&step.title))
             }
-            Self::StepBlocked { case, step } => {
-                format!("Step blocked in case {}: {}.", case.id, step.title)
+            Self::StepDone { step, .. } => {
+                format!("Step done: {}.", compact_step_title(&step.title))
+            }
+            Self::StepBlocked { step, .. } => {
+                format!("Step blocked: {}.", compact_step_title(&step.title))
             }
             Self::StepsReordered {
-                case,
                 moved_step_id,
                 before_step_id,
                 ..
             } => format!(
-                "Steps reordered in case {}: {} moved before {}.",
-                case.id, moved_step_id, before_step_id
+                "Reordered steps. {} before {}.",
+                compact_text(moved_step_id),
+                compact_text(before_step_id)
             ),
-            Self::CaseClosed { case, summary } => {
-                format!("Case {} closed: {}.", case.id, summary)
+            Self::CaseClosed { summary, .. } => {
+                format!("Closed case: {}.", compact_text(summary))
             }
-            Self::CaseAbandoned { case, summary } => {
-                format!("Case {} abandoned: {}.", case.id, summary)
+            Self::CaseAbandoned { summary, .. } => {
+                format!("Abandoned case: {}.", compact_text(summary))
             }
         }
     }
+}
+
+fn compact_step_title(text: &str) -> String {
+    let primary = text.split(';').next().unwrap_or(text);
+    compact_text(primary)
+}
+
+fn compact_text(text: &str) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized
+        .trim()
+        .trim_end_matches(['.', '!', '?', ';', ':'])
+        .trim()
+        .to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,5 +345,114 @@ impl CaseEventEnvelope {
             occurred_at,
             event,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CaseDomainEvent;
+    use crate::types::{Case, CaseStatus, Constraint, Direction, Step, StepStatus};
+
+    fn sample_case() -> Case {
+        Case {
+            id: "C-1".to_string(),
+            repo_id: "repo-1".to_string(),
+            repo_label: Some("github.com/example/repo".to_string()),
+            worktree_id: Some("wt-1".to_string()),
+            worktree_root: Some("/tmp/repo".to_string()),
+            goal: "Investigate Honcho recall behavior".to_string(),
+            goal_constraints: vec![Constraint {
+                rule: "evidence-first".to_string(),
+                reason: None,
+            }],
+            status: CaseStatus::Open,
+            current_direction_seq: 2,
+            current_step_id: Some("C-1/S-1".to_string()),
+            opened_at: "2026-03-25T08:00:00Z".to_string(),
+            updated_at: "2026-03-25T08:00:00Z".to_string(),
+            closed_at: None,
+            close_summary: None,
+            abandoned_at: None,
+            abandon_summary: None,
+            close_confirm_token: None,
+            close_confirm_action: None,
+            close_confirm_summary: None,
+        }
+    }
+
+    fn sample_step(title: &str) -> Step {
+        Step {
+            id: "C-1/S-1".to_string(),
+            case_id: "C-1".to_string(),
+            direction_seq: 2,
+            order_index: 1,
+            title: title.to_string(),
+            status: StepStatus::Pending,
+            reason: None,
+            created_at: "2026-03-25T08:00:00Z".to_string(),
+            updated_at: "2026-03-25T08:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn honcho_content_trims_step_boilerplate() {
+        let event = CaseDomainEvent::StepAdded {
+            case: sample_case(),
+            step: sample_step(
+                "Record concrete evidence for the Honcho configuration error; can preserve symptoms but cannot assert root cause; done when both outcomes are stored as case facts.",
+            ),
+        };
+
+        assert_eq!(
+            event.honcho_content(),
+            "Step added: Record concrete evidence for the Honcho configuration error."
+        );
+    }
+
+    #[test]
+    fn honcho_content_uses_compact_redirect_summary() {
+        let event = CaseDomainEvent::RedirectCommitted {
+            case: sample_case(),
+            from_direction: Direction {
+                case_id: "C-1".to_string(),
+                seq: 1,
+                summary: "Demo smoke direction.".to_string(),
+                constraints: Vec::new(),
+                success_condition: "done".to_string(),
+                abort_condition: "stop".to_string(),
+                reason: None,
+                context: None,
+                created_at: "2026-03-25T08:00:00Z".to_string(),
+            },
+            to_direction: Direction {
+                case_id: "C-1".to_string(),
+                seq: 2,
+                summary: "Investigate intermittent Honcho-backed context recall failures."
+                    .to_string(),
+                constraints: Vec::new(),
+                success_condition: "done".to_string(),
+                abort_condition: "stop".to_string(),
+                reason: None,
+                context: None,
+                created_at: "2026-03-25T08:00:00Z".to_string(),
+            },
+            entry: crate::types::Entry {
+                case_id: "C-1".to_string(),
+                seq: 3,
+                entry_type: crate::types::EntryType::Redirect,
+                kind: None,
+                summary: "redirected".to_string(),
+                reason: None,
+                context: None,
+                files: Vec::new(),
+                artifacts: Vec::new(),
+                created_at: "2026-03-25T08:00:00Z".to_string(),
+            },
+        };
+
+        assert_eq!(
+            event.honcho_content(),
+            "Redirected case. New direction: Investigate intermittent Honcho-backed context recall failures."
+        );
     }
 }

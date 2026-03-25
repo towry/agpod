@@ -228,7 +228,6 @@ impl HonchoBackend {
     }
 
     async fn create_message(&self, event: &CaseEventEnvelope) -> CaseResult<Vec<HonchoMessage>> {
-        let event_metadata = event.event.metadata();
         self.post_json(
             &format!(
                 "/v3/workspaces/{}/sessions/{}/messages",
@@ -236,22 +235,10 @@ impl HonchoBackend {
             ),
             &json!({
                 "messages": [{
-                    "content": event.event.summary_text(),
+                    "content": event.event.honcho_content(),
                     "peer_id": self.peer_id,
                     "created_at": event.occurred_at,
-                    "metadata": {
-                        "event_id": event.event_id,
-                        "event_type": event.event.event_type(),
-                        "repo_id": event.repo_id,
-                        "repo_label": event.repo_label,
-                        "worktree_id": event.worktree_id,
-                        "worktree_root": event.worktree_root,
-                        "direction_seq": event.direction_seq,
-                        "entry_seq": event_metadata.get("entry_seq").cloned(),
-                        "step_id": event_metadata.get("step_id").cloned(),
-                        "kind": event_metadata.get("kind").cloned(),
-                        "event": event_metadata,
-                    }
+                    "metadata": honcho_message_metadata(event)
                 }]
             }),
         )
@@ -430,6 +417,27 @@ impl HonchoBackend {
             hits,
         })
     }
+}
+
+fn honcho_message_metadata(event: &CaseEventEnvelope) -> Value {
+    let mut metadata = event.event.metadata();
+    metadata.insert(
+        "event_id".to_string(),
+        Value::String(event.event_id.clone()),
+    );
+    metadata.insert(
+        "event_type".to_string(),
+        Value::String(event.event.event_type().to_string()),
+    );
+    metadata.insert("repo_id".to_string(), Value::String(event.repo_id.clone()));
+    if !metadata.contains_key("direction_seq") {
+        if let Some(direction_seq) = event.direction_seq {
+            metadata.insert("direction_seq".to_string(), json!(direction_seq));
+        }
+    }
+
+    metadata.retain(|_, value| !value.is_null());
+    Value::Object(metadata)
 }
 
 fn resolve_api_key(config: &CaseConfig) -> CaseResult<String> {
@@ -690,11 +698,13 @@ struct HonchoSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_api_key, HonchoBackend, HonchoContextResponse, HonchoSearchResponse,
-        HONCHO_MAX_ATTEMPTS,
+        honcho_message_metadata, resolve_api_key, HonchoBackend, HonchoContextResponse,
+        HonchoSearchResponse, HONCHO_MAX_ATTEMPTS,
     };
     use crate::config::CaseConfig;
     use crate::error::CaseError;
+    use crate::events::{CaseDomainEvent, CaseEventEnvelope};
+    use crate::types::{Case, CaseStatus, Constraint, Entry, EntryType};
     use serde_json::{json, Value};
     use std::sync::Mutex;
 
@@ -812,5 +822,123 @@ mod tests {
             &CaseError::HonchoHttp("network".to_string()),
             HONCHO_MAX_ATTEMPTS
         ));
+    }
+
+    #[test]
+    fn honcho_message_metadata_is_flat_and_non_null() {
+        let event = CaseEventEnvelope {
+            event_id: "evt-1".to_string(),
+            case_id: "C-1".to_string(),
+            repo_id: "repo-1".to_string(),
+            repo_label: "github.com/example/repo".to_string(),
+            worktree_id: "wt-1".to_string(),
+            worktree_root: "/tmp/repo".to_string(),
+            direction_seq: Some(2),
+            occurred_at: "2026-03-25T08:00:00Z".to_string(),
+            event: CaseDomainEvent::RecordAppended {
+                case: sample_case(),
+                entry: sample_entry(
+                    7,
+                    Some("finding"),
+                    "Found the recall regression trigger in fresh Honcho sync payloads.",
+                ),
+            },
+        };
+
+        let metadata = honcho_message_metadata(&event)
+            .as_object()
+            .cloned()
+            .expect("metadata should be an object");
+
+        assert_eq!(
+            metadata.get("event_type").and_then(Value::as_str),
+            Some("record_appended")
+        );
+        assert_eq!(
+            metadata.get("repo_id").and_then(Value::as_str),
+            Some("repo-1")
+        );
+        assert_eq!(metadata.get("case_id").and_then(Value::as_str), Some("C-1"));
+        assert_eq!(metadata.get("entry_seq").and_then(Value::as_u64), Some(7));
+        assert_eq!(
+            metadata.get("kind").and_then(Value::as_str),
+            Some("finding")
+        );
+        assert_eq!(
+            metadata.get("direction_seq").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert!(!metadata.contains_key("event"));
+        assert!(!metadata.contains_key("repo_label"));
+        assert!(!metadata.contains_key("worktree_root"));
+        assert!(!metadata.values().any(Value::is_null));
+    }
+
+    #[test]
+    fn honcho_message_metadata_drops_null_optional_fields() {
+        let event = CaseEventEnvelope {
+            event_id: "evt-2".to_string(),
+            case_id: "C-1".to_string(),
+            repo_id: "repo-1".to_string(),
+            repo_label: "github.com/example/repo".to_string(),
+            worktree_id: "wt-1".to_string(),
+            worktree_root: "/tmp/repo".to_string(),
+            direction_seq: Some(2),
+            occurred_at: "2026-03-25T08:00:00Z".to_string(),
+            event: CaseDomainEvent::RecordAppended {
+                case: sample_case(),
+                entry: sample_entry(8, None, "A summary without record kind."),
+            },
+        };
+
+        let metadata = honcho_message_metadata(&event)
+            .as_object()
+            .cloned()
+            .expect("metadata should be an object");
+
+        assert!(!metadata.contains_key("kind"));
+        assert!(!metadata.values().any(Value::is_null));
+    }
+
+    fn sample_case() -> Case {
+        Case {
+            id: "C-1".to_string(),
+            repo_id: "repo-1".to_string(),
+            repo_label: Some("github.com/example/repo".to_string()),
+            worktree_id: Some("wt-1".to_string()),
+            worktree_root: Some("/tmp/repo".to_string()),
+            goal: "Investigate Honcho recall behavior".to_string(),
+            goal_constraints: vec![Constraint {
+                rule: "evidence-first".to_string(),
+                reason: None,
+            }],
+            status: CaseStatus::Open,
+            current_direction_seq: 2,
+            current_step_id: Some("C-1/S-1".to_string()),
+            opened_at: "2026-03-25T08:00:00Z".to_string(),
+            updated_at: "2026-03-25T08:00:00Z".to_string(),
+            closed_at: None,
+            close_summary: None,
+            abandoned_at: None,
+            abandon_summary: None,
+            close_confirm_token: None,
+            close_confirm_action: None,
+            close_confirm_summary: None,
+        }
+    }
+
+    fn sample_entry(seq: u32, kind: Option<&str>, summary: &str) -> Entry {
+        Entry {
+            case_id: "C-1".to_string(),
+            seq,
+            entry_type: EntryType::Record,
+            kind: kind.map(ToOwned::to_owned),
+            summary: summary.to_string(),
+            reason: None,
+            context: None,
+            files: Vec::new(),
+            artifacts: Vec::new(),
+            created_at: "2026-03-25T08:00:00Z".to_string(),
+        }
     }
 }
