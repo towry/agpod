@@ -3661,6 +3661,7 @@ mod tests {
         let mut config = temp_db_config(&temp_dir);
         config.honcho_enabled = true;
         config.honcho_sync_enabled = true;
+        config.honcho_workspace_id = None;
         let client = CaseClient::new(
             &config,
             RepoIdentity {

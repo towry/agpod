@@ -12,7 +12,11 @@ use crate::types::{CaseContextHit, CaseContextResult, CaseSearchResult};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+const HONCHO_MAX_ATTEMPTS: usize = 3;
+const HONCHO_RETRY_BASE_DELAY_MS: u64 = 200;
 
 #[derive(Clone)]
 pub struct HonchoBackend {
@@ -73,31 +77,81 @@ impl HonchoBackend {
         T: Serialize + ?Sized,
         R: for<'de> Deserialize<'de>,
     {
-        let response = self
-            .http
-            .post(format!("{}{}", self.base_url, path))
-            .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
-            .header(CONTENT_TYPE, "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|err| CaseError::HonchoHttp(err.to_string()))?;
-        self.decode_response(response).await
+        let body = serde_json::to_value(body).map_err(CaseError::Json)?;
+        let url = format!("{}{}", self.base_url, path);
+        self.request_with_retry(|client, api_key| {
+            client
+                .post(url.clone())
+                .header(AUTHORIZATION, format!("Bearer {}", api_key))
+                .header(CONTENT_TYPE, "application/json")
+                .json(&body)
+        })
+        .await
     }
 
     async fn get_json<R>(&self, path: &str, query: &[(&str, String)]) -> CaseResult<R>
     where
         R: for<'de> Deserialize<'de>,
     {
-        let response = self
-            .http
-            .get(format!("{}{}", self.base_url, path))
-            .header(AUTHORIZATION, format!("Bearer {}", self.api_key))
-            .query(query)
-            .send()
-            .await
-            .map_err(|err| CaseError::HonchoHttp(err.to_string()))?;
-        self.decode_response(response).await
+        let query: Vec<(String, String)> = query
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect();
+        let url = format!("{}{}", self.base_url, path);
+        self.request_with_retry(|client, api_key| {
+            client
+                .get(url.clone())
+                .header(AUTHORIZATION, format!("Bearer {}", api_key))
+                .query(&query)
+        })
+        .await
+    }
+
+    async fn request_with_retry<R, F>(&self, build_request: F) -> CaseResult<R>
+    where
+        R: for<'de> Deserialize<'de>,
+        F: Fn(&reqwest::Client, &str) -> reqwest::RequestBuilder,
+    {
+        let mut last_error = None;
+        for attempt in 1..=HONCHO_MAX_ATTEMPTS {
+            let request = build_request(&self.http, &self.api_key)
+                .build()
+                .map_err(|err| CaseError::HonchoHttp(err.to_string()));
+
+            let response = match request {
+                Ok(request) => self
+                    .http
+                    .execute(request)
+                    .await
+                    .map_err(|err| CaseError::HonchoHttp(err.to_string())),
+                Err(error) => Err(error),
+            };
+
+            match response {
+                Ok(response) => match self.decode_response(response).await {
+                    Ok(value) => return Ok(value),
+                    Err(error) if self.should_retry_error(&error, attempt) => {
+                        last_error = Some(error);
+                    }
+                    Err(error) => return Err(error),
+                },
+                Err(error) if self.should_retry_error(&error, attempt) => {
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+
+            let delay = HONCHO_RETRY_BASE_DELAY_MS.saturating_mul(attempt as u64);
+            warn!(
+                attempt,
+                delay_ms = delay,
+                "retrying transient honcho request"
+            );
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        Err(last_error.unwrap_or_else(|| {
+            CaseError::HonchoHttp("honcho request failed after retries".to_string())
+        }))
     }
 
     async fn decode_response<R>(&self, response: reqwest::Response) -> CaseResult<R>
@@ -117,6 +171,22 @@ impl HonchoBackend {
             .json::<R>()
             .await
             .map_err(|err| CaseError::HonchoHttp(err.to_string()))
+    }
+
+    fn should_retry_error(&self, error: &CaseError, attempt: usize) -> bool {
+        if attempt >= HONCHO_MAX_ATTEMPTS {
+            return false;
+        }
+        match error {
+            CaseError::HonchoApi(message) => {
+                message.starts_with("429")
+                    || message.starts_with("502")
+                    || message.starts_with("503")
+                    || message.starts_with("504")
+            }
+            CaseError::HonchoHttp(_) => true,
+            _ => false,
+        }
     }
 
     async fn ensure_session(
@@ -619,8 +689,12 @@ struct HonchoSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_api_key, HonchoContextResponse, HonchoSearchResponse};
+    use super::{
+        resolve_api_key, HonchoBackend, HonchoContextResponse, HonchoSearchResponse,
+        HONCHO_MAX_ATTEMPTS,
+    };
     use crate::config::CaseConfig;
+    use crate::error::CaseError;
     use serde_json::{json, Value};
     use std::sync::Mutex;
 
@@ -710,5 +784,30 @@ mod tests {
             response[0].metadata.get("kind").and_then(Value::as_str),
             Some("finding")
         );
+    }
+
+    #[test]
+    fn honcho_retry_policy_retries_transient_errors_only() {
+        let backend = HonchoBackend {
+            http: reqwest::Client::new(),
+            base_url: "https://api.honcho.dev".to_string(),
+            workspace_id: "ws".to_string(),
+            api_key: "key".to_string(),
+            peer_id: "peer".to_string(),
+        };
+
+        assert!(backend.should_retry_error(&CaseError::HonchoHttp("network".to_string()), 1));
+        assert!(backend.should_retry_error(
+            &CaseError::HonchoApi("429 Too Many Requests".to_string()),
+            1
+        ));
+        assert!(!backend.should_retry_error(
+            &CaseError::HonchoApi("400 Bad Request".to_string()),
+            1
+        ));
+        assert!(!backend.should_retry_error(
+            &CaseError::HonchoHttp("network".to_string()),
+            HONCHO_MAX_ATTEMPTS
+        ));
     }
 }
