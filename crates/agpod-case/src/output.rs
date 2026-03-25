@@ -669,7 +669,9 @@ pub fn case_search_json(result: &CaseSearchResult) -> Value {
 pub fn case_context_json(result: &CaseContextResult) -> Value {
     json!({
         "backend": result.backend,
+        "scope": result.scope,
         "case_id": result.case_id,
+        "repo_id": result.repo_id,
         "query": result.query,
         "token_limit": result.token_limit,
         "generated_at": result.generated_at,
@@ -706,6 +708,7 @@ pub fn search_match_json(search_match: &SearchMatch) -> Value {
 
 pub fn case_context_hit_json(hit: &CaseContextHit) -> Value {
     json!({
+        "case_id": hit.case_id,
         "source": hit.source,
         "field": hit.field,
         "excerpt": hit.excerpt,
@@ -782,6 +785,9 @@ fn render_case_context(value: &Value) {
     if let Some(backend) = value.get("backend").and_then(|v| v.as_str()) {
         println!("context_backend: {backend}");
     }
+    if let Some(scope) = value.get("scope").and_then(|v| v.as_str()) {
+        println!("context_scope: {scope}");
+    }
     if let Some(query) = value.get("query").and_then(|v| v.as_str()) {
         println!("context_query: {query}");
     }
@@ -792,10 +798,15 @@ fn render_case_context(value: &Value) {
         if !hits.is_empty() {
             println!("context_hits:");
             for hit in hits {
+                let case_label = hit
+                    .get("case_id")
+                    .and_then(|v| v.as_str())
+                    .map(|case_id| format!("case {case_id} "))
+                    .unwrap_or_default();
                 let source = hit.get("source").and_then(|v| v.as_str()).unwrap_or("?");
                 let field = hit.get("field").and_then(|v| v.as_str()).unwrap_or("?");
                 let excerpt = hit.get("excerpt").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("  - {source}.{field}: {excerpt}");
+                println!("  - {case_label}{source}.{field}: {excerpt}");
             }
         }
     }

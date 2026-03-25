@@ -15,7 +15,9 @@ mod server;
 mod server_client;
 mod types;
 
-pub use cli::{CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, OpenModeArg, StepCommand};
+pub use cli::{
+    CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg, StepCommand,
+};
 pub use config::{CaseAccessMode, CaseConfig, CaseOverrides, DbConfig, DEFAULT_CASE_SERVER_ADDR};
 pub use server::CaseServer;
 pub use types::{CaseContextHit, CaseContextResult, RecordKind};

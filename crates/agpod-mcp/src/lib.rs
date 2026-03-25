@@ -3,7 +3,8 @@
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
 use agpod_case::{
-    CaseArgs, CaseCommand, CaseStatusArg, GoalDriftFlag, OpenModeArg, RecordKind, StepCommand,
+    CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg, RecordKind,
+    StepCommand,
 };
 use anyhow::Result;
 use rmcp::{
@@ -159,7 +160,7 @@ impl ServerHandler for AgpodMcpServer {
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_server_info(Implementation::from_build_env())
             .with_instructions(
-                "agpod case MCP. One open case per repo. Start each session with `case_current`. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_list` and `case_recall` for safe discovery across past cases. Use `case_context` to retrieve semantic context for the active case. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
+                "agpod case MCP. One open case per repo. Start each session with `case_current`. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_list` and `case_recall` for safe discovery across past cases. Use `case_context` with `scope=case` for one session, or `scope=repo` for current-repo cross-session semantic context. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
             )
     }
 
@@ -383,7 +384,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_context",
-        description = "Get semantic context for the open case or a chosen case using a natural-language query.",
+        description = "Get semantic context for the open case, a chosen case, or the current repo across sessions using a natural-language query.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_context(
@@ -397,11 +398,15 @@ impl AgpodMcpServer {
             "case_context",
             CaseCommand::Context {
                 id: req.id.clone(),
+                scope: req.scope.unwrap_or(CaseContextScopeInput::Case).into(),
                 query: req.query,
                 limit: req.limit,
                 token_limit: req.token_limit,
             },
-            req.id,
+            match req.scope.unwrap_or(CaseContextScopeInput::Case) {
+                CaseContextScopeInput::Case => req.id,
+                CaseContextScopeInput::Repo => None,
+            },
         )
         .await
     }
@@ -1006,6 +1011,8 @@ pub struct CaseRecallRequest {
 pub struct CaseContextRequest {
     /// Case ID. Omit to use the open case returned by `case_current`.
     pub id: Option<String>,
+    /// Retrieval scope: current case or current repo across sessions.
+    pub scope: Option<CaseContextScopeInput>,
     /// Natural-language query for semantic retrieval.
     pub query: Option<String>,
     /// Limit result count. Must be at least 1 when provided.
@@ -1013,6 +1020,13 @@ pub struct CaseContextRequest {
     pub limit: Option<usize>,
     /// Optional token budget for returned context.
     pub token_limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaseContextScopeInput {
+    Case,
+    Repo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -1041,6 +1055,15 @@ impl From<CaseStatusInput> for CaseStatusArg {
             CaseStatusInput::Open => CaseStatusArg::Open,
             CaseStatusInput::Closed => CaseStatusArg::Closed,
             CaseStatusInput::Abandoned => CaseStatusArg::Abandoned,
+        }
+    }
+}
+
+impl From<CaseContextScopeInput> for ContextScopeArg {
+    fn from(value: CaseContextScopeInput) -> Self {
+        match value {
+            CaseContextScopeInput::Case => ContextScopeArg::Case,
+            CaseContextScopeInput::Repo => ContextScopeArg::Repo,
         }
     }
 }
@@ -1277,6 +1300,9 @@ mod tests {
         assert!(list_schema.to_string().contains("limit"));
         assert!(context_schema.to_string().contains("token_limit"));
         assert!(context_schema.to_string().contains("query"));
+        assert!(context_schema.to_string().contains("scope"));
+        assert!(context_schema.to_string().contains("\"case\""));
+        assert!(context_schema.to_string().contains("\"repo\""));
         assert!(list_schema.to_string().contains("\"minimum\":1"));
         assert!(recall_schema.to_string().contains("\"minimum\":1"));
         assert!(finish_schema.to_string().contains("\"completed\""));
@@ -1399,6 +1425,29 @@ mod tests {
             envelope.message.as_deref(),
             Some("no open case in this repository")
         );
+    }
+
+    #[test]
+    fn tool_envelope_repo_context_has_no_case_id() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "repo": {
+                "id": "repo-1"
+            },
+            "case_context": {
+                "scope": "repo",
+                "repo_id": "repo-1"
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("raw payload should be an object");
+
+        let envelope = ToolEnvelope::from_raw("case_context", None, raw);
+
+        assert!(!envelope.is_error());
+        assert_eq!(envelope.case_id, None);
+        assert!(envelope.message.is_none());
     }
 
     #[test]

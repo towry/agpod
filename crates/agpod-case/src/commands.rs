@@ -2,7 +2,7 @@
 //!
 //! Keywords: commands, execute, dispatch, open, record, decide, redirect, close, step
 
-use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, OpenModeArg, StepCommand};
+use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, OpenModeArg, StepCommand};
 use crate::client::CaseClient;
 use crate::config::{CaseConfig, CaseOverrides};
 use crate::context::{CaseContextProvider, LocalCaseContextProvider};
@@ -12,7 +12,7 @@ use crate::honcho::HonchoBackend;
 use crate::hooks::{CaseDispatchReport, CaseEventDispatcher, CaseHookStatus};
 use crate::output;
 use crate::repo_id::RepoIdentity;
-use crate::search::{CaseSearchBackend, LocalTextSearchBackend};
+use crate::search::{CaseSearchBackend, ContextScope, LocalTextSearchBackend};
 use crate::server_client::execute_via_server;
 use crate::types::*;
 use crate::GoalDriftFlag;
@@ -323,6 +323,7 @@ pub(crate) async fn execute_command_json(
         }
         CaseCommand::Context {
             id,
+            scope,
             query,
             limit,
             token_limit,
@@ -330,6 +331,7 @@ pub(crate) async fn execute_command_json(
             cmd_context(
                 client,
                 id.as_deref(),
+                *scope,
                 query.as_deref(),
                 *limit,
                 *token_limit,
@@ -1776,6 +1778,7 @@ async fn cmd_recall(
 async fn cmd_context(
     client: &CaseClient,
     id: Option<&str>,
+    scope: ContextScopeArg,
     query: Option<&str>,
     limit: Option<usize>,
     token_limit: Option<u32>,
@@ -1785,18 +1788,58 @@ async fn cmd_context(
             "limit must be at least 1".to_string(),
         ));
     }
-    let case = resolve_case(client, id).await?;
-    let provider = context_provider_for_client(client)?;
-    let result = provider
-        .get_context(&case.id, query, limit.unwrap_or(5), token_limit)
-        .await?;
+    let default_limit = limit.unwrap_or(5);
 
-    Ok(json!({
-        "ok": true,
-        "case": output::case_json(&case),
-        "case_context": output::case_context_json(&result),
-        "context": output::context_json(&case.id, case.current_direction_seq),
-    }))
+    match scope {
+        ContextScopeArg::Case => {
+            let case = resolve_case(client, id).await?;
+            let provider = context_provider_for_client(client)?;
+            let result = provider
+                .get_context(
+                    ContextScope::Case { case_id: &case.id },
+                    query,
+                    default_limit,
+                    token_limit,
+                )
+                .await?;
+
+            Ok(json!({
+                "ok": true,
+                "case": output::case_json(&case),
+                "case_context": output::case_context_json(&result),
+                "context": output::context_json(&case.id, case.current_direction_seq),
+            }))
+        }
+        ContextScopeArg::Repo => {
+            let result =
+                if client.config().honcho_enabled && client.config().semantic_recall_enabled {
+                    if let Some(honcho) = HonchoBackend::from_config(client.config())? {
+                        honcho
+                            .get_repo_context(client.repo_id(), query, default_limit, token_limit)
+                            .await?
+                    } else {
+                        LocalCaseContextProvider::new(client.clone())
+                            .get_context(ContextScope::Repo, query, default_limit, token_limit)
+                            .await?
+                    }
+                } else {
+                    LocalCaseContextProvider::new(client.clone())
+                        .get_context(ContextScope::Repo, query, default_limit, token_limit)
+                        .await?
+                };
+
+            Ok(json!({
+                "ok": true,
+                "repo": {
+                    "id": client.repo_id(),
+                    "label": client.repo_label(),
+                    "worktree_id": client.worktree_id(),
+                    "worktree_root": client.worktree_root(),
+                },
+                "case_context": output::case_context_json(&result),
+            }))
+        }
+    }
 }
 
 async fn cmd_list(client: &CaseClient, options: CaseListOptions) -> CaseResult<serde_json::Value> {
@@ -3459,6 +3502,7 @@ mod tests {
         let context = cmd_context(
             &client,
             Some(&case_id),
+            ContextScopeArg::Case,
             Some("token limit"),
             Some(3),
             Some(128),
@@ -3570,9 +3614,16 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let error = cmd_context(&client, Some(&case_id), Some("query"), Some(5), Some(256))
-            .await
-            .expect_err("invalid honcho config should fail fast");
+        let error = cmd_context(
+            &client,
+            Some(&case_id),
+            ContextScopeArg::Case,
+            Some("query"),
+            Some(5),
+            Some(256),
+        )
+        .await
+        .expect_err("invalid honcho config should fail fast");
         assert!(matches!(error, CaseError::HonchoConfig(_)));
     }
 
@@ -3643,9 +3694,121 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let error = cmd_context(&client, Some(&case_id), Some("query"), Some(0), Some(128))
-            .await
-            .expect_err("zero limit should be rejected");
+        let error = cmd_context(
+            &client,
+            Some(&case_id),
+            ContextScopeArg::Case,
+            Some("query"),
+            Some(0),
+            Some(128),
+        )
+        .await
+        .expect_err("zero limit should be rejected");
         assert!(matches!(error, CaseError::InvalidListOption(_)));
+    }
+
+    #[tokio::test]
+    async fn repo_scope_context_aggregates_across_sessions_locally() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened_a = cmd_open_new(
+            &client,
+            "first case goal",
+            "inspect docs",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("first case should open");
+        let case_a = opened_a["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+        cmd_record(
+            &client,
+            &case_a,
+            "shared repo memory about vector digest",
+            "note",
+            &[],
+            &[],
+            Some("cross session evidence"),
+        )
+        .await
+        .expect("record on first case should succeed");
+        let close_token_a = match cmd_close(&client, &case_a, "done", None).await {
+            Err(CaseError::CloseConfirmationRequired { confirm_token, .. }) => confirm_token,
+            other => panic!("unexpected close response: {other:?}"),
+        };
+        cmd_close(&client, &case_a, "done", Some(&close_token_a))
+            .await
+            .expect("first case should close");
+
+        let opened_b = cmd_open_new(
+            &client,
+            "second case goal",
+            "inspect memory",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("second case should open");
+        let case_b = opened_b["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+        cmd_record(
+            &client,
+            &case_b,
+            "current session also mentions vector digest",
+            "finding",
+            &[],
+            &[],
+            Some("fresh evidence"),
+        )
+        .await
+        .expect("record on current case should succeed");
+
+        let context = cmd_context(
+            &client,
+            None,
+            ContextScopeArg::Repo,
+            Some("vector digest"),
+            Some(6),
+            Some(256),
+        )
+        .await
+        .expect("repo context should succeed");
+
+        assert_eq!(context["case_context"]["scope"].as_str(), Some("repo"));
+        assert_eq!(
+            context["case_context"]["repo_id"].as_str(),
+            Some("aaaaaaaaaaaaaaaa")
+        );
+        let hits = context["case_context"]["hits"]
+            .as_array()
+            .expect("hits should exist");
+        assert!(hits.len() >= 2);
+        assert!(hits
+            .iter()
+            .any(|hit| hit["case_id"].as_str() == Some(&case_a)));
+        assert!(hits
+            .iter()
+            .any(|hit| hit["case_id"].as_str() == Some(&case_b)));
     }
 }

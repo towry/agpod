@@ -7,7 +7,7 @@ use crate::context::CaseContextProvider;
 use crate::error::{CaseError, CaseResult};
 use crate::events::CaseEventEnvelope;
 use crate::hooks::{CaseEventSink, HookFuture};
-use crate::search::{CaseSearchBackend, SearchFuture};
+use crate::search::{CaseSearchBackend, ContextScope, SearchFuture};
 use crate::types::{CaseContextHit, CaseContextResult, CaseSearchResult};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -200,6 +200,27 @@ impl HonchoBackend {
         .await
     }
 
+    async fn search_workspace_raw(
+        &self,
+        query: &str,
+        limit: usize,
+        repo_id: &str,
+    ) -> CaseResult<HonchoSearchResponse> {
+        self.post_json(
+            &format!("/v2/workspaces/{}/search", self.workspace_id),
+            &json!({
+                "query": query,
+                "limit": limit,
+                "filters": {
+                    "metadata": {
+                        "repo_id": repo_id,
+                    }
+                }
+            }),
+        )
+        .await
+    }
+
     async fn get_context_raw(
         &self,
         case_id: &str,
@@ -217,6 +238,89 @@ impl HonchoBackend {
             &query,
         )
         .await
+    }
+
+    pub async fn get_repo_context(
+        &self,
+        repo_id: &str,
+        query: Option<&str>,
+        limit: usize,
+        token_limit: Option<u32>,
+    ) -> CaseResult<CaseContextResult> {
+        let hits = match query {
+            Some(query) if !query.trim().is_empty() => {
+                let response = self.search_workspace_raw(query, limit, repo_id).await?;
+                response
+                    .results
+                    .into_iter()
+                    .map(|hit| CaseContextHit {
+                        case_id: hit.session_id.clone(),
+                        source: hit.source.unwrap_or_else(|| "honcho".to_string()),
+                        field: hit.field.unwrap_or_else(|| "content".to_string()),
+                        excerpt: hit.content,
+                        score: hit.score.unwrap_or(0.0) as i64,
+                        direction_seq: hit
+                            .metadata
+                            .get("direction_seq")
+                            .and_then(Value::as_u64)
+                            .map(|value| value as u32),
+                        entry_seq: hit
+                            .metadata
+                            .get("entry_seq")
+                            .and_then(Value::as_u64)
+                            .map(|value| value as u32),
+                        step_id: hit
+                            .metadata
+                            .get("step_id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        kind: hit
+                            .metadata
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Repository {repo_id} cross-session context from Honcho"
+        ));
+        if hits.is_empty() {
+            lines.push("No semantic hits found.".to_string());
+        } else {
+            lines.push("Relevant semantic hits:".to_string());
+            for hit in &hits {
+                let case_id = hit.case_id.as_deref().unwrap_or("?");
+                lines.push(format!(
+                    "- case {} {}.{}: {}",
+                    case_id, hit.source, hit.field, hit.excerpt
+                ));
+            }
+        }
+
+        let mut context = lines.join("\n");
+        if let Some(limit) = token_limit {
+            let char_limit = (limit as usize).saturating_mul(4);
+            if context.len() > char_limit {
+                context.truncate(char_limit);
+            }
+        }
+
+        Ok(CaseContextResult {
+            backend: <Self as CaseContextProvider>::backend_name(self).to_string(),
+            scope: "repo".to_string(),
+            case_id: None,
+            repo_id: Some(repo_id.to_string()),
+            query: query.map(ToOwned::to_owned),
+            token_limit,
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            context,
+            hits,
+        })
     }
 }
 
@@ -255,6 +359,7 @@ impl CaseSearchBackend for HonchoBackend {
                 .results
                 .into_iter()
                 .map(|hit| CaseContextHit {
+                    case_id: hit.session_id.clone(),
                     source: hit.source.unwrap_or_else(|| "honcho".to_string()),
                     field: hit.field.unwrap_or_else(|| "content".to_string()),
                     excerpt: hit.content,
@@ -284,6 +389,18 @@ impl CaseSearchBackend for HonchoBackend {
             Ok(hits)
         })
     }
+
+    fn search_repo<'a>(
+        &'a self,
+        _query: &'a str,
+        _limit: usize,
+    ) -> SearchFuture<'a, Vec<CaseContextHit>> {
+        Box::pin(async move {
+            Err(CaseError::SemanticBackendUnavailable(
+                "Honcho repo search requires repo-aware provider invocation".to_string(),
+            ))
+        })
+    }
 }
 
 impl CaseContextProvider for HonchoBackend {
@@ -293,29 +410,42 @@ impl CaseContextProvider for HonchoBackend {
 
     fn get_context<'a>(
         &'a self,
-        case_id: &'a str,
+        scope: ContextScope<'a>,
         query: Option<&'a str>,
         limit: usize,
         token_limit: Option<u32>,
     ) -> SearchFuture<'a, CaseContextResult> {
         Box::pin(async move {
-            let context = self.get_context_raw(case_id, token_limit).await?;
-            let hits = match query {
-                Some(query) if !query.trim().is_empty() => {
-                    self.search_case(case_id, query, limit).await?
-                }
-                _ => Vec::new(),
-            };
+            match scope {
+                ContextScope::Case { case_id } => {
+                    let context = self.get_context_raw(case_id, token_limit).await?;
+                    let hits = match query {
+                        Some(query) if !query.trim().is_empty() => {
+                            self.search_case(case_id, query, limit).await?
+                        }
+                        _ => Vec::new(),
+                    };
 
-            Ok(CaseContextResult {
-                backend: <Self as CaseContextProvider>::backend_name(self).to_string(),
-                case_id: case_id.to_string(),
-                query: query.map(ToOwned::to_owned),
-                token_limit,
-                generated_at: chrono::Utc::now().to_rfc3339(),
-                context: context.rendered_context,
-                hits,
-            })
+                    Ok(CaseContextResult {
+                        backend: <Self as CaseContextProvider>::backend_name(self).to_string(),
+                        scope: "case".to_string(),
+                        case_id: Some(case_id.to_string()),
+                        repo_id: context
+                            .metadata
+                            .get("repo_id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        query: query.map(ToOwned::to_owned),
+                        token_limit,
+                        generated_at: chrono::Utc::now().to_rfc3339(),
+                        context: context.rendered_context,
+                        hits,
+                    })
+                }
+                ContextScope::Repo => Err(CaseError::ContextProviderUnavailable(
+                    "Honcho repo scope requires repo-aware context provider".to_string(),
+                )),
+            }
         })
     }
 }
@@ -336,6 +466,8 @@ struct HonchoSearchResponse {
 struct HonchoSearchHit {
     content: String,
     #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
     score: Option<f64>,
     #[serde(default)]
     source: Option<String>,
@@ -349,4 +481,6 @@ struct HonchoSearchHit {
 struct HonchoContextResponse {
     #[serde(default, alias = "context")]
     rendered_context: String,
+    #[serde(default)]
+    metadata: Value,
 }

@@ -10,6 +10,12 @@ use std::pin::Pin;
 
 pub type SearchFuture<'a, T> = Pin<Box<dyn Future<Output = CaseResult<T>> + Send + 'a>>;
 
+#[derive(Debug, Clone, Copy)]
+pub enum ContextScope<'a> {
+    Case { case_id: &'a str },
+    Repo,
+}
+
 pub trait CaseSearchBackend: Send + Sync {
     #[allow(dead_code)]
     fn backend_name(&self) -> &'static str;
@@ -19,6 +25,26 @@ pub trait CaseSearchBackend: Send + Sync {
     fn search_case<'a>(
         &'a self,
         case_id: &'a str,
+        query: &'a str,
+        limit: usize,
+    ) -> SearchFuture<'a, Vec<CaseContextHit>>;
+
+    fn search_scope<'a>(
+        &'a self,
+        scope: ContextScope<'a>,
+        query: &'a str,
+        limit: usize,
+    ) -> SearchFuture<'a, Vec<CaseContextHit>> {
+        Box::pin(async move {
+            match scope {
+                ContextScope::Case { case_id } => self.search_case(case_id, query, limit).await,
+                ContextScope::Repo => self.search_repo(query, limit).await,
+            }
+        })
+    }
+
+    fn search_repo<'a>(
+        &'a self,
         query: &'a str,
         limit: usize,
     ) -> SearchFuture<'a, Vec<CaseContextHit>>;
@@ -60,6 +86,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
 
             push_hit(
                 &mut hits,
+                Some(case.id.as_str()),
                 "case",
                 "goal",
                 case.goal.as_str(),
@@ -74,6 +101,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
             for direction in &directions {
                 push_hit(
                     &mut hits,
+                    Some(case.id.as_str()),
                     "direction",
                     "summary",
                     direction.summary.as_str(),
@@ -87,6 +115,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                 if let Some(reason) = direction.reason.as_deref() {
                     push_hit(
                         &mut hits,
+                        Some(case.id.as_str()),
                         "direction",
                         "reason",
                         reason,
@@ -101,6 +130,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                 if let Some(context) = direction.context.as_deref() {
                     push_hit(
                         &mut hits,
+                        Some(case.id.as_str()),
                         "direction",
                         "context",
                         context,
@@ -117,6 +147,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
             for step in &steps {
                 push_hit(
                     &mut hits,
+                    Some(case.id.as_str()),
                     "step",
                     "title",
                     step.title.as_str(),
@@ -130,6 +161,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                 if let Some(reason) = step.reason.as_deref() {
                     push_hit(
                         &mut hits,
+                        Some(case.id.as_str()),
                         "step",
                         "reason",
                         reason,
@@ -146,6 +178,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
             for entry in &entries {
                 push_hit(
                     &mut hits,
+                    Some(case.id.as_str()),
                     "entry",
                     "summary",
                     entry.summary.as_str(),
@@ -159,6 +192,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                 if let Some(reason) = entry.reason.as_deref() {
                     push_hit(
                         &mut hits,
+                        Some(case.id.as_str()),
                         "entry",
                         "reason",
                         reason,
@@ -173,6 +207,7 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                 if let Some(context) = entry.context.as_deref() {
                     push_hit(
                         &mut hits,
+                        Some(case.id.as_str()),
                         "entry",
                         "context",
                         context,
@@ -198,11 +233,178 @@ impl CaseSearchBackend for LocalTextSearchBackend {
             Ok(hits)
         })
     }
+
+    fn search_repo<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> SearchFuture<'a, Vec<CaseContextHit>> {
+        Box::pin(async move {
+            let needle = query.trim().to_lowercase();
+            let cases = self.client.list_cases().await?;
+            let mut hits = Vec::new();
+
+            for case in cases {
+                push_hit(
+                    &mut hits,
+                    Some(case.id.as_str()),
+                    "case",
+                    "goal",
+                    case.goal.as_str(),
+                    &needle,
+                    80,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+
+                let directions = self.client.get_directions(&case.id).await?;
+                for direction in &directions {
+                    push_hit(
+                        &mut hits,
+                        Some(case.id.as_str()),
+                        "direction",
+                        "summary",
+                        direction.summary.as_str(),
+                        &needle,
+                        60,
+                        Some(direction.seq),
+                        None,
+                        None,
+                        None,
+                    );
+                    if let Some(reason) = direction.reason.as_deref() {
+                        push_hit(
+                            &mut hits,
+                            Some(case.id.as_str()),
+                            "direction",
+                            "reason",
+                            reason,
+                            &needle,
+                            36,
+                            Some(direction.seq),
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                    if let Some(context) = direction.context.as_deref() {
+                        push_hit(
+                            &mut hits,
+                            Some(case.id.as_str()),
+                            "direction",
+                            "context",
+                            context,
+                            &needle,
+                            34,
+                            Some(direction.seq),
+                            None,
+                            None,
+                            None,
+                        );
+                    }
+                }
+
+                let steps = self.client.get_all_steps(&case.id).await?;
+                for step in &steps {
+                    push_hit(
+                        &mut hits,
+                        Some(case.id.as_str()),
+                        "step",
+                        "title",
+                        step.title.as_str(),
+                        &needle,
+                        28,
+                        Some(step.direction_seq),
+                        None,
+                        Some(step.id.as_str()),
+                        None,
+                    );
+                    if let Some(reason) = step.reason.as_deref() {
+                        push_hit(
+                            &mut hits,
+                            Some(case.id.as_str()),
+                            "step",
+                            "reason",
+                            reason,
+                            &needle,
+                            20,
+                            Some(step.direction_seq),
+                            None,
+                            Some(step.id.as_str()),
+                            None,
+                        );
+                    }
+                }
+
+                let entries = self.client.get_entries(&case.id).await?;
+                for entry in &entries {
+                    push_hit(
+                        &mut hits,
+                        Some(case.id.as_str()),
+                        "entry",
+                        "summary",
+                        entry.summary.as_str(),
+                        &needle,
+                        48,
+                        None,
+                        Some(entry.seq),
+                        None,
+                        entry.kind.as_deref(),
+                    );
+                    if let Some(reason) = entry.reason.as_deref() {
+                        push_hit(
+                            &mut hits,
+                            Some(case.id.as_str()),
+                            "entry",
+                            "reason",
+                            reason,
+                            &needle,
+                            24,
+                            None,
+                            Some(entry.seq),
+                            None,
+                            entry.kind.as_deref(),
+                        );
+                    }
+                    if let Some(context) = entry.context.as_deref() {
+                        push_hit(
+                            &mut hits,
+                            Some(case.id.as_str()),
+                            "entry",
+                            "context",
+                            context,
+                            &needle,
+                            30,
+                            None,
+                            Some(entry.seq),
+                            None,
+                            entry.kind.as_deref(),
+                        );
+                    }
+                }
+            }
+
+            hits.sort_by(|left, right| {
+                right
+                    .score
+                    .cmp(&left.score)
+                    .then_with(|| right.entry_seq.cmp(&left.entry_seq))
+                    .then_with(|| right.direction_seq.cmp(&left.direction_seq))
+                    .then_with(|| left.case_id.cmp(&right.case_id))
+            });
+            hits.truncate(limit.max(1));
+
+            Ok(hits)
+        })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn push_hit(
     hits: &mut Vec<CaseContextHit>,
+    case_id: Option<&str>,
     source: &str,
     field: &str,
     haystack: &str,
@@ -218,6 +420,7 @@ fn push_hit(
     }
 
     hits.push(CaseContextHit {
+        case_id: case_id.map(ToOwned::to_owned),
         source: source.to_string(),
         field: field.to_string(),
         excerpt: haystack.to_string(),

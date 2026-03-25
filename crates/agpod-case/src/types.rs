@@ -264,6 +264,7 @@ pub struct CaseSearchResult {
 /// A per-case hit suitable for context assembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseContextHit {
+    pub case_id: Option<String>,
     pub source: String,
     pub field: String,
     pub excerpt: String,
@@ -278,7 +279,9 @@ pub struct CaseContextHit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseContextResult {
     pub backend: String,
-    pub case_id: String,
+    pub scope: String,
+    pub case_id: Option<String>,
+    pub repo_id: Option<String>,
     pub query: Option<String>,
     pub token_limit: Option<u32>,
     pub generated_at: String,

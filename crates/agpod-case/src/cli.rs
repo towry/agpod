@@ -39,6 +39,25 @@ pub enum OpenModeArg {
     Reopen,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+    JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextScopeArg {
+    #[default]
+    Case,
+    Repo,
+}
+
 #[derive(Debug, Args)]
 pub struct CaseArgs {
     /// SurrealDB data directory (default: $XDG_DATA_HOME/agpod/case.db)
@@ -244,6 +263,11 @@ pub enum CaseCommand {
         /// Case ID (defaults to open case)
         #[arg(long)]
         id: Option<String>,
+
+        /// Retrieval scope: current case or current repo across sessions
+        #[arg(long, value_enum, default_value = "case")]
+        #[serde(default)]
+        scope: ContextScopeArg,
 
         /// Natural language query used for semantic retrieval
         #[arg(long)]
