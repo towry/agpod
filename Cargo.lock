@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "agpod"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "agpod-case",
  "agpod-core",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-case"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "agpod-core",
  "anyhow",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-case-server"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "agpod-case",
  "agpod-core",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "dirs",
  "serde",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-diff"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "agpod-core",
  "anyhow",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-mcp"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "agpod-case",
  "agpod-core",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-vcs-path"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "agpod-core",
  "anyhow",
