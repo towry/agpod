@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/towry/agpod/compare/agpod-case-server-v0.2.4...agpod-case-server-v0.3.0) (2026-03-25)
+
+
+### Features
+
+* **case:** add honcho context architecture ([#119](https://github.com/towry/agpod/issues/119)) ([ba85796](https://github.com/towry/agpod/commit/ba8579675898c7c7b9072dc6729b5813667979a3))
+
 ## [0.2.4](https://github.com/towry/agpod/compare/agpod-case-server-v0.2.3...agpod-case-server-v0.2.4) (2026-03-23)
 
 ## [0.2.3](https://github.com/towry/agpod/compare/agpod-case-server-v0.2.2...agpod-case-server-v0.2.3) (2026-03-23)
