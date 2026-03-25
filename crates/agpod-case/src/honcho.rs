@@ -801,10 +801,9 @@ mod tests {
             &CaseError::HonchoApi("429 Too Many Requests".to_string()),
             1
         ));
-        assert!(!backend.should_retry_error(
-            &CaseError::HonchoApi("400 Bad Request".to_string()),
-            1
-        ));
+        assert!(
+            !backend.should_retry_error(&CaseError::HonchoApi("400 Bad Request".to_string()), 1)
+        );
         assert!(!backend.should_retry_error(
             &CaseError::HonchoHttp("network".to_string()),
             HONCHO_MAX_ATTEMPTS

@@ -160,7 +160,7 @@ impl ServerHandler for AgpodMcpServer {
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_server_info(Implementation::from_build_env())
             .with_instructions(
-                "agpod case MCP. One open case per repo. Start each session with `case_current`. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, and `context_token_limit` to get semantic context. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
+                "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `context_shortcut`, and `context_token_limit` to get semantic context. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
             )
     }
 
@@ -177,7 +177,7 @@ impl ServerHandler for AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "case_current",
-        description = "Read active case state. Preferred first call for a new session.",
+        description = "Read active case state after you have decided the task should use case tracking, or when resuming known case-aware work.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_current(
@@ -190,7 +190,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_open",
-        description = "Open a case. Use `mode=new` to create a fresh case when `case_current` shows none is open. Use `mode=reopen` with `case_id` to reopen a previously closed or abandoned case. Never call this if another case is already open for the repo.",
+        description = "Open a case only after you have decided the task merits case tracking. Use `mode=new` to create a fresh case when `case_current` shows none is open. Use `mode=reopen` with `case_id` to reopen a previously closed or abandoned case. Never call this if another case is already open for the repo.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_open(
@@ -364,11 +364,17 @@ impl AgpodMcpServer {
         &self,
         Parameters(req): Parameters<CaseRecallRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        if req.query.trim().is_empty() {
-            return Err(ErrorData::invalid_params("query must not be empty", None));
-        }
         match req.mode.unwrap_or_default() {
             CaseRecallModeInput::Find => {
+                if req.query.trim().is_empty() {
+                    return Err(ErrorData::invalid_params("query must not be empty", None));
+                }
+                if req.context_shortcut.is_some() {
+                    return Err(ErrorData::invalid_params(
+                        "`context_shortcut` is only supported when mode=`context`",
+                        None,
+                    ));
+                }
                 validate_list_request(req.find_limit, req.find_recent_days)?;
                 self.run_case_tool(
                     "case_recall",
@@ -383,6 +389,26 @@ impl AgpodMcpServer {
                 .await
             }
             CaseRecallModeInput::Context => {
+                if req.context_shortcut.is_some() && !req.query.trim().is_empty() {
+                    return Err(ErrorData::invalid_params(
+                        "`query` cannot be combined with `context_shortcut`; use one or the other",
+                        None,
+                    ));
+                }
+                let resolved_query = match req.context_shortcut {
+                    Some(CaseContextShortcutInput::RecentWork) => {
+                        "Summarize the most recent work completed or in progress in this repository. Focus on latest steps, findings, decisions, blockers, and next actions.".to_string()
+                    }
+                    None => {
+                        if req.query.trim().is_empty() {
+                            return Err(ErrorData::invalid_params(
+                                "query must not be empty",
+                                None,
+                            ));
+                        }
+                        req.query.clone()
+                    }
+                };
                 if req.find_status.is_some() || req.find_recent_days.is_some() {
                     return Err(ErrorData::invalid_params(
                         "`find_status` and `find_recent_days` are only supported when mode=`find`",
@@ -395,7 +421,10 @@ impl AgpodMcpServer {
                         None,
                     ));
                 }
-                let context_scope = req.context_scope.unwrap_or(CaseContextScopeInput::Repo);
+                let context_scope = match req.context_shortcut {
+                    Some(CaseContextShortcutInput::RecentWork) => CaseContextScopeInput::Repo,
+                    None => req.context_scope.unwrap_or(CaseContextScopeInput::Repo),
+                };
                 let case_id_hint = match context_scope {
                     CaseContextScopeInput::Case => req.context_id.clone(),
                     CaseContextScopeInput::Repo => None,
@@ -405,7 +434,7 @@ impl AgpodMcpServer {
                     CaseCommand::Context {
                         id: req.context_id,
                         scope: context_scope.into(),
-                        query: Some(req.query),
+                        query: Some(resolved_query),
                         limit: req.context_limit,
                         token_limit: req.context_token_limit,
                     },
@@ -1001,13 +1030,14 @@ pub struct CaseFinishRequest {
 pub struct CaseRecallRequest {
     /// Retrieval mode: discover matching cases or assemble semantic context.
     pub mode: Option<CaseRecallModeInput>,
-    /// Search query. Must not be empty or whitespace-only.
-    #[schemars(length(min = 1))]
+    /// Search query. Required unless `context_shortcut` is used with `mode=context`.
     pub query: String,
     /// Case ID. Used when `mode=context` and `context_scope=case`.
     pub context_id: Option<String>,
     /// Context retrieval scope. Used when `mode=context`.
     pub context_scope: Option<CaseContextScopeInput>,
+    /// Shortcut for common `mode=context` retrieval patterns.
+    pub context_shortcut: Option<CaseContextShortcutInput>,
     /// Optional case status filter for `mode=find`.
     pub find_status: Option<CaseStatusInput>,
     /// Limit result count for `mode=find`. Must be at least 1 when provided.
@@ -1028,6 +1058,12 @@ pub struct CaseRecallRequest {
 pub enum CaseContextScopeInput {
     Case,
     Repo,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseContextShortcutInput {
+    RecentWork,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -1228,6 +1264,7 @@ mod tests {
         assert!(instructions.contains("mode=context"));
         assert!(instructions.contains("find_status"));
         assert!(instructions.contains("context_scope"));
+        assert!(instructions.contains("context_shortcut"));
     }
 
     #[test]
@@ -1304,6 +1341,8 @@ mod tests {
         assert!(recall_schema.to_string().contains("\"context\""));
         assert!(recall_schema.to_string().contains("context_id"));
         assert!(recall_schema.to_string().contains("context_scope"));
+        assert!(recall_schema.to_string().contains("context_shortcut"));
+        assert!(recall_schema.to_string().contains("recent_work"));
         assert!(recall_schema.to_string().contains("context_token_limit"));
         assert!(recall_schema.to_string().contains("context_limit"));
         assert!(list_schema.to_string().contains("limit"));
@@ -1477,6 +1516,21 @@ mod tests {
         assert!(matches!(
             request.context_scope.unwrap_or(CaseContextScopeInput::Repo),
             CaseContextScopeInput::Repo
+        ));
+    }
+
+    #[test]
+    fn case_recall_context_shortcut_deserializes() {
+        let request: CaseRecallRequest = serde_json::from_value(serde_json::json!({
+            "mode":"context",
+            "query":"",
+            "context_shortcut":"recent_work"
+        }))
+        .expect("request should deserialize");
+
+        assert!(matches!(
+            request.context_shortcut,
+            Some(CaseContextShortcutInput::RecentWork)
         ));
     }
 

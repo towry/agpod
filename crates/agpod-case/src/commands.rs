@@ -484,7 +484,7 @@ fn error_next_action(error: &CaseError) -> Option<NextAction> {
         }),
         CaseError::NoOpenCase => Some(NextAction {
             suggested_command: "open".to_string(),
-            why: "there is no active case yet for this repository".to_string(),
+            why: "there is no active case; first decide whether this task actually needs case tracking, then open one only if warranted".to_string(),
         }),
         CaseError::CaseNotFound(_) => Some(NextAction {
             suggested_command: "list".to_string(),
@@ -1253,7 +1253,7 @@ async fn cmd_close(
 
     let next = NextAction {
         suggested_command: "open".to_string(),
-        why: "the repository now has no active case".to_string(),
+        why: "the repository now has no active case; open a new one only if the next task merits case tracking".to_string(),
     };
 
     let mut value = json!({
@@ -1296,7 +1296,7 @@ async fn cmd_abandon(
 
     let next = NextAction {
         suggested_command: "open".to_string(),
-        why: "the previous goal has been explicitly abandoned".to_string(),
+        why: "the previous goal has been explicitly abandoned; open a new case only if the next task merits case tracking".to_string(),
     };
 
     let mut value = json!({
