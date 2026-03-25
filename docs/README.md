@@ -5,6 +5,8 @@ This directory contains active documentation for `agpod`.
 ## Guides
 
 - [case-configuration.md](case-configuration.md) - Configure `agpod case`, including Honcho integration
+- [case-honcho.md](case-honcho.md) - Developer-facing Honcho integration notes and mapping
+- [case-plugins.md](case-plugins.md) - Developer-facing plugin and external hook architecture
 - [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) - Diff save mode and review chunk output
 - [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) - Current crate layout and responsibilities
 - [agents-md/case-surrealdb.md](agents-md/case-surrealdb.md) - Notes for `agpod-case` storage internals

@@ -120,10 +120,9 @@ sync_enabled = true
 # base_url = "https://api.honcho.dev"
 # workspace_id = "ws_123"
 # api_key_env = "HONCHO_API_KEY"
-# peer_id = "agpod-system"
 ```
 
-See [examples/config.toml](examples/config.toml).
+See [examples/config.toml](examples/config.toml) and [docs/case-configuration.md](docs/case-configuration.md).
 
 Environment variables still override file config. Common Honcho-related overrides:
 
@@ -133,7 +132,6 @@ Environment variables still override file config. Common Honcho-related override
 - `HONCHO_BASE_URL=https://api.honcho.dev`
 - `HONCHO_WORKSPACE_ID=ws_123`
 - `AGPOD_CASE_HONCHO_API_KEY_ENV=HONCHO_API_KEY`
-- `AGPOD_CASE_HONCHO_PEER_ID=agpod-system`
 - `HONCHO_API_KEY=...`
 
 ## Workspace

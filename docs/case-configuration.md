@@ -31,7 +31,6 @@ sync_enabled = true
 base_url = "https://api.honcho.dev"
 workspace_id = "ws_123"
 api_key_env = "HONCHO_API_KEY"
-peer_id = "agpod-system"
 ```
 
 ## Honcho Fields
@@ -41,7 +40,6 @@ peer_id = "agpod-system"
 - `base_url` — Honcho API base URL
 - `workspace_id` — target Honcho workspace
 - `api_key_env` — env var name that stores the API key
-- `peer_id` — peer identifier used when writing messages
 
 ## Environment Overrides
 
@@ -54,7 +52,6 @@ Environment variables still override file config:
 - `HONCHO_BASE_URL`
 - `HONCHO_WORKSPACE_ID`
 - `AGPOD_CASE_HONCHO_API_KEY_ENV`
-- `AGPOD_CASE_HONCHO_PEER_ID`
 - the env var named by `api_key_env` (default `HONCHO_API_KEY`)
 
 ## Notes
@@ -62,3 +59,4 @@ Environment variables still override file config:
 - If `case.plugins.honcho.enabled = false`, Honcho config is ignored.
 - If Honcho is enabled, missing `base_url`, `workspace_id`, or API key env will fail fast.
 - Keep secrets in environment variables, not in `.agpod.toml`.
+- Some implementation-only fields are intentionally omitted from user-facing config docs.
