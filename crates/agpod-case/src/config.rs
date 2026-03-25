@@ -198,6 +198,10 @@ impl CaseConfig {
             }
         }
 
+        if should_enable_honcho_from_env(&config) {
+            config.honcho_enabled = true;
+        }
+
         if let Some(path) = overrides.data_dir {
             config.data_dir = PathBuf::from(path);
         }
@@ -302,6 +306,16 @@ fn parse_access_mode(raw: &str) -> Option<CaseAccessMode> {
     }
 }
 
+fn should_enable_honcho_from_env(config: &CaseConfig) -> bool {
+    config.honcho_enabled
+        || (config.honcho_base_url.is_some()
+            && config.honcho_workspace_id.is_some()
+            && (config.honcho_api_key.is_some()
+                || std::env::var(config.honcho_api_key_env.trim())
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +379,28 @@ mod tests {
         std::env::remove_var("HONCHO_BASE_URL");
         std::env::remove_var("HONCHO_WORKSPACE_ID");
         std::env::remove_var("AGPOD_CASE_HONCHO_API_KEY");
+    }
+
+    #[test]
+    fn honcho_auto_enables_when_env_is_complete() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        std::env::set_var("HONCHO_BASE_URL", "https://example.test");
+        std::env::set_var("HONCHO_WORKSPACE_ID", "ws-123");
+        std::env::set_var("HONCHO_API_KEY", "env-secret");
+
+        let config = CaseConfig::load(CaseOverrides::default());
+        assert!(config.honcho_enabled);
+        assert_eq!(
+            config.honcho_base_url.as_deref(),
+            Some("https://example.test")
+        );
+        assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws-123"));
+        assert_eq!(config.honcho_api_key, None);
+        assert_eq!(config.honcho_api_key_env, "HONCHO_API_KEY");
+
+        std::env::remove_var("HONCHO_BASE_URL");
+        std::env::remove_var("HONCHO_WORKSPACE_ID");
+        std::env::remove_var("HONCHO_API_KEY");
     }
 
     #[test]
