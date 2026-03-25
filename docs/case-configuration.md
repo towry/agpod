@@ -70,7 +70,6 @@ Environment variables still override file config:
 ## Notes
 
 - If `case.plugins.honcho.enabled = false`, Honcho config is ignored.
-- If `HONCHO_BASE_URL`, `HONCHO_WORKSPACE_ID`, and a valid Honcho API key are already present in the environment, `agpod case` auto-enables Honcho unless config explicitly disables it.
 - If Honcho is enabled, missing `base_url`, `workspace_id`, and both `api_key` / API key env will fail fast.
 - `api_key` is supported for convenience, but environment variables remain safer when practical.
 - Some implementation-only fields are intentionally omitted from user-facing config docs.
