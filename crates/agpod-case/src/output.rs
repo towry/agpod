@@ -64,6 +64,13 @@ fn render_text(value: &Value) {
         return;
     }
 
+    if let Some(state) = value.get("state").and_then(|v| v.as_str()) {
+        if value.get("kind").and_then(|v| v.as_str()) == Some("case_current_state") {
+            println!("{state}");
+            return;
+        }
+    }
+
     // Case list (list / recall)
     if let Some(cases) = value.get("cases").and_then(|v| v.as_array()) {
         render_case_list(cases, value.get("query").and_then(|v| v.as_str()));

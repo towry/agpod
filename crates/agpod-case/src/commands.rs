@@ -272,7 +272,7 @@ pub(crate) async fn execute_command_json(
             )
             .await
         }
-        CaseCommand::Current => cmd_current(client).await,
+        CaseCommand::Current { state } => cmd_current(client, *state).await,
         CaseCommand::Record {
             id,
             summary,
@@ -532,7 +532,7 @@ async fn load_context_case(
         || matches!(
             command,
             CaseCommand::Open { .. }
-                | CaseCommand::Current
+                | CaseCommand::Current { .. }
                 | CaseCommand::Show { id: None }
                 | CaseCommand::Resume { id: None }
         )
@@ -560,7 +560,7 @@ fn command_case_id(command: &CaseCommand) -> Option<&str> {
         },
         CaseCommand::Context { id, .. } => id.as_deref(),
         CaseCommand::Open { .. }
-        | CaseCommand::Current
+        | CaseCommand::Current { .. }
         | CaseCommand::Recall { .. }
         | CaseCommand::List { .. } => None,
     }
@@ -840,11 +840,20 @@ async fn cmd_open_new(
     .await
 }
 
-async fn cmd_current(client: &CaseClient) -> CaseResult<serde_json::Value> {
+async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_json::Value> {
     let case = client
         .find_open_case()
         .await?
         .ok_or(CaseError::NoOpenCase)?;
+
+    if state_only {
+        return Ok(json!({
+            "ok": true,
+            "kind": "case_current_state",
+            "state": case.status.as_str(),
+            "case_id": case.id,
+        }));
+    }
 
     let directions = client.get_directions(&case.id).await?;
     let all_steps = client.get_all_steps(&case.id).await?;
@@ -2269,6 +2278,64 @@ mod tests {
             .await
             .expect_err("repo B should not resolve repo A case by explicit id");
         assert!(matches!(error, CaseError::CaseNotFound(id) if id == case_id_a));
+    }
+
+    #[tokio::test]
+    async fn current_state_only_returns_open_with_case_id() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let result = cmd_current(&client, true)
+            .await
+            .expect("state-only current should succeed");
+
+        assert_eq!(result["kind"].as_str(), Some("case_current_state"));
+        assert_eq!(result["state"].as_str(), Some("open"));
+        assert_eq!(result["case_id"].as_str(), Some(case_id.as_str()));
+        assert!(result.get("direction").is_none());
+        assert!(result.get("steps").is_none());
+    }
+
+    #[tokio::test]
+    async fn current_state_only_without_open_case_returns_no_open_case() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let error = cmd_current(&client, true)
+            .await
+            .expect_err("state-only current should fail without open case");
+
+        assert!(matches!(error, CaseError::NoOpenCase));
     }
 
     #[tokio::test]
