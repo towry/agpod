@@ -702,9 +702,11 @@ mod tests {
 
     #[test]
     fn resolve_api_key_prefers_direct_config_value() {
-        let mut config = CaseConfig::default();
-        config.honcho_api_key = Some(" direct-secret ".to_string());
-        config.honcho_api_key_env = "HONCHO_UNUSED".to_string();
+        let config = CaseConfig {
+            honcho_api_key: Some(" direct-secret ".to_string()),
+            honcho_api_key_env: "HONCHO_UNUSED".to_string(),
+            ..CaseConfig::default()
+        };
 
         let api_key = resolve_api_key(&config).expect("direct key should resolve");
         assert_eq!(api_key, "direct-secret");
@@ -715,8 +717,10 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::set_var("HONCHO_TEST_ENV_KEY", "env-secret");
 
-        let mut config = CaseConfig::default();
-        config.honcho_api_key_env = "HONCHO_TEST_ENV_KEY".to_string();
+        let config = CaseConfig {
+            honcho_api_key_env: "HONCHO_TEST_ENV_KEY".to_string(),
+            ..CaseConfig::default()
+        };
 
         let api_key = resolve_api_key(&config).expect("env key should resolve");
         assert_eq!(api_key, "env-secret");

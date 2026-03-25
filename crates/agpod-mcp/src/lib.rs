@@ -19,6 +19,7 @@ use rmcp::{
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone)]
@@ -366,12 +367,17 @@ impl AgpodMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         match req.mode.unwrap_or_default() {
             CaseRecallModeInput::Find => {
-                if req.query.trim().is_empty() {
+                if req.query.as_deref().unwrap_or_default().trim().is_empty() {
                     return Err(ErrorData::invalid_params("query must not be empty", None));
                 }
-                if req.context_shortcut.is_some() {
+                if req.context_id.is_some()
+                    || req.context_scope.is_some()
+                    || req.context_shortcut.is_some()
+                    || req.context_limit.is_some()
+                    || req.context_token_limit.is_some()
+                {
                     return Err(ErrorData::invalid_params(
-                        "`context_shortcut` is only supported when mode=`context`",
+                        "`context_*` fields are only supported when mode=`context`",
                         None,
                     ));
                 }
@@ -379,7 +385,7 @@ impl AgpodMcpServer {
                 self.run_case_tool(
                     "case_recall",
                     CaseCommand::Recall {
-                        query: req.query,
+                        query: req.query.unwrap_or_default(),
                         status: req.find_status.map(Into::into),
                         limit: req.find_limit,
                         recent_days: req.find_recent_days,
@@ -389,7 +395,9 @@ impl AgpodMcpServer {
                 .await
             }
             CaseRecallModeInput::Context => {
-                if req.context_shortcut.is_some() && !req.query.trim().is_empty() {
+                if req.context_shortcut.is_some()
+                    && !req.query.as_deref().unwrap_or_default().trim().is_empty()
+                {
                     return Err(ErrorData::invalid_params(
                         "`query` cannot be combined with `context_shortcut`; use one or the other",
                         None,
@@ -400,18 +408,21 @@ impl AgpodMcpServer {
                         "Summarize the most recent work completed or in progress in this repository. Focus on latest steps, findings, decisions, blockers, and next actions.".to_string()
                     }
                     None => {
-                        if req.query.trim().is_empty() {
+                        if req.query.as_deref().unwrap_or_default().trim().is_empty() {
                             return Err(ErrorData::invalid_params(
                                 "query must not be empty",
                                 None,
                             ));
                         }
-                        req.query.clone()
+                        req.query.clone().unwrap_or_default()
                     }
                 };
-                if req.find_status.is_some() || req.find_recent_days.is_some() {
+                if req.find_status.is_some()
+                    || req.find_limit.is_some()
+                    || req.find_recent_days.is_some()
+                {
                     return Err(ErrorData::invalid_params(
-                        "`find_status` and `find_recent_days` are only supported when mode=`find`",
+                        "`find_*` fields are only supported when mode=`find`",
                         None,
                     ));
                 }
@@ -425,6 +436,19 @@ impl AgpodMcpServer {
                     Some(CaseContextShortcutInput::RecentWork) => CaseContextScopeInput::Repo,
                     None => req.context_scope.unwrap_or(CaseContextScopeInput::Repo),
                 };
+                if matches!(context_scope, CaseContextScopeInput::Case)
+                    && req
+                        .context_id
+                        .as_deref()
+                        .unwrap_or_default()
+                        .trim()
+                        .is_empty()
+                {
+                    return Err(ErrorData::invalid_params(
+                        "`context_id` is required when mode=`context` and context_scope=`case`",
+                        None,
+                    ));
+                }
                 let case_id_hint = match context_scope {
                     CaseContextScopeInput::Case => req.context_id.clone(),
                     CaseContextScopeInput::Repo => None,
@@ -1026,12 +1050,12 @@ pub struct CaseFinishRequest {
     pub confirm_token: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecallRequest {
     /// Retrieval mode: discover matching cases or assemble semantic context.
     pub mode: Option<CaseRecallModeInput>,
     /// Search query. Required unless `context_shortcut` is used with `mode=context`.
-    pub query: String,
+    pub query: Option<String>,
     /// Case ID. Used when `mode=context` and `context_scope=case`.
     pub context_id: Option<String>,
     /// Context retrieval scope. Used when `mode=context`.
@@ -1041,16 +1065,139 @@ pub struct CaseRecallRequest {
     /// Optional case status filter for `mode=find`.
     pub find_status: Option<CaseStatusInput>,
     /// Limit result count for `mode=find`. Must be at least 1 when provided.
-    #[schemars(range(min = 1))]
     pub find_limit: Option<usize>,
     /// Only include cases updated within the last N days for `mode=find`. Must be at least 1 when provided.
-    #[schemars(range(min = 1))]
     pub find_recent_days: Option<u32>,
     /// Limit result count for `mode=context`. Must be at least 1 when provided.
-    #[schemars(range(min = 1))]
     pub context_limit: Option<usize>,
     /// Optional token budget for returned context when `mode=context`.
     pub context_token_limit: Option<u32>,
+}
+
+impl schemars::JsonSchema for CaseRecallRequest {
+    fn schema_name() -> Cow<'static, str> {
+        "CaseRecallRequest".into()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        concat!(module_path!(), "::CaseRecallRequest").into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mode_schema = generator.subschema_for::<CaseRecallModeInput>();
+        let status_schema = generator.subschema_for::<CaseStatusInput>();
+        let scope_schema = generator.subschema_for::<CaseContextScopeInput>();
+        let shortcut_schema = generator.subschema_for::<CaseContextShortcutInput>();
+
+        schemars::json_schema!({
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "description": "Retrieval mode: discover matching cases or assemble semantic context.",
+                    "default": "find",
+                    "oneOf": [mode_schema.clone()]
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query. Required unless `context_shortcut` is used with `mode=context`."
+                },
+                "context_id": {
+                    "type": "string",
+                    "description": "Case ID. Used when `mode=context` and `context_scope=case`."
+                },
+                "context_scope": {
+                    "description": "Context retrieval scope. Used when `mode=context`.",
+                    "oneOf": [scope_schema]
+                },
+                "context_shortcut": {
+                    "description": "Shortcut for common `mode=context` retrieval patterns.",
+                    "oneOf": [shortcut_schema]
+                },
+                "find_status": {
+                    "description": "Optional case status filter for `mode=find`.",
+                    "oneOf": [status_schema]
+                },
+                "find_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Limit result count for `mode=find`. Must be at least 1 when provided."
+                },
+                "find_recent_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Only include cases updated within the last N days for `mode=find`. Must be at least 1 when provided."
+                },
+                "context_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Limit result count for `mode=context`. Must be at least 1 when provided."
+                },
+                "context_token_limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional token budget for returned context when `mode=context`."
+                }
+            },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": { "mode": { "const": "context" } },
+                        "required": ["mode"]
+                    },
+                    "then": {
+                        "allOf": [
+                            {
+                                "if": {
+                                    "properties": { "context_scope": { "const": "case" } },
+                                    "required": ["context_scope"]
+                                },
+                                "then": { "required": ["context_id"] }
+                            },
+                            {
+                                "if": {
+                                    "properties": { "context_shortcut": { "const": "recent_work" } },
+                                    "required": ["context_shortcut"]
+                                },
+                                "then": {
+                                    "not": { "required": ["query"] }
+                                },
+                                "else": {
+                                    "required": ["query"]
+                                }
+                            }
+                        ]
+                    },
+                    "else": {
+                        "required": ["query"],
+                        "not": {
+                            "anyOf": [
+                                { "required": ["context_id"] },
+                                { "required": ["context_scope"] },
+                                { "required": ["context_shortcut"] },
+                                { "required": ["context_limit"] },
+                                { "required": ["context_token_limit"] }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "if": {
+                        "properties": { "mode": { "const": "context" } },
+                        "required": ["mode"]
+                    },
+                    "then": {
+                        "not": {
+                            "anyOf": [
+                                { "required": ["find_status"] },
+                                { "required": ["find_limit"] },
+                                { "required": ["find_recent_days"] }
+                            ]
+                        }
+                    }
+                }
+            ]
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1523,7 +1670,6 @@ mod tests {
     fn case_recall_context_shortcut_deserializes() {
         let request: CaseRecallRequest = serde_json::from_value(serde_json::json!({
             "mode":"context",
-            "query":"",
             "context_shortcut":"recent_work"
         }))
         .expect("request should deserialize");
@@ -1532,6 +1678,36 @@ mod tests {
             request.context_shortcut,
             Some(CaseContextShortcutInput::RecentWork)
         ));
+        assert!(request.query.is_none());
+    }
+
+    #[test]
+    fn case_recall_schema_marks_query_optional_for_recent_work_shortcut() {
+        let server = AgpodMcpServer::new();
+        let tools = server.tool_router.list_all();
+        let recall_tool = tools
+            .iter()
+            .find(|tool| tool.name == "case_recall")
+            .expect("case_recall tool should exist");
+        let recall_schema =
+            serde_json::to_string(&recall_tool.input_schema).expect("schema should serialize");
+
+        assert!(recall_schema.contains("\"context_shortcut\":{\"description\""));
+        assert!(recall_schema.contains("\"const\":\"recent_work\""));
+        assert!(recall_schema.contains("\"required\":[\"context_id\"]"));
+        assert!(recall_schema.contains("\"required\":[\"query\"]"));
+    }
+
+    #[test]
+    fn case_recall_request_allows_missing_query_for_recent_work() {
+        let request: CaseRecallRequest = serde_json::from_value(serde_json::json!({
+            "mode":"context",
+            "context_shortcut":"recent_work"
+        }))
+        .expect("recent_work should not require query");
+
+        assert!(matches!(request.mode, Some(CaseRecallModeInput::Context)));
+        assert!(request.query.is_none());
     }
 
     #[test]
