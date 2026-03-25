@@ -73,6 +73,22 @@ pub struct CaseConfigFile {
     pub honcho_workspace_id: Option<String>,
     pub honcho_api_key_env: Option<String>,
     pub honcho_peer_id: Option<String>,
+    pub plugins: Option<CasePluginsFile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CasePluginsFile {
+    pub honcho: Option<CaseHonchoPluginFile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CaseHonchoPluginFile {
+    pub enabled: Option<bool>,
+    pub sync_enabled: Option<bool>,
+    pub base_url: Option<String>,
+    pub workspace_id: Option<String>,
+    pub api_key_env: Option<String>,
+    pub peer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -219,6 +235,28 @@ impl CaseConfig {
         if let Some(peer_id) = file.honcho_peer_id {
             self.honcho_peer_id = peer_id;
         }
+        if let Some(plugins) = file.plugins {
+            if let Some(honcho) = plugins.honcho {
+                if let Some(enabled) = honcho.enabled {
+                    self.honcho_enabled = enabled;
+                }
+                if let Some(sync_enabled) = honcho.sync_enabled {
+                    self.honcho_sync_enabled = sync_enabled;
+                }
+                if let Some(base_url) = honcho.base_url {
+                    self.honcho_base_url = Some(base_url);
+                }
+                if let Some(workspace_id) = honcho.workspace_id {
+                    self.honcho_workspace_id = Some(workspace_id);
+                }
+                if let Some(api_key_env) = honcho.api_key_env {
+                    self.honcho_api_key_env = api_key_env;
+                }
+                if let Some(peer_id) = honcho.peer_id {
+                    self.honcho_peer_id = peer_id;
+                }
+            }
+        }
     }
 }
 
@@ -306,5 +344,63 @@ mod tests {
         std::env::remove_var("AGPOD_CASE_HONCHO_ENABLED");
         std::env::remove_var("HONCHO_BASE_URL");
         std::env::remove_var("HONCHO_WORKSPACE_ID");
+    }
+
+    #[test]
+    fn file_config_can_enable_honcho_settings() {
+        let mut config = CaseConfig::default();
+        config.merge_file(CaseConfigFile {
+            semantic_recall_enabled: Some(true),
+            vector_digest_job_enabled: Some(true),
+            honcho_enabled: Some(true),
+            honcho_sync_enabled: Some(false),
+            honcho_base_url: Some("https://api.honcho.dev".to_string()),
+            honcho_workspace_id: Some("ws_configured".to_string()),
+            honcho_api_key_env: Some("HONCHO_API_KEY_CUSTOM".to_string()),
+            honcho_peer_id: Some("agpod-agent".to_string()),
+            ..CaseConfigFile::default()
+        });
+
+        assert!(config.semantic_recall_enabled);
+        assert!(config.vector_digest_job_enabled);
+        assert!(config.honcho_enabled);
+        assert!(!config.honcho_sync_enabled);
+        assert_eq!(
+            config.honcho_base_url.as_deref(),
+            Some("https://api.honcho.dev")
+        );
+        assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws_configured"));
+        assert_eq!(config.honcho_api_key_env, "HONCHO_API_KEY_CUSTOM");
+        assert_eq!(config.honcho_peer_id, "agpod-agent");
+    }
+
+    #[test]
+    fn nested_honcho_plugin_config_applies() {
+        let mut config = CaseConfig::default();
+        config.merge_file(CaseConfigFile {
+            semantic_recall_enabled: Some(true),
+            plugins: Some(CasePluginsFile {
+                honcho: Some(CaseHonchoPluginFile {
+                    enabled: Some(true),
+                    sync_enabled: Some(false),
+                    base_url: Some("https://nested.honcho.dev".to_string()),
+                    workspace_id: Some("ws_nested".to_string()),
+                    api_key_env: Some("HONCHO_NESTED_KEY".to_string()),
+                    peer_id: Some("agpod-nested".to_string()),
+                }),
+            }),
+            ..CaseConfigFile::default()
+        });
+
+        assert!(config.semantic_recall_enabled);
+        assert!(config.honcho_enabled);
+        assert!(!config.honcho_sync_enabled);
+        assert_eq!(
+            config.honcho_base_url.as_deref(),
+            Some("https://nested.honcho.dev")
+        );
+        assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws_nested"));
+        assert_eq!(config.honcho_api_key_env, "HONCHO_NESTED_KEY");
+        assert_eq!(config.honcho_peer_id, "agpod-nested");
     }
 }

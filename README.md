@@ -106,9 +106,35 @@ output_dir = "llm/diff"
 large_file_changes_threshold = 100
 large_file_lines_threshold = 500
 max_consecutive_empty_lines = 2
+
+[case]
+server_addr = "127.0.0.1:6142"
+auto_start = true
+access_mode = "local_server"
+semantic_recall_enabled = false
+vector_digest_job_enabled = false
+
+[case.plugins.honcho]
+enabled = false
+sync_enabled = true
+# base_url = "https://api.honcho.dev"
+# workspace_id = "ws_123"
+# api_key_env = "HONCHO_API_KEY"
+# peer_id = "agpod-system"
 ```
 
 See [examples/config.toml](examples/config.toml).
+
+Environment variables still override file config. Common Honcho-related overrides:
+
+- `AGPOD_CASE_HONCHO_ENABLED=true`
+- `AGPOD_CASE_HONCHO_SYNC_ENABLED=true`
+- `AGPOD_CASE_SEMANTIC_RECALL=true`
+- `HONCHO_BASE_URL=https://api.honcho.dev`
+- `HONCHO_WORKSPACE_ID=ws_123`
+- `AGPOD_CASE_HONCHO_API_KEY_ENV=HONCHO_API_KEY`
+- `AGPOD_CASE_HONCHO_PEER_ID=agpod-system`
+- `HONCHO_API_KEY=...`
 
 ## Workspace
 

@@ -17,3 +17,11 @@ access_mode = "local_server"
 semantic_recall_enabled = false
 vector_digest_job_enabled = false
 # data_dir = "~/.local/share/agpod/case.db"
+
+[case.plugins.honcho]
+enabled = false
+sync_enabled = true
+# base_url = "https://api.honcho.dev"
+# workspace_id = "ws_123"
+# api_key_env = "HONCHO_API_KEY"
+# peer_id = "agpod-system"

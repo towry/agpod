@@ -63,6 +63,56 @@ pub struct CaseConfig {
 
     #[serde(default)]
     pub vector_digest_job_enabled: Option<bool>,
+
+    #[serde(default)]
+    pub honcho_enabled: Option<bool>,
+
+    #[serde(default)]
+    pub honcho_sync_enabled: Option<bool>,
+
+    #[serde(default)]
+    pub honcho_base_url: Option<String>,
+
+    #[serde(default)]
+    pub honcho_workspace_id: Option<String>,
+
+    #[serde(default)]
+    pub honcho_api_key_env: Option<String>,
+
+    #[serde(default)]
+    pub honcho_peer_id: Option<String>,
+
+    #[serde(default)]
+    pub plugins: Option<CasePluginsConfig>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CasePluginsConfig {
+    #[serde(default)]
+    pub honcho: Option<CaseHonchoPluginConfig>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CaseHonchoPluginConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+
+    #[serde(default)]
+    pub sync_enabled: Option<bool>,
+
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+
+    #[serde(default)]
+    pub peer_id: Option<String>,
 }
 
 /// Configuration for diff minimization.
