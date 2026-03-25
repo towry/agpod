@@ -119,6 +119,7 @@ enabled = false
 sync_enabled = true
 # base_url = "https://api.honcho.dev"
 # workspace_id = "ws_123"
+# api_key = "honcho_secret"
 # api_key_env = "HONCHO_API_KEY"
 ```
 
@@ -131,6 +132,7 @@ Environment variables still override file config. Common Honcho-related override
 - `AGPOD_CASE_SEMANTIC_RECALL=true`
 - `HONCHO_BASE_URL=https://api.honcho.dev`
 - `HONCHO_WORKSPACE_ID=ws_123`
+- `AGPOD_CASE_HONCHO_API_KEY=...`
 - `AGPOD_CASE_HONCHO_API_KEY_ENV=HONCHO_API_KEY`
 - `HONCHO_API_KEY=...`
 

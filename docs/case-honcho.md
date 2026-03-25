@@ -19,6 +19,7 @@ enabled = true
 sync_enabled = true
 base_url = "https://api.honcho.dev"
 workspace_id = "ws_123"
+api_key = "honcho_secret"
 api_key_env = "HONCHO_API_KEY"
 ```
 
@@ -27,6 +28,8 @@ api_key_env = "HONCHO_API_KEY"
 - `peer_id`
 
 其今仅作 Honcho message 之发送方标识，默认由实现管理。
+
+`api_key` 与 `api_key_env` 可并存；同层配置中 `api_key` 优先。若环境变量层设 `AGPOD_CASE_HONCHO_API_KEY` 或 `AGPOD_CASE_HONCHO_API_KEY_ENV`，则仍依总优先级覆盖文件配置。
 
 ## 实体映射
 

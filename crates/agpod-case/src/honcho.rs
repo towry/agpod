@@ -36,17 +36,7 @@ impl HonchoBackend {
             .honcho_workspace_id
             .clone()
             .ok_or_else(|| CaseError::HonchoConfig("missing `honcho_workspace_id`".to_string()))?;
-        let api_key_env = config.honcho_api_key_env.trim();
-        if api_key_env.is_empty() {
-            return Err(CaseError::HonchoConfig(
-                "`honcho_api_key_env` must not be empty".to_string(),
-            ));
-        }
-        let api_key = std::env::var(api_key_env).map_err(|_| {
-            CaseError::HonchoConfig(format!(
-                "missing env var `{api_key_env}` for Honcho API key"
-            ))
-        })?;
+        let api_key = resolve_api_key(config)?;
         if config.honcho_peer_id.trim().is_empty() {
             return Err(CaseError::HonchoConfig(
                 "`honcho_peer_id` must not be empty".to_string(),
@@ -324,6 +314,30 @@ impl HonchoBackend {
     }
 }
 
+fn resolve_api_key(config: &CaseConfig) -> CaseResult<String> {
+    if let Some(api_key) = config
+        .honcho_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(api_key.to_string());
+    }
+
+    let api_key_env = config.honcho_api_key_env.trim();
+    if api_key_env.is_empty() {
+        return Err(CaseError::HonchoConfig(
+            "missing `honcho_api_key` or non-empty `honcho_api_key_env`".to_string(),
+        ));
+    }
+
+    std::env::var(api_key_env).map_err(|_| {
+        CaseError::HonchoConfig(format!(
+            "missing `honcho_api_key` and env var `{api_key_env}` for Honcho API key"
+        ))
+    })
+}
+
 impl CaseEventSink for HonchoBackend {
     fn name(&self) -> &'static str {
         "honcho"
@@ -483,4 +497,52 @@ struct HonchoContextResponse {
     rendered_context: String,
     #[serde(default)]
     metadata: Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_api_key;
+    use crate::config::CaseConfig;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_api_key_prefers_direct_config_value() {
+        let mut config = CaseConfig::default();
+        config.honcho_api_key = Some(" direct-secret ".to_string());
+        config.honcho_api_key_env = "HONCHO_UNUSED".to_string();
+
+        let api_key = resolve_api_key(&config).expect("direct key should resolve");
+        assert_eq!(api_key, "direct-secret");
+    }
+
+    #[test]
+    fn resolve_api_key_uses_env_when_direct_value_missing() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        std::env::set_var("HONCHO_TEST_ENV_KEY", "env-secret");
+
+        let mut config = CaseConfig::default();
+        config.honcho_api_key_env = "HONCHO_TEST_ENV_KEY".to_string();
+
+        let api_key = resolve_api_key(&config).expect("env key should resolve");
+        assert_eq!(api_key, "env-secret");
+
+        std::env::remove_var("HONCHO_TEST_ENV_KEY");
+    }
+
+    #[test]
+    fn resolve_api_key_fails_when_both_sources_missing() {
+        let config = CaseConfig {
+            honcho_api_key: None,
+            honcho_api_key_env: " ".to_string(),
+            ..CaseConfig::default()
+        };
+
+        let error = resolve_api_key(&config).expect_err("missing key should fail");
+        assert_eq!(
+            error.to_string(),
+            "honcho config error: missing `honcho_api_key` or non-empty `honcho_api_key_env`"
+        );
+    }
 }

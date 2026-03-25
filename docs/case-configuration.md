@@ -30,6 +30,7 @@ enabled = true
 sync_enabled = true
 base_url = "https://api.honcho.dev"
 workspace_id = "ws_123"
+api_key = "honcho_secret"
 api_key_env = "HONCHO_API_KEY"
 ```
 
@@ -39,6 +40,7 @@ api_key_env = "HONCHO_API_KEY"
 - `sync_enabled` — send qualifying case events to Honcho
 - `base_url` — Honcho API base URL
 - `workspace_id` — target Honcho workspace
+- `api_key` — raw API key stored directly in config
 - `api_key_env` — env var name that stores the API key
 
 ## Environment Overrides
@@ -51,12 +53,13 @@ Environment variables still override file config:
 - `AGPOD_CASE_VECTOR_DIGEST_JOB`
 - `HONCHO_BASE_URL`
 - `HONCHO_WORKSPACE_ID`
+- `AGPOD_CASE_HONCHO_API_KEY`
 - `AGPOD_CASE_HONCHO_API_KEY_ENV`
 - the env var named by `api_key_env` (default `HONCHO_API_KEY`)
 
 ## Notes
 
 - If `case.plugins.honcho.enabled = false`, Honcho config is ignored.
-- If Honcho is enabled, missing `base_url`, `workspace_id`, or API key env will fail fast.
-- Keep secrets in environment variables, not in `.agpod.toml`.
+- If Honcho is enabled, missing `base_url`, `workspace_id`, and both `api_key` / API key env will fail fast.
+- `api_key` is supported for convenience, but environment variables remain safer when practical.
 - Some implementation-only fields are intentionally omitted from user-facing config docs.

@@ -31,6 +31,7 @@ pub struct CaseConfig {
     pub honcho_sync_enabled: bool,
     pub honcho_base_url: Option<String>,
     pub honcho_workspace_id: Option<String>,
+    pub honcho_api_key: Option<String>,
     pub honcho_api_key_env: String,
     pub honcho_peer_id: String,
 }
@@ -52,6 +53,7 @@ impl Default for CaseConfig {
             honcho_sync_enabled: true,
             honcho_base_url: None,
             honcho_workspace_id: None,
+            honcho_api_key: None,
             honcho_api_key_env: "HONCHO_API_KEY".to_string(),
             honcho_peer_id: "agpod-system".to_string(),
         }
@@ -71,6 +73,7 @@ pub struct CaseConfigFile {
     pub honcho_sync_enabled: Option<bool>,
     pub honcho_base_url: Option<String>,
     pub honcho_workspace_id: Option<String>,
+    pub honcho_api_key: Option<String>,
     pub honcho_api_key_env: Option<String>,
     pub honcho_peer_id: Option<String>,
     pub plugins: Option<CasePluginsFile>,
@@ -87,6 +90,7 @@ pub struct CaseHonchoPluginFile {
     pub sync_enabled: Option<bool>,
     pub base_url: Option<String>,
     pub workspace_id: Option<String>,
+    pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub peer_id: Option<String>,
 }
@@ -177,7 +181,14 @@ impl CaseConfig {
 
         if let Ok(value) = std::env::var("AGPOD_CASE_HONCHO_API_KEY_ENV") {
             if !value.is_empty() {
+                config.honcho_api_key = None;
                 config.honcho_api_key_env = value;
+            }
+        }
+
+        if let Ok(value) = std::env::var("AGPOD_CASE_HONCHO_API_KEY") {
+            if !value.is_empty() {
+                config.honcho_api_key = Some(value);
             }
         }
 
@@ -232,6 +243,9 @@ impl CaseConfig {
         if let Some(api_key_env) = file.honcho_api_key_env {
             self.honcho_api_key_env = api_key_env;
         }
+        if let Some(api_key) = file.honcho_api_key {
+            self.honcho_api_key = Some(api_key);
+        }
         if let Some(peer_id) = file.honcho_peer_id {
             self.honcho_peer_id = peer_id;
         }
@@ -251,6 +265,9 @@ impl CaseConfig {
                 }
                 if let Some(api_key_env) = honcho.api_key_env {
                     self.honcho_api_key_env = api_key_env;
+                }
+                if let Some(api_key) = honcho.api_key {
+                    self.honcho_api_key = Some(api_key);
                 }
                 if let Some(peer_id) = honcho.peer_id {
                     self.honcho_peer_id = peer_id;
@@ -303,6 +320,7 @@ mod tests {
         assert!(!config.vector_digest_job_enabled);
         assert!(!config.honcho_enabled);
         assert!(config.honcho_sync_enabled);
+        assert_eq!(config.honcho_api_key, None);
         assert_eq!(config.honcho_api_key_env, "HONCHO_API_KEY");
         assert_eq!(config.honcho_peer_id, "agpod-system");
     }
@@ -326,6 +344,7 @@ mod tests {
         std::env::set_var("AGPOD_CASE_HONCHO_ENABLED", "true");
         std::env::set_var("HONCHO_BASE_URL", "https://example.test");
         std::env::set_var("HONCHO_WORKSPACE_ID", "ws-123");
+        std::env::set_var("AGPOD_CASE_HONCHO_API_KEY", "direct-secret");
 
         let config = CaseConfig::load(CaseOverrides::default());
         assert!(!config.auto_start);
@@ -337,6 +356,7 @@ mod tests {
             Some("https://example.test")
         );
         assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws-123"));
+        assert_eq!(config.honcho_api_key.as_deref(), Some("direct-secret"));
 
         std::env::remove_var("AGPOD_CASE_AUTO_START");
         std::env::remove_var("AGPOD_CASE_ACCESS_MODE");
@@ -344,6 +364,7 @@ mod tests {
         std::env::remove_var("AGPOD_CASE_HONCHO_ENABLED");
         std::env::remove_var("HONCHO_BASE_URL");
         std::env::remove_var("HONCHO_WORKSPACE_ID");
+        std::env::remove_var("AGPOD_CASE_HONCHO_API_KEY");
     }
 
     #[test]
@@ -356,6 +377,7 @@ mod tests {
             honcho_sync_enabled: Some(false),
             honcho_base_url: Some("https://api.honcho.dev".to_string()),
             honcho_workspace_id: Some("ws_configured".to_string()),
+            honcho_api_key: Some("honcho-inline-secret".to_string()),
             honcho_api_key_env: Some("HONCHO_API_KEY_CUSTOM".to_string()),
             honcho_peer_id: Some("agpod-agent".to_string()),
             ..CaseConfigFile::default()
@@ -370,6 +392,10 @@ mod tests {
             Some("https://api.honcho.dev")
         );
         assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws_configured"));
+        assert_eq!(
+            config.honcho_api_key.as_deref(),
+            Some("honcho-inline-secret")
+        );
         assert_eq!(config.honcho_api_key_env, "HONCHO_API_KEY_CUSTOM");
         assert_eq!(config.honcho_peer_id, "agpod-agent");
     }
@@ -385,6 +411,7 @@ mod tests {
                     sync_enabled: Some(false),
                     base_url: Some("https://nested.honcho.dev".to_string()),
                     workspace_id: Some("ws_nested".to_string()),
+                    api_key: Some("nested-inline-secret".to_string()),
                     api_key_env: Some("HONCHO_NESTED_KEY".to_string()),
                     peer_id: Some("agpod-nested".to_string()),
                 }),
@@ -400,7 +427,29 @@ mod tests {
             Some("https://nested.honcho.dev")
         );
         assert_eq!(config.honcho_workspace_id.as_deref(), Some("ws_nested"));
+        assert_eq!(
+            config.honcho_api_key.as_deref(),
+            Some("nested-inline-secret")
+        );
         assert_eq!(config.honcho_api_key_env, "HONCHO_NESTED_KEY");
         assert_eq!(config.honcho_peer_id, "agpod-nested");
+    }
+
+    #[test]
+    fn direct_api_key_wins_within_same_nested_config() {
+        let mut config = CaseConfig::default();
+        config.merge_file(CaseConfigFile {
+            plugins: Some(CasePluginsFile {
+                honcho: Some(CaseHonchoPluginFile {
+                    api_key: Some("inline-secret".to_string()),
+                    api_key_env: Some("HONCHO_IGNORED".to_string()),
+                    ..CaseHonchoPluginFile::default()
+                }),
+            }),
+            ..CaseConfigFile::default()
+        });
+
+        assert_eq!(config.honcho_api_key.as_deref(), Some("inline-secret"));
+        assert_eq!(config.honcho_api_key_env, "HONCHO_IGNORED");
     }
 }

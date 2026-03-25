@@ -23,4 +23,5 @@ enabled = false
 sync_enabled = true
 # base_url = "https://api.honcho.dev"
 # workspace_id = "ws_123"
+# api_key = "honcho_secret"
 # api_key_env = "HONCHO_API_KEY"

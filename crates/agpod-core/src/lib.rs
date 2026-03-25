@@ -77,6 +77,9 @@ pub struct CaseConfig {
     pub honcho_workspace_id: Option<String>,
 
     #[serde(default)]
+    pub honcho_api_key: Option<String>,
+
+    #[serde(default)]
     pub honcho_api_key_env: Option<String>,
 
     #[serde(default)]
@@ -107,6 +110,9 @@ pub struct CaseHonchoPluginConfig {
 
     #[serde(default)]
     pub workspace_id: Option<String>,
+
+    #[serde(default)]
+    pub api_key: Option<String>,
 
     #[serde(default)]
     pub api_key_env: Option<String>,
