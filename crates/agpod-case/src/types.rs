@@ -261,6 +261,34 @@ pub struct CaseSearchResult {
     pub matches: Vec<SearchMatch>,
 }
 
+/// A per-case hit suitable for context assembly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseContextHit {
+    pub case_id: Option<String>,
+    pub source: String,
+    pub field: String,
+    pub excerpt: String,
+    pub score: i64,
+    pub direction_seq: Option<u32>,
+    pub entry_seq: Option<u32>,
+    pub step_id: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// Context assembled for an active case.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseContextResult {
+    pub backend: String,
+    pub scope: String,
+    pub case_id: Option<String>,
+    pub repo_id: Option<String>,
+    pub query: Option<String>,
+    pub token_limit: Option<u32>,
+    pub generated_at: String,
+    pub context: String,
+    pub hits: Vec<CaseContextHit>,
+}
+
 /// Suggested next action for the CLI output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NextAction {

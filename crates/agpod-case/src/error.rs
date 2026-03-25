@@ -56,6 +56,24 @@ pub enum CaseError {
     #[error("invalid list option: {0}")]
     InvalidListOption(String),
 
+    #[error("semantic backend unavailable: {0}")]
+    SemanticBackendUnavailable(String),
+
+    #[error("context provider unavailable: {0}")]
+    ContextProviderUnavailable(String),
+
+    #[error("hook dispatch failed: {0}")]
+    HookDispatch(String),
+
+    #[error("honcho config error: {0}")]
+    HonchoConfig(String),
+
+    #[error("honcho http error: {0}")]
+    HonchoHttp(String),
+
+    #[error("honcho api error: {0}")]
+    HonchoApi(String),
+
     #[error("cannot close case with unfinished steps")]
     UnfinishedSteps,
 

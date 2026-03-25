@@ -9,12 +9,14 @@ description = "MCP server for agpod case workflows"
 
 [dependencies]
 agpod-case = { workspace = true }
+agpod-core = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
+tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

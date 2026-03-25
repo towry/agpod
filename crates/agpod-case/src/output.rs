@@ -122,6 +122,10 @@ fn render_text(value: &Value) {
         render_resume(resume);
     }
 
+    if let Some(case_context) = value.get("case_context") {
+        render_case_context(case_context);
+    }
+
     // Last fact
     if let Some(fact) = value.get("last_fact").and_then(|v| v.as_str()) {
         println!("last_fact: {fact}");
@@ -133,6 +137,30 @@ fn render_text(value: &Value) {
     }
     if let Some(warning) = value.get("warning").and_then(|v| v.as_str()) {
         println!("warning: {warning}");
+    }
+    if let Some(warnings) = value.get("warnings").and_then(|v| v.as_array()) {
+        for warning in warnings {
+            if let Some(warning) = warning.as_str() {
+                println!("warning: {warning}");
+            }
+        }
+    }
+    if let Some(statuses) = value
+        .get("hooks")
+        .and_then(|v| v.get("statuses"))
+        .and_then(|v| v.as_array())
+    {
+        for status in statuses {
+            let sink = status.get("sink").and_then(|v| v.as_str()).unwrap_or("?");
+            let ok = status.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+            let message = status.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            let label = if ok { "ok" } else { "failed" };
+            if message.is_empty() {
+                println!("hook {sink}: {label}");
+            } else {
+                println!("hook {sink}: {label} ({message})");
+            }
+        }
     }
     if let Some(reminder) = value.get("reminder").and_then(|v| v.as_str()) {
         println!("reminder: {reminder}");
@@ -638,6 +666,20 @@ pub fn case_search_json(result: &CaseSearchResult) -> Value {
     value
 }
 
+pub fn case_context_json(result: &CaseContextResult) -> Value {
+    json!({
+        "backend": result.backend,
+        "scope": result.scope,
+        "case_id": result.case_id,
+        "repo_id": result.repo_id,
+        "query": result.query,
+        "token_limit": result.token_limit,
+        "generated_at": result.generated_at,
+        "context": result.context,
+        "hits": result.hits.iter().map(case_context_hit_json).collect::<Vec<_>>()
+    })
+}
+
 pub fn entry_json(entry: &Entry) -> Value {
     json!({
         "case_id": entry.case_id,
@@ -661,6 +703,20 @@ pub fn search_match_json(search_match: &SearchMatch) -> Value {
         "direction_seq": search_match.direction_seq,
         "entry_seq": search_match.entry_seq,
         "kind": search_match.kind
+    })
+}
+
+pub fn case_context_hit_json(hit: &CaseContextHit) -> Value {
+    json!({
+        "case_id": hit.case_id,
+        "source": hit.source,
+        "field": hit.field,
+        "excerpt": hit.excerpt,
+        "score": hit.score,
+        "direction_seq": hit.direction_seq,
+        "entry_seq": hit.entry_seq,
+        "step_id": hit.step_id,
+        "kind": hit.kind
     })
 }
 
@@ -723,6 +779,37 @@ pub fn context_json(case_id: &str, direction_seq: u32) -> Value {
         "active_case_id": case_id,
         "current_direction_seq": direction_seq
     })
+}
+
+fn render_case_context(value: &Value) {
+    if let Some(backend) = value.get("backend").and_then(|v| v.as_str()) {
+        println!("context_backend: {backend}");
+    }
+    if let Some(scope) = value.get("scope").and_then(|v| v.as_str()) {
+        println!("context_scope: {scope}");
+    }
+    if let Some(query) = value.get("query").and_then(|v| v.as_str()) {
+        println!("context_query: {query}");
+    }
+    if let Some(context) = value.get("context").and_then(|v| v.as_str()) {
+        println!("context:\n{context}");
+    }
+    if let Some(hits) = value.get("hits").and_then(|v| v.as_array()) {
+        if !hits.is_empty() {
+            println!("context_hits:");
+            for hit in hits {
+                let case_label = hit
+                    .get("case_id")
+                    .and_then(|v| v.as_str())
+                    .map(|case_id| format!("case {case_id} "))
+                    .unwrap_or_default();
+                let source = hit.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+                let field = hit.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                let excerpt = hit.get("excerpt").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  - {case_label}{source}.{field}: {excerpt}");
+            }
+        }
+    }
 }
 
 fn render_timestamp_line(label: &str, timestamps: &Value, key: &str) {

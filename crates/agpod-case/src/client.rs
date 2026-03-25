@@ -23,12 +23,14 @@ const DB_LOCK_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct SharedDbHandle {
     db: Surreal<Db>,
     db_lock: Arc<File>,
+    config: DbConfig,
 }
 
 #[derive(Clone)]
 pub struct CaseClient {
     db: Surreal<Db>,
     _db_lock: Arc<File>,
+    config: DbConfig,
     repo_id: String,
     repo_label: String,
     worktree_id: String,
@@ -51,6 +53,7 @@ impl CaseClient {
         let client = Self {
             db: shared.db,
             _db_lock: shared.db_lock,
+            config: shared.config,
             repo_id: identity.repo_id,
             repo_label: identity.repo_label,
             worktree_id: identity.worktree_id,
@@ -64,11 +67,32 @@ impl CaseClient {
         Self {
             db: self.db.clone(),
             _db_lock: self._db_lock.clone(),
+            config: self.config.clone(),
             repo_id: identity.repo_id,
             repo_label: identity.repo_label,
             worktree_id: identity.worktree_id,
             worktree_root: identity.worktree_root,
         }
+    }
+
+    pub fn config(&self) -> &DbConfig {
+        &self.config
+    }
+
+    pub fn repo_id(&self) -> &str {
+        self.repo_id.as_str()
+    }
+
+    pub fn repo_label(&self) -> &str {
+        self.repo_label.as_str()
+    }
+
+    pub fn worktree_id(&self) -> &str {
+        self.worktree_id.as_str()
+    }
+
+    pub fn worktree_root(&self) -> &str {
+        self.worktree_root.as_str()
     }
 }
 
@@ -81,7 +105,11 @@ impl SharedDbHandle {
             .await
             .map_err(|e| CaseError::DbInit(format!("namespace/db init: {e}")))?;
 
-        Ok(Self { db, db_lock })
+        Ok(Self {
+            db,
+            db_lock,
+            config: config.clone(),
+        })
     }
 }
 

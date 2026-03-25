@@ -39,6 +39,25 @@ pub enum OpenModeArg {
     Reopen,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+    JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextScopeArg {
+    #[default]
+    Case,
+    Repo,
+}
+
 #[derive(Debug, Args)]
 pub struct CaseArgs {
     /// SurrealDB data directory (default: $XDG_DATA_HOME/agpod/case.db)
@@ -237,6 +256,30 @@ pub enum CaseCommand {
         /// Only include cases updated within the last N days
         #[arg(long = "recent-days")]
         recent_days: Option<u32>,
+    },
+
+    /// Build semantic context for the current or chosen case
+    Context {
+        /// Case ID (defaults to open case)
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Retrieval scope: current case or current repo across sessions
+        #[arg(long, value_enum, default_value = "repo")]
+        #[serde(default)]
+        scope: ContextScopeArg,
+
+        /// Natural language query used for semantic retrieval
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Max number of hits to return
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Optional token budget for returned context
+        #[arg(long = "token-limit")]
+        token_limit: Option<u32>,
     },
 
     /// List all cases for this repository

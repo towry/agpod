@@ -12,6 +12,7 @@ use std::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, Duration, Instant};
+use tracing::{debug, info, warn};
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(3);
 const SERVER_START_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -21,6 +22,11 @@ pub async fn execute_via_server(
     identity: RepoIdentity,
     command: CaseCommand,
 ) -> CaseResult<Value> {
+    debug!(
+        server_addr = %config.server_addr,
+        repo_id = %identity.repo_id,
+        "executing case command via server"
+    );
     ensure_server_available(config).await?;
 
     let mut stream = TcpStream::connect(&config.server_addr)
@@ -48,10 +54,17 @@ pub async fn execute_via_server(
 
 async fn ensure_server_available(config: &CaseConfig) -> CaseResult<()> {
     if TcpStream::connect(&config.server_addr).await.is_ok() {
+        debug!(server_addr = %config.server_addr, "case-server already reachable");
         return Ok(());
     }
 
     if config.access_mode == CaseAccessMode::Remote || !config.auto_start {
+        warn!(
+            server_addr = %config.server_addr,
+            access_mode = ?config.access_mode,
+            auto_start = config.auto_start,
+            "case-server unreachable and auto-start unavailable"
+        );
         return Err(CaseError::DbConnection(format!(
             "case-server is not reachable at {}",
             config.server_addr
@@ -95,6 +108,11 @@ async fn auto_start_server(config: &CaseConfig) -> CaseResult<()> {
     command
         .spawn()
         .map_err(|err| CaseError::Other(format!("failed to start case-server: {err}")))?;
+    info!(
+        server_addr = %config.server_addr,
+        data_dir = %config.data_dir.to_string_lossy(),
+        "auto-started case-server"
+    );
     Ok(())
 }
 
@@ -102,10 +120,12 @@ async fn wait_for_server(config: &CaseConfig) -> CaseResult<()> {
     let started = Instant::now();
     loop {
         if TcpStream::connect(&config.server_addr).await.is_ok() {
+            info!(server_addr = %config.server_addr, "case-server became reachable");
             return Ok(());
         }
 
         if started.elapsed() >= SERVER_START_TIMEOUT {
+            warn!(server_addr = %config.server_addr, "timed out waiting for case-server");
             return Err(CaseError::DbConnection(format!(
                 "timed out waiting for case-server at {}",
                 config.server_addr

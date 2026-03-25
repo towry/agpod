@@ -1,7 +1,9 @@
 use agpod_case as case;
+use agpod_core::init_logging;
 use agpod_diff as diff;
 use agpod_vcs_path as vcs_path;
 use clap::{Args, Parser, Subcommand};
+use tracing::warn;
 
 #[derive(Parser)]
 #[command(name = "agpod")]
@@ -49,7 +51,12 @@ struct CaseServerArgs {
 
 #[tokio::main]
 async fn main() {
+    if let Err(error) = init_logging("agpod") {
+        eprintln!("Warning: failed to initialize logging: {error}");
+    }
+
     let cli = Cli::parse();
+    warn!("agpod started");
 
     match cli.command {
         Some(Commands::Diff {
