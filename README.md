@@ -101,6 +101,9 @@ Example:
 ```toml
 version = "1"
 
+[log]
+level = "warning"
+
 [diff]
 output_dir = "llm/diff"
 large_file_changes_threshold = 100
@@ -135,6 +138,8 @@ Environment variables still override file config. Common Honcho-related override
 - `AGPOD_CASE_HONCHO_API_KEY=...`
 - `AGPOD_CASE_HONCHO_API_KEY_ENV=HONCHO_API_KEY`
 - `HONCHO_API_KEY=...`
+
+Logs default to `warning` and are written under the platform data directory in `agpod/logs/`, for example `~/Library/Application Support/agpod/logs/agpod.log`, `agpod-case-server.log`, and `agpod-mcp.log`.
 
 ## Workspace
 

@@ -8,6 +8,7 @@
 - 文件配置支持 `[case.plugins.honcho]`
 - 环境变量仍可覆盖文件配置
 - `peer_id` 仍存在实现层，但不列入用户文档
+- 关键 Honcho 路径现会写入日志文件，便于诊断“不工作”问题
 
 ## 配置映射
 
@@ -42,6 +43,7 @@ api_key_env = "HONCHO_API_KEY"
 - `crates/agpod-case/src/honcho.rs`
 - `crates/agpod-case/src/config.rs`
 - `crates/agpod-case/src/events.rs`
+- `~/Library/Application Support/agpod/logs/agpod.log`（macOS 常见位置）
 
 ## 参考
 

@@ -18,6 +18,9 @@ Precedence is:
 ```toml
 version = "1"
 
+[log]
+level = "warning"
+
 [case]
 server_addr = "127.0.0.1:6142"
 auto_start = true
@@ -56,6 +59,13 @@ Environment variables still override file config:
 - `AGPOD_CASE_HONCHO_API_KEY`
 - `AGPOD_CASE_HONCHO_API_KEY_ENV`
 - the env var named by `api_key_env` (default `HONCHO_API_KEY`)
+
+## Logging
+
+- Top-level `[log]` applies to CLI, MCP, and case-server
+- `level` defaults to `warning`
+- Logs are written to the platform data dir under `agpod/logs/`
+- Typical files are `agpod.log`, `agpod-mcp.log`, and `agpod-case-server.log`
 
 ## Notes
 

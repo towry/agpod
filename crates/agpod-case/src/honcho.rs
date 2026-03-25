@@ -12,6 +12,7 @@ use crate::types::{CaseContextHit, CaseContextResult, CaseSearchResult};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct HonchoBackend {
@@ -25,6 +26,7 @@ pub struct HonchoBackend {
 impl HonchoBackend {
     pub fn from_config(config: &CaseConfig) -> CaseResult<Option<Self>> {
         if !config.honcho_enabled {
+            debug!("honcho disabled in case config");
             return Ok(None);
         }
 
@@ -38,6 +40,7 @@ impl HonchoBackend {
             .ok_or_else(|| CaseError::HonchoConfig("missing `honcho_workspace_id`".to_string()))?;
         let api_key = resolve_api_key(config)?;
         if config.honcho_peer_id.trim().is_empty() {
+            warn!("honcho enabled but peer_id is empty");
             return Err(CaseError::HonchoConfig(
                 "`honcho_peer_id` must not be empty".to_string(),
             ));
@@ -46,6 +49,15 @@ impl HonchoBackend {
         let http = reqwest::Client::builder()
             .build()
             .map_err(|err| CaseError::HonchoHttp(err.to_string()))?;
+
+        debug!(
+            base_url = %base_url,
+            workspace_id = %workspace_id,
+            peer_id = %config.honcho_peer_id,
+            semantic_recall_enabled = config.semantic_recall_enabled,
+            honcho_sync_enabled = config.honcho_sync_enabled,
+            "honcho backend initialized"
+        );
 
         Ok(Some(Self {
             http,
@@ -98,6 +110,7 @@ impl HonchoBackend {
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown Honcho error".to_string());
+            warn!(status = %status, body = %body, "honcho API returned non-success status");
             return Err(CaseError::HonchoApi(format!("{status}: {body}")));
         }
         response
@@ -156,6 +169,12 @@ impl HonchoBackend {
     }
 
     pub async fn sync_event(&self, event: &CaseEventEnvelope) -> CaseResult<()> {
+        debug!(
+            case_id = %event.case_id,
+            event_id = %event.event_id,
+            repo_id = %event.repo_id,
+            "syncing case event to honcho"
+        );
         let _session = self
             .ensure_session(
                 &event.case_id,
@@ -168,6 +187,7 @@ impl HonchoBackend {
             )
             .await?;
         let _message = self.create_message(event).await?;
+        info!(case_id = %event.case_id, event_id = %event.event_id, "synced case event to honcho");
         Ok(())
     }
 
@@ -237,6 +257,13 @@ impl HonchoBackend {
         limit: usize,
         token_limit: Option<u32>,
     ) -> CaseResult<CaseContextResult> {
+        debug!(
+            repo_id,
+            query = query.unwrap_or_default(),
+            limit,
+            token_limit = token_limit.unwrap_or_default(),
+            "requesting honcho repo context"
+        );
         let hits = match query {
             Some(query) if !query.trim().is_empty() => {
                 let response = self.search_workspace_raw(query, limit, repo_id).await?;
@@ -321,17 +348,21 @@ fn resolve_api_key(config: &CaseConfig) -> CaseResult<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
+        debug!("using inline honcho api key from config");
         return Ok(api_key.to_string());
     }
 
     let api_key_env = config.honcho_api_key_env.trim();
     if api_key_env.is_empty() {
+        warn!("honcho api key missing: inline key absent and env name empty");
         return Err(CaseError::HonchoConfig(
             "missing `honcho_api_key` or non-empty `honcho_api_key_env`".to_string(),
         ));
     }
 
+    debug!(api_key_env, "using honcho api key from environment");
     std::env::var(api_key_env).map_err(|_| {
+        warn!(api_key_env, "honcho api key env var not set");
         CaseError::HonchoConfig(format!(
             "missing `honcho_api_key` and env var `{api_key_env}` for Honcho API key"
         ))

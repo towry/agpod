@@ -21,3 +21,4 @@ agpod-diff = { workspace = true }
 agpod-vcs-path = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }

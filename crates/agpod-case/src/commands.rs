@@ -19,6 +19,7 @@ use crate::GoalDriftFlag;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 async fn dispatch_event(client: &CaseClient, event: CaseDomainEvent) -> CaseDispatchReport {
@@ -45,13 +46,19 @@ fn build_dispatcher(client: &CaseClient) -> (CaseEventDispatcher, CaseDispatchRe
     let mut report = CaseDispatchReport::default();
     if client.config().honcho_enabled && client.config().honcho_sync_enabled {
         match HonchoBackend::from_config(client.config()) {
-            Ok(Some(honcho)) => sinks.push(std::sync::Arc::new(honcho)),
+            Ok(Some(honcho)) => {
+                debug!("honcho sink enabled for case event dispatch");
+                sinks.push(std::sync::Arc::new(honcho));
+            }
             Ok(None) => {}
-            Err(error) => report.statuses.push(CaseHookStatus {
-                sink: "honcho".to_string(),
-                ok: false,
-                message: Some(error.to_string()),
-            }),
+            Err(error) => {
+                warn!(error = %error, "failed to initialize honcho sink");
+                report.statuses.push(CaseHookStatus {
+                    sink: "honcho".to_string(),
+                    ok: false,
+                    message: Some(error.to_string()),
+                });
+            }
         }
     }
     (CaseEventDispatcher::new(sinks), report)
@@ -60,9 +67,11 @@ fn build_dispatcher(client: &CaseClient) -> (CaseEventDispatcher, CaseDispatchRe
 fn context_provider_for_client(client: &CaseClient) -> CaseResult<Box<dyn CaseContextProvider>> {
     if client.config().honcho_enabled && client.config().semantic_recall_enabled {
         if let Some(honcho) = HonchoBackend::from_config(client.config())? {
+            debug!("using honcho context provider");
             return Ok(Box::new(honcho));
         }
     }
+    debug!("using local case context provider");
     Ok(Box::new(LocalCaseContextProvider::new(client.clone())))
 }
 
@@ -84,6 +93,13 @@ pub async fn execute(args: CaseArgs) -> Result<()> {
 
 pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let json_mode = args.json;
+    debug!(
+        json_mode,
+        has_repo_root = args.repo_root.is_some(),
+        has_data_dir = args.data_dir.is_some(),
+        has_server_addr = args.server_addr.is_some(),
+        "starting case command"
+    );
     let setup = setup_runtime(
         args.data_dir.as_deref(),
         args.server_addr.as_deref(),
@@ -94,6 +110,7 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
     let (config, identity) = match setup {
         Ok(runtime) => runtime,
         Err(e) => {
+            warn!(error = %e, "case runtime setup failed");
             let mut err_value = output::error_json("error", &e.to_string(), None);
             err_value["_meta"] = json!({ "json_mode": json_mode });
             return err_value;
@@ -102,10 +119,12 @@ pub async fn execute_json(args: CaseArgs) -> serde_json::Value {
 
     match execute_via_server(&config, identity, args.command.clone()).await {
         Ok(mut value) => {
+            debug!("case command completed via server");
             value["_meta"] = json!({ "json_mode": json_mode });
             value
         }
         Err(e) => {
+            warn!(error = %e, "case command failed via server");
             let mut err_value = output::error_json("error", &e.to_string(), None);
             err_value["_meta"] = json!({ "json_mode": json_mode });
             err_value
@@ -192,6 +211,15 @@ async fn setup_runtime(
         None => std::env::current_dir()?,
     };
     let identity = RepoIdentity::resolve_from(&root)?;
+    debug!(
+        repo_id = %identity.repo_id,
+        repo_label = %identity.repo_label,
+        server_addr = %config.server_addr,
+        data_dir = %config.data_dir.to_string_lossy(),
+        honcho_enabled = config.honcho_enabled,
+        semantic_recall_enabled = config.semantic_recall_enabled,
+        "resolved case runtime"
+    );
     Ok((config, identity))
 }
 

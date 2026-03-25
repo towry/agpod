@@ -4,6 +4,9 @@
 
 version = "1"
 
+[log]
+level = "warning"
+
 [diff]
 output_dir = "llm/diff"
 large_file_changes_threshold = 100

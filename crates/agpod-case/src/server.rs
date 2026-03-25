@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct CaseServer {
@@ -44,12 +45,15 @@ impl CaseServer {
         let listener = TcpListener::bind(&self.listener_addr)
             .await
             .map_err(CaseError::Io)?;
+        info!(listener_addr = %self.listener_addr, "case-server listening");
 
         loop {
             let (stream, _) = listener.accept().await.map_err(CaseError::Io)?;
             let server = self.clone();
             tokio::spawn(async move {
-                let _ = server.handle_connection(stream).await;
+                if let Err(error) = server.handle_connection(stream).await {
+                    warn!(error = %error, "case-server connection handling failed");
+                }
             });
         }
     }
@@ -62,6 +66,7 @@ impl CaseServer {
             if line.trim().is_empty() {
                 continue;
             }
+            debug!("case-server received request line");
             let request: CaseRequest = serde_json::from_str(&line).map_err(CaseError::Json)?;
             let response = self.handle_request(request).await;
             let payload = serde_json::to_string(&response).map_err(CaseError::Json)?;
@@ -77,6 +82,7 @@ impl CaseServer {
 
     async fn handle_request(&self, request: CaseRequest) -> CaseResponse {
         let identity: RepoIdentity = request.repo.into();
+        debug!(repo_id = %identity.repo_id, "handling case-server request");
         let _guard = self.db_gate.lock().await;
         let client = self.base_client.clone_with_identity(identity);
 
@@ -87,6 +93,16 @@ impl CaseServer {
             true,
         )
         .await;
+
+        if result.get("ok").and_then(|value| value.as_bool()) == Some(false) {
+            if let Some(message) = result.get("message").and_then(|value| value.as_str()) {
+                warn!(message, "case-server request completed with error payload");
+            } else {
+                warn!("case-server request completed with error payload");
+            }
+        } else {
+            debug!("case-server request completed successfully");
+        }
 
         CaseResponse { result }
     }

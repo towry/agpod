@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::filter::LevelFilter;
 
 /// Current configuration version.
 pub const CURRENT_CONFIG_VERSION: &str = "1";
@@ -30,6 +33,10 @@ pub struct Config {
     /// Case workflow configuration.
     #[serde(default)]
     pub case: Option<CaseConfig>,
+
+    /// Shared logging configuration.
+    #[serde(default)]
+    pub log: Option<LogConfig>,
 }
 
 impl Default for Config {
@@ -38,8 +45,44 @@ impl Default for Config {
             version: default_config_version(),
             diff: None,
             case: None,
+            log: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    #[default]
+    Warning,
+    Error,
+}
+
+impl LogLevel {
+    pub fn as_level_filter(&self) -> LevelFilter {
+        match self {
+            Self::Trace => LevelFilter::TRACE,
+            Self::Debug => LevelFilter::DEBUG,
+            Self::Info => LevelFilter::INFO,
+            Self::Warning => LevelFilter::WARN,
+            Self::Error => LevelFilter::ERROR,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogConfig {
+    #[serde(default)]
+    pub level: Option<LogLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLogConfig {
+    pub level: LogLevel,
+    pub dir: PathBuf,
 }
 
 /// Configuration for case server / client access.
@@ -271,8 +314,50 @@ impl Config {
             self.case = other.case;
         }
 
+        if other.log.is_some() {
+            self.log = other.log;
+        }
+
         self
     }
+
+    pub fn resolved_log_config(&self) -> ResolvedLogConfig {
+        let level = self
+            .log
+            .as_ref()
+            .and_then(|cfg| cfg.level.clone())
+            .unwrap_or_default();
+
+        let dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("agpod")
+            .join("logs");
+
+        ResolvedLogConfig { level, dir }
+    }
+}
+
+static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+
+pub fn init_logging(app_name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let config = Config::load();
+    let resolved = config.resolved_log_config();
+    fs::create_dir_all(&resolved.dir)?;
+
+    let file_path = resolved.dir.join(format!("{app_name}.log"));
+    let file_appender = tracing_appender::rolling::never(&resolved.dir, format!("{app_name}.log"));
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(resolved.level.as_level_filter())
+        .with_ansi(false)
+        .with_writer(non_blocking)
+        .finish();
+
+    let _ = tracing::subscriber::set_global_default(subscriber);
+    let _ = LOG_GUARD.set(guard);
+
+    Ok(file_path)
 }
 
 #[cfg(test)]
@@ -288,6 +373,7 @@ mod tests {
         assert_eq!(config.version, "1");
         assert!(config.diff.is_none());
         assert!(config.case.is_none());
+        assert!(config.log.is_none());
     }
 
     #[test]
@@ -296,6 +382,7 @@ mod tests {
             version: "1".to_string(),
             diff: None,
             case: None,
+            log: None,
         };
         assert!(config.is_version_supported());
         assert!(config.version_warning().is_none());
@@ -304,6 +391,7 @@ mod tests {
             version: "999".to_string(),
             diff: None,
             case: None,
+            log: None,
         };
         assert!(!unsupported_config.is_version_supported());
         assert!(unsupported_config.version_warning().is_some());
@@ -333,6 +421,28 @@ server_addr = "127.0.0.1:6142"
         assert_eq!(diff.large_file_changes_threshold, 200);
         let case = config.case.unwrap();
         assert_eq!(case.server_addr.as_deref(), Some("127.0.0.1:6142"));
+    }
+
+    #[test]
+    fn test_parse_log_config() {
+        let toml_str = r#"
+[log]
+level = "debug"
+"#;
+
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(matches!(
+            config.log.and_then(|cfg| cfg.level),
+            Some(LogLevel::Debug)
+        ));
+    }
+
+    #[test]
+    fn test_resolved_log_config_defaults_to_warning() {
+        let config = Config::default();
+        let resolved = config.resolved_log_config();
+        assert_eq!(resolved.level, LogLevel::Warning);
+        assert!(resolved.dir.ends_with(PathBuf::from("agpod/logs")));
     }
 
     #[test]
