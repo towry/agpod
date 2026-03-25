@@ -1,4 +1,4 @@
-//! Honcho v2 adapter for case event sync, semantic search, and context retrieval.
+//! Honcho v3 adapter for case event sync, semantic search, and context retrieval.
 //!
 //! Keywords: honcho, semantic search, vector digest, case context, hook sink
 
@@ -125,44 +125,64 @@ impl HonchoBackend {
         metadata: Value,
     ) -> CaseResult<HonchoSessionResponse> {
         self.post_json(
-            &format!("/v2/workspaces/{}/sessions", self.workspace_id),
+            &format!("/v3/workspaces/{}/sessions", self.workspace_id),
             &json!({
-                "session_id": case_id,
+                "id": case_id,
                 "metadata": metadata,
             }),
         )
         .await
     }
 
-    async fn create_message(&self, event: &CaseEventEnvelope) -> CaseResult<Value> {
+    async fn ensure_peer(&self) -> CaseResult<HonchoPeerResponse> {
+        self.post_json(
+            &format!("/v3/workspaces/{}/peers", self.workspace_id),
+            &json!({
+                "id": self.peer_id,
+            }),
+        )
+        .await
+    }
+
+    async fn ensure_session_peer(&self, case_id: &str) -> CaseResult<HonchoSessionResponse> {
+        self.post_json(
+            &format!(
+                "/v3/workspaces/{}/sessions/{}/peers",
+                self.workspace_id, case_id
+            ),
+            &json!({
+                (self.peer_id.clone()): {}
+            }),
+        )
+        .await
+    }
+
+    async fn create_message(&self, event: &CaseEventEnvelope) -> CaseResult<Vec<HonchoMessage>> {
         let event_metadata = event.event.metadata();
         self.post_json(
             &format!(
-                "/v2/workspaces/{}/sessions/{}/messages",
+                "/v3/workspaces/{}/sessions/{}/messages",
                 self.workspace_id, event.case_id
             ),
             &json!({
-                "content": event.event.summary_text(),
-                "peer_id": self.peer_id,
-                "created_at": event.occurred_at,
-                "metadata": {
-                    "event_id": event.event_id,
-                    "event_type": event.event.event_type(),
-                    "repo_id": event.repo_id,
-                    "repo_label": event.repo_label,
-                    "worktree_id": event.worktree_id,
-                    "worktree_root": event.worktree_root,
-                    "direction_seq": event.direction_seq,
-                    "entry_seq": event_metadata.get("entry_seq").cloned(),
-                    "step_id": event_metadata.get("step_id").cloned(),
-                    "kind": event_metadata.get("kind").cloned(),
-                    "event": event_metadata,
-                },
-                "configuration": {
-                    "deriver": {
-                        "enabled": true
+                "messages": [{
+                    "content": event.event.summary_text(),
+                    "peer_id": self.peer_id,
+                    "created_at": event.occurred_at,
+                    "metadata": {
+                        "event_id": event.event_id,
+                        "event_type": event.event.event_type(),
+                        "repo_id": event.repo_id,
+                        "repo_label": event.repo_label,
+                        "worktree_id": event.worktree_id,
+                        "worktree_root": event.worktree_root,
+                        "direction_seq": event.direction_seq,
+                        "entry_seq": event_metadata.get("entry_seq").cloned(),
+                        "step_id": event_metadata.get("step_id").cloned(),
+                        "kind": event_metadata.get("kind").cloned(),
+                        "event": event_metadata,
                     }
-                }
+                }]
             }),
         )
         .await
@@ -175,6 +195,7 @@ impl HonchoBackend {
             repo_id = %event.repo_id,
             "syncing case event to honcho"
         );
+        let _peer = self.ensure_peer().await?;
         let _session = self
             .ensure_session(
                 &event.case_id,
@@ -186,6 +207,7 @@ impl HonchoBackend {
                 }),
             )
             .await?;
+        let _session_peer = self.ensure_session_peer(&event.case_id).await?;
         let _message = self.create_message(event).await?;
         info!(case_id = %event.case_id, event_id = %event.event_id, "synced case event to honcho");
         Ok(())
@@ -199,7 +221,7 @@ impl HonchoBackend {
     ) -> CaseResult<HonchoSearchResponse> {
         self.post_json(
             &format!(
-                "/v2/workspaces/{}/sessions/{}/search",
+                "/v3/workspaces/{}/sessions/{}/search",
                 self.workspace_id, case_id
             ),
             &json!({
@@ -217,7 +239,7 @@ impl HonchoBackend {
         repo_id: &str,
     ) -> CaseResult<HonchoSearchResponse> {
         self.post_json(
-            &format!("/v2/workspaces/{}/search", self.workspace_id),
+            &format!("/v3/workspaces/{}/search", self.workspace_id),
             &json!({
                 "query": query,
                 "limit": limit,
@@ -238,11 +260,11 @@ impl HonchoBackend {
     ) -> CaseResult<HonchoContextResponse> {
         let mut query = Vec::new();
         if let Some(token_limit) = token_limit {
-            query.push(("token_limit", token_limit.to_string()));
+            query.push(("tokens", token_limit.to_string()));
         }
         self.get_json(
             &format!(
-                "/v2/workspaces/{}/sessions/{}/context",
+                "/v3/workspaces/{}/sessions/{}/context",
                 self.workspace_id, case_id
             ),
             &query,
@@ -268,7 +290,6 @@ impl HonchoBackend {
             Some(query) if !query.trim().is_empty() => {
                 let response = self.search_workspace_raw(query, limit, repo_id).await?;
                 response
-                    .results
                     .into_iter()
                     .map(|hit| CaseContextHit {
                         case_id: hit.session_id.clone(),
@@ -401,7 +422,6 @@ impl CaseSearchBackend for HonchoBackend {
         Box::pin(async move {
             let response = self.search_session_raw(case_id, query, limit).await?;
             let hits = response
-                .results
                 .into_iter()
                 .map(|hit| CaseContextHit {
                     case_id: hit.session_id.clone(),
@@ -475,15 +495,17 @@ impl CaseContextProvider for HonchoBackend {
                         backend: <Self as CaseContextProvider>::backend_name(self).to_string(),
                         scope: "case".to_string(),
                         case_id: Some(case_id.to_string()),
-                        repo_id: context
-                            .metadata
-                            .get("repo_id")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned),
+                        repo_id: context.messages.iter().find_map(|message| {
+                            message
+                                .metadata
+                                .get("repo_id")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned)
+                        }),
                         query: query.map(ToOwned::to_owned),
                         token_limit,
                         generated_at: chrono::Utc::now().to_rfc3339(),
-                        context: context.rendered_context,
+                        context: context.rendered_text(),
                         hits,
                     })
                 }
@@ -501,11 +523,7 @@ struct HonchoSessionResponse {
     id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct HonchoSearchResponse {
-    #[serde(default)]
-    results: Vec<HonchoSearchHit>,
-}
+type HonchoSearchResponse = Vec<HonchoSearchHit>;
 
 #[derive(Debug, Deserialize)]
 struct HonchoSearchHit {
@@ -524,16 +542,86 @@ struct HonchoSearchHit {
 
 #[derive(Debug, Deserialize)]
 struct HonchoContextResponse {
-    #[serde(default, alias = "context")]
-    rendered_context: String,
+    #[serde(default)]
+    messages: Vec<HonchoMessage>,
+    #[serde(default)]
+    summary: Option<HonchoSummary>,
+    #[serde(default)]
+    peer_representation: Option<String>,
+    #[serde(default)]
+    peer_card: Option<Vec<String>>,
+}
+
+impl HonchoContextResponse {
+    fn rendered_text(&self) -> String {
+        let mut sections = Vec::new();
+        if let Some(summary) = self
+            .summary
+            .as_ref()
+            .and_then(|summary| summary.content.clone())
+        {
+            let summary = summary.trim();
+            if !summary.is_empty() {
+                sections.push(format!("Summary:\n{summary}"));
+            }
+        }
+
+        if !self.messages.is_empty() {
+            let mut lines = Vec::with_capacity(self.messages.len() + 1);
+            lines.push("Messages:".to_string());
+            for message in &self.messages {
+                let peer_id = message.peer_id.as_deref().unwrap_or("unknown");
+                lines.push(format!("- {peer_id}: {}", message.content));
+            }
+            sections.push(lines.join("\n"));
+        }
+
+        if let Some(peer_representation) = self.peer_representation.as_deref() {
+            let peer_representation = peer_representation.trim();
+            if !peer_representation.is_empty() {
+                sections.push(format!("Peer Representation:\n{peer_representation}"));
+            }
+        }
+
+        if let Some(peer_card) = self.peer_card.as_ref().filter(|card| !card.is_empty()) {
+            let mut lines = Vec::with_capacity(peer_card.len() + 1);
+            lines.push("Peer Card:".to_string());
+            for fact in peer_card {
+                lines.push(format!("- {fact}"));
+            }
+            sections.push(lines.join("\n"));
+        }
+
+        sections.join("\n\n")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HonchoPeerResponse {
+    #[allow(dead_code)]
+    id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HonchoMessage {
+    content: String,
+    #[serde(default)]
+    peer_id: Option<String>,
     #[serde(default)]
     metadata: Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct HonchoSummary {
+    #[serde(default)]
+    content: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::resolve_api_key;
+    use super::{resolve_api_key, HonchoContextResponse, HonchoSearchResponse};
     use crate::config::CaseConfig;
+    use serde_json::{json, Value};
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -574,6 +662,53 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "honcho config error: missing `honcho_api_key` or non-empty `honcho_api_key_env`"
+        );
+    }
+
+    #[test]
+    fn honcho_context_response_renders_summary_and_messages() {
+        let response: HonchoContextResponse = serde_json::from_value(json!({
+            "id": "case-1",
+            "messages": [
+                {
+                    "content": "opened case",
+                    "peer_id": "agpod-system",
+                    "session_id": "case-1",
+                    "metadata": { "repo_id": "repo-1" }
+                }
+            ],
+            "summary": {
+                "content": "brief summary"
+            }
+        }))
+        .expect("context response should deserialize");
+
+        let rendered = response.rendered_text();
+        assert!(rendered.contains("brief summary"));
+        assert!(rendered.contains("agpod-system: opened case"));
+    }
+
+    #[test]
+    fn honcho_search_response_accepts_v3_array_shape() {
+        let response: HonchoSearchResponse = serde_json::from_value(json!([
+            {
+                "content": "opened case",
+                "peer_id": "agpod-system",
+                "session_id": "case-1",
+                "metadata": {
+                    "direction_seq": 1,
+                    "entry_seq": 2,
+                    "kind": "finding"
+                }
+            }
+        ]))
+        .expect("search response should deserialize");
+
+        assert_eq!(response.len(), 1);
+        assert_eq!(response[0].session_id.as_deref(), Some("case-1"));
+        assert_eq!(
+            response[0].metadata.get("kind").and_then(Value::as_str),
+            Some("finding")
         );
     }
 }
