@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.6.0...agpod-mcp-v0.7.0) (2026-03-26)
+
+
+### Features
+
+* **mcp:** add case list and recall request handlers ([#124](https://github.com/towry/agpod/issues/124)) ([1169412](https://github.com/towry/agpod/commit/11694126569c6c61b4b58c62c95a6b4f8369d69f))
+
 ## [0.6.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.5.0...agpod-mcp-v0.6.0) (2026-03-26)
 
 
