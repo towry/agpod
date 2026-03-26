@@ -118,7 +118,11 @@ pub enum CaseCommand {
     },
 
     /// Show current case navigation panel
-    Current,
+    Current {
+        /// Return only the current case state for fast CI checks
+        #[arg(long)]
+        state: bool,
+    },
 
     /// Record a fact, finding, evidence, or blocker
     Record {

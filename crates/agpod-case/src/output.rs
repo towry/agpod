@@ -64,6 +64,13 @@ fn render_text(value: &Value) {
         return;
     }
 
+    if let Some(state) = value.get("state").and_then(|v| v.as_str()) {
+        if value.get("kind").and_then(|v| v.as_str()) == Some("case_current_state") {
+            println!("{state}");
+            return;
+        }
+    }
+
     // Case list (list / recall)
     if let Some(cases) = value.get("cases").and_then(|v| v.as_array()) {
         render_case_list(cases, value.get("query").and_then(|v| v.as_str()));
@@ -72,6 +79,13 @@ fn render_text(value: &Value) {
     // Case info header
     if let Some(case) = value.get("case") {
         render_case_header(case);
+    }
+
+    if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+        println!("message: {message}");
+    }
+    if let Some(spill) = value.get("spill") {
+        render_spill_info(spill);
     }
 
     // Event receipt
@@ -515,12 +529,21 @@ fn render_event(event: &Value) {
         println!("    {s}");
     }
 
-    if matches!(entry_type, "redirect" | "redirect_recovered") {
+    if matches!(
+        entry_type,
+        "redirect" | "redirect_recovered" | "redirect_rotated"
+    ) {
         if let Some(from) = event.get("from_direction").and_then(|v| v.as_str()) {
             println!("\n  from:  {from}");
         }
         if let Some(to) = event.get("to_direction").and_then(|v| v.as_str()) {
             println!("  to:    {to}");
+        }
+        if let Some(from_case) = event.get("from_case_id").and_then(|v| v.as_str()) {
+            println!("  from_case: {from_case}");
+        }
+        if let Some(to_case) = event.get("to_case_id").and_then(|v| v.as_str()) {
+            println!("  to_case:   {to_case}");
         }
     }
 }
@@ -820,6 +843,18 @@ fn render_timestamp_line(label: &str, timestamps: &Value, key: &str) {
         (Some(local), None) => println!("{label}: {local}"),
         (None, Some(utc)) => println!("{label}_utc: {utc}"),
         (None, None) => {}
+    }
+}
+
+fn render_spill_info(value: &Value) {
+    if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
+        println!("spill_path: {path}");
+    }
+    if let Some(char_count) = value.get("char_count").and_then(|v| v.as_u64()) {
+        println!("spill_char_count: {char_count}");
+    }
+    if let Some(line_count) = value.get("line_count").and_then(|v| v.as_u64()) {
+        println!("spill_line_count: {line_count}");
     }
 }
 

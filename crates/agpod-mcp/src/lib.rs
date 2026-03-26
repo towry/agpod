@@ -26,6 +26,7 @@ use std::sync::{Arc, OnceLock};
 pub struct AgpodMcpServer {
     data_dir: Option<String>,
     server_addr: Option<String>,
+    readonly: bool,
     tool_router: ToolRouter<Self>,
 }
 
@@ -34,19 +35,42 @@ impl AgpodMcpServer {
         Self::with_case_config(
             std::env::var("AGPOD_CASE_DATA_DIR").ok(),
             std::env::var("AGPOD_CASE_SERVER_ADDR").ok(),
+            false,
         )
+    }
+
+    pub fn with_options(
+        data_dir: Option<String>,
+        server_addr: Option<String>,
+        readonly: bool,
+    ) -> Self {
+        Self::with_case_config(data_dir, server_addr, readonly)
     }
 
     #[cfg(test)]
     fn with_data_dir(data_dir: Option<String>) -> Self {
-        Self::with_case_config(data_dir, None)
+        Self::with_case_config(data_dir, None, false)
     }
 
-    fn with_case_config(data_dir: Option<String>, server_addr: Option<String>) -> Self {
+    #[cfg(test)]
+    fn readonly() -> Self {
+        Self::with_case_config(None, None, true)
+    }
+
+    fn with_case_config(
+        data_dir: Option<String>,
+        server_addr: Option<String>,
+        readonly: bool,
+    ) -> Self {
         Self {
             data_dir,
             server_addr,
-            tool_router: Self::tool_router(),
+            readonly,
+            tool_router: if readonly {
+                Self::readonly_tool_router()
+            } else {
+                Self::full_tool_router()
+            },
         }
     }
 
@@ -157,12 +181,15 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
+        let instructions = if self.readonly {
+            "agpod case MCP (read-only mode). Only `case_current` and `case_show` are available. They read the current open case in this repository only. No tool in this server can open a case, append records, change steps, redirect, finish, resume by id, or otherwise mutate case state."
+        } else {
+            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
+        };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_server_info(Implementation::from_build_env())
-            .with_instructions(
-                "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `context_shortcut`, and `context_token_limit` to get semantic context. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools.",
-            )
+            .with_instructions(instructions)
     }
 
     async fn initialize(
@@ -174,7 +201,7 @@ impl ServerHandler for AgpodMcpServer {
     }
 }
 
-#[tool_router]
+#[tool_router(router = full_tool_router)]
 impl AgpodMcpServer {
     #[tool(
         name = "case_current",
@@ -185,7 +212,7 @@ impl AgpodMcpServer {
         &self,
         Parameters(_req): Parameters<CaseCurrentRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool("case_current", CaseCommand::Current, None)
+        self.run_case_tool("case_current", CaseCommand::Current { state: false }, None)
             .await
     }
 
@@ -358,7 +385,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_recall",
-        description = "Unified case retrieval entrypoint. Use `mode=find` to discover past cases, or `mode=context` plus `context_scope` to build semantic context.",
+        description = "Unified case retrieval entrypoint. Use `mode=find` plus `query` to discover past cases. Use `mode=context` to build semantic context: provide `query` to state the retrieval focus, or omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_recall(
@@ -600,6 +627,35 @@ impl AgpodMcpServer {
             Some(req.id),
         )
         .await
+    }
+}
+
+#[tool_router(router = readonly_tool_router)]
+impl AgpodMcpServer {
+    #[tool(
+        name = "case_current",
+        description = "Read active case state for the current open case in this repository.",
+        output_schema = case_tool_output_schema()
+    )]
+    async fn readonly_case_current(
+        &self,
+        Parameters(_req): Parameters<CaseCurrentRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_case_tool("case_current", CaseCommand::Current { state: false }, None)
+            .await
+    }
+
+    #[tool(
+        name = "case_show",
+        description = "Show detailed history for the current open case only.",
+        output_schema = case_tool_output_schema()
+    )]
+    async fn readonly_case_show(
+        &self,
+        Parameters(_req): Parameters<CaseCurrentRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_case_tool("case_show", CaseCommand::Show { id: None }, None)
+            .await
     }
 }
 
@@ -1054,7 +1110,7 @@ pub struct CaseFinishRequest {
 pub struct CaseRecallRequest {
     /// Retrieval mode: discover matching cases or assemble semantic context.
     pub mode: Option<CaseRecallModeInput>,
-    /// Search query. Required unless `context_shortcut` is used with `mode=context`.
+    /// Search query. Required for `mode=find`. Also required for `mode=context` to state retrieval focus, unless `context_shortcut` is used.
     pub query: Option<String>,
     /// Case ID. Used when `mode=context` and `context_scope=case`.
     pub context_id: Option<String>,
@@ -1099,7 +1155,7 @@ impl schemars::JsonSchema for CaseRecallRequest {
                 },
                 "query": {
                     "type": "string",
-                    "description": "Search query. Required unless `context_shortcut` is used with `mode=context`."
+                    "description": "Search query. Required for `mode=find`. Also required for `mode=context` to state retrieval focus, unless `context_shortcut` is used."
                 },
                 "context_id": {
                     "type": "string",
@@ -1412,6 +1468,34 @@ mod tests {
         assert!(instructions.contains("find_status"));
         assert!(instructions.contains("context_scope"));
         assert!(instructions.contains("context_shortcut"));
+        assert!(instructions.contains("omit `query` only when `context_shortcut=recent_work`"));
+        assert!(instructions.contains("When `context_scope=case`, `context_id` is required"));
+    }
+
+    #[test]
+    fn readonly_tool_router_exposes_only_read_tools() {
+        let server = AgpodMcpServer::readonly();
+        let tools = server.tool_router.list_all();
+        let tool_names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+
+        assert_eq!(tool_names.len(), 2);
+        assert!(tool_names.contains(&"case_current"));
+        assert!(tool_names.contains(&"case_show"));
+        assert!(!tool_names.contains(&"case_open"));
+        assert!(!tool_names.contains(&"case_record"));
+        assert!(!tool_names.contains(&"case_decide"));
+        assert!(!tool_names.contains(&"case_redirect"));
+        assert!(!tool_names.contains(&"case_finish"));
+        assert!(!tool_names.contains(&"case_list"));
+        assert!(!tool_names.contains(&"case_recall"));
+        assert!(!tool_names.contains(&"case_resume"));
+        assert!(!tool_names.contains(&"case_steps_add"));
+        assert!(!tool_names.contains(&"case_step_mark_as"));
+
+        let info = server.get_info();
+        let instructions = info.instructions.expect("instructions should exist");
+        assert!(instructions.contains("Only `case_current` and `case_show` are available"));
+        assert!(instructions.contains("No tool in this server can open a case"));
     }
 
     #[test]
@@ -1492,6 +1576,7 @@ mod tests {
         assert!(recall_schema.to_string().contains("recent_work"));
         assert!(recall_schema.to_string().contains("context_token_limit"));
         assert!(recall_schema.to_string().contains("context_limit"));
+        assert!(recall_schema.to_string().contains("state retrieval focus"));
         assert!(list_schema.to_string().contains("limit"));
         assert!(list_schema.to_string().contains("\"minimum\":1"));
         assert!(recall_schema.to_string().contains("\"minimum\":1"));
@@ -1696,6 +1781,7 @@ mod tests {
         assert!(recall_schema.contains("\"const\":\"recent_work\""));
         assert!(recall_schema.contains("\"required\":[\"context_id\"]"));
         assert!(recall_schema.contains("\"required\":[\"query\"]"));
+        assert!(recall_schema.contains("state retrieval focus"));
     }
 
     #[test]

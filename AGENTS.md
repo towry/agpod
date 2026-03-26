@@ -11,6 +11,7 @@ Source local env: `source .env.sh && <cmd>`
 - `cargo clippy -p <crate> -- -D warnings` — lint (CI enforces `-D warnings`)
 - `cargo fmt -p <crate> -- --check` — format check (CI enforces)
 - Before committing: run `cargo fmt` and `cargo clippy -- -D warnings` on changed crates
+- If you change behavior in a crate, run that crate's full test suite before committing (for example `cargo test -p agpod-case` or `cargo test -p agpod-mcp`), not only narrow tests. If a change affects CLI/MCP output shape, also update or add tests that exercise the changed path and re-run the affected crate suite.
 - For quick dev smoke on local build artifacts: first run `cargo build -p agpod -p agpod-mcp -p agpod-case-server`
 - If you changed `agpod-case` CLI/RPC shapes, rebuild `agpod-case-server` too before MCP smoke, because `agpod-mcp` auto-starts that sibling binary and stale builds can reject new request payloads
 - For case CLI smoke with isolated data: use `AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke.db AGPOD_CASE_SERVER_ADDR=127.0.0.1:6142 target/debug/agpod case list --json`
