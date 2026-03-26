@@ -529,12 +529,21 @@ fn render_event(event: &Value) {
         println!("    {s}");
     }
 
-    if matches!(entry_type, "redirect" | "redirect_recovered") {
+    if matches!(
+        entry_type,
+        "redirect" | "redirect_recovered" | "redirect_rotated"
+    ) {
         if let Some(from) = event.get("from_direction").and_then(|v| v.as_str()) {
             println!("\n  from:  {from}");
         }
         if let Some(to) = event.get("to_direction").and_then(|v| v.as_str()) {
             println!("  to:    {to}");
+        }
+        if let Some(from_case) = event.get("from_case_id").and_then(|v| v.as_str()) {
+            println!("  from_case: {from_case}");
+        }
+        if let Some(to_case) = event.get("to_case_id").and_then(|v| v.as_str()) {
+            println!("  to_case:   {to_case}");
         }
     }
 }

@@ -25,6 +25,7 @@ pub struct CaseConfig {
     pub server_addr: String,
     pub auto_start: bool,
     pub access_mode: CaseAccessMode,
+    pub redirect_limit: u32,
     pub semantic_recall_enabled: bool,
     pub vector_digest_job_enabled: bool,
     pub honcho_enabled: bool,
@@ -47,6 +48,7 @@ impl Default for CaseConfig {
             server_addr: DEFAULT_CASE_SERVER_ADDR.to_string(),
             auto_start: true,
             access_mode: CaseAccessMode::LocalServer,
+            redirect_limit: 100,
             semantic_recall_enabled: false,
             vector_digest_job_enabled: false,
             honcho_enabled: false,
@@ -67,6 +69,7 @@ pub struct CaseConfigFile {
     pub server_addr: Option<String>,
     pub auto_start: Option<bool>,
     pub access_mode: Option<CaseAccessMode>,
+    pub redirect_limit: Option<u32>,
     pub semantic_recall_enabled: Option<bool>,
     pub vector_digest_job_enabled: Option<bool>,
     pub honcho_enabled: Option<bool>,
@@ -140,6 +143,12 @@ impl CaseConfig {
         if let Ok(value) = std::env::var("AGPOD_CASE_ACCESS_MODE") {
             if let Some(parsed) = parse_access_mode(&value) {
                 config.access_mode = parsed;
+            }
+        }
+
+        if let Ok(value) = std::env::var("DEBUG_AGPOD_CASE_REDIRECTION_LIMIT") {
+            if let Some(parsed) = parse_positive_u32(&value) {
+                config.redirect_limit = parsed;
             }
         }
 
@@ -222,6 +231,9 @@ impl CaseConfig {
         if let Some(mode) = file.access_mode {
             self.access_mode = mode;
         }
+        if let Some(limit) = file.redirect_limit {
+            self.redirect_limit = limit.max(1);
+        }
         if let Some(enabled) = file.semantic_recall_enabled {
             self.semantic_recall_enabled = enabled;
         }
@@ -302,6 +314,10 @@ fn parse_access_mode(raw: &str) -> Option<CaseAccessMode> {
     }
 }
 
+fn parse_positive_u32(raw: &str) -> Option<u32> {
+    raw.trim().parse::<u32>().ok().filter(|value| *value > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +356,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::set_var("AGPOD_CASE_AUTO_START", "false");
         std::env::set_var("AGPOD_CASE_ACCESS_MODE", "remote");
+        std::env::set_var("DEBUG_AGPOD_CASE_REDIRECTION_LIMIT", "3");
         std::env::set_var("AGPOD_CASE_SEMANTIC_RECALL", "true");
         std::env::set_var("AGPOD_CASE_HONCHO_ENABLED", "true");
         std::env::set_var("HONCHO_BASE_URL", "https://example.test");
@@ -349,6 +366,7 @@ mod tests {
         let config = CaseConfig::load(CaseOverrides::default());
         assert!(!config.auto_start);
         assert_eq!(config.access_mode, CaseAccessMode::Remote);
+        assert_eq!(config.redirect_limit, 3);
         assert!(config.semantic_recall_enabled);
         assert!(config.honcho_enabled);
         assert_eq!(
@@ -360,6 +378,7 @@ mod tests {
 
         std::env::remove_var("AGPOD_CASE_AUTO_START");
         std::env::remove_var("AGPOD_CASE_ACCESS_MODE");
+        std::env::remove_var("DEBUG_AGPOD_CASE_REDIRECTION_LIMIT");
         std::env::remove_var("AGPOD_CASE_SEMANTIC_RECALL");
         std::env::remove_var("AGPOD_CASE_HONCHO_ENABLED");
         std::env::remove_var("HONCHO_BASE_URL");

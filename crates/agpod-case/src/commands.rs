@@ -45,6 +45,16 @@ fn append_dispatch_report(value: &mut serde_json::Value, report: &CaseDispatchRe
     }
 }
 
+fn merge_dispatch_reports(
+    reports: impl IntoIterator<Item = CaseDispatchReport>,
+) -> CaseDispatchReport {
+    let mut merged = CaseDispatchReport::default();
+    for mut report in reports {
+        merged.statuses.append(&mut report.statuses);
+    }
+    merged
+}
+
 fn build_dispatcher(client: &CaseClient) -> (CaseEventDispatcher, CaseDispatchReport) {
     let mut sinks: Vec<std::sync::Arc<dyn crate::hooks::CaseEventSink>> = Vec::new();
     let mut report = CaseDispatchReport::default();
@@ -627,6 +637,344 @@ async fn generate_case_id(_client: &CaseClient) -> CaseResult<String> {
     Ok(format_case_id(Uuid::new_v4()))
 }
 
+struct RedirectRequest<'a> {
+    direction: &'a str,
+    reason: &'a str,
+    context: &'a str,
+    constraints: &'a [Constraint],
+    success_condition: &'a str,
+    abort_condition: &'a str,
+}
+
+enum RotationRecovery {
+    Ready { case: Case, direction: Direction },
+    EmptyResidue { case: Case },
+}
+
+fn direction_matches_redirect_request(
+    direction: &Direction,
+    request: &RedirectRequest<'_>,
+) -> bool {
+    direction.summary == request.direction
+        && direction.constraints == request.constraints
+        && direction.success_condition == request.success_condition
+        && direction.abort_condition == request.abort_condition
+        && direction.reason.as_deref() == Some(request.reason)
+        && direction.context.as_deref() == Some(request.context)
+}
+
+async fn find_rotation_recovery_candidate(
+    client: &CaseClient,
+    case: &Case,
+    request: &RedirectRequest<'_>,
+) -> CaseResult<Option<RotationRecovery>> {
+    let mut ready_candidate: Option<(Case, Direction)> = None;
+    let mut empty_candidate: Option<Case> = None;
+
+    for candidate in client.list_cases().await? {
+        if candidate.id == case.id || candidate.status != CaseStatus::Open {
+            continue;
+        }
+        if candidate.goal != case.goal || candidate.goal_constraints != case.goal_constraints {
+            continue;
+        }
+
+        let directions = client.get_directions(&candidate.id).await?;
+        let entries = client.get_entries(&candidate.id).await?;
+        let steps = client.get_all_steps(&candidate.id).await?;
+        if !entries.is_empty() || !steps.is_empty() {
+            continue;
+        }
+
+        match directions.as_slice() {
+            [] => {
+                if empty_candidate.is_some() {
+                    return Err(CaseError::Other(
+                        "multiple partial rotation residues found; clean up extra open cases before retrying".to_string(),
+                    ));
+                }
+                empty_candidate = Some(candidate);
+            }
+            [direction]
+                if candidate.current_direction_seq == 1
+                    && direction.seq == 1
+                    && direction_matches_redirect_request(direction, request) =>
+            {
+                if ready_candidate.is_some() {
+                    return Err(CaseError::Other(
+                        "multiple recoverable rotated cases found; clean up extra open cases before retrying".to_string(),
+                    ));
+                }
+                ready_candidate = Some((candidate, direction.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((case, direction)) = ready_candidate {
+        return Ok(Some(RotationRecovery::Ready { case, direction }));
+    }
+    if let Some(case) = empty_candidate {
+        return Ok(Some(RotationRecovery::EmptyResidue { case }));
+    }
+    Ok(None)
+}
+
+async fn close_case_for_rotation(
+    client: &CaseClient,
+    case: &Case,
+    redirect_limit: u32,
+) -> CaseResult<(Case, String)> {
+    let close_summary = format!(
+        "redirect limit reached at {redirect_limit}; rotated into a new case to keep direction history manageable"
+    );
+    client
+        .update_case_status(&case.id, CaseStatus::Closed, &close_summary)
+        .await?;
+    let closed_case = client.get_case(&case.id).await?;
+    Ok((closed_case, close_summary))
+}
+
+async fn append_rotation_note(
+    client: &CaseClient,
+    from_case_id: &str,
+    to_case_id: &str,
+    redirect_limit: u32,
+    redirect_count: u32,
+    request: &RedirectRequest<'_>,
+) -> CaseResult<Entry> {
+    let entry_seq = next_entry_seq(client, to_case_id).await?;
+    client
+        .create_entry(
+            to_case_id,
+            entry_seq,
+            EntryType::Record,
+            Some("note"),
+            &format!(
+                "rotated from case {from_case_id} into {to_case_id} after redirect limit {redirect_limit} was exceeded"
+            ),
+            None,
+            Some(&format!(
+                "rotation reason: prior_redirects={redirect_count}, new_direction={}, redirect_reason={}, redirect_context={}",
+                request.direction, request.reason, request.context
+            )),
+            &[],
+            &[],
+        )
+        .await
+}
+
+async fn maybe_rotate_case_for_redirect_limit(
+    client: &CaseClient,
+    case: &Case,
+    prev_dir: &Direction,
+    request: &RedirectRequest<'_>,
+) -> CaseResult<Option<serde_json::Value>> {
+    let redirect_limit = client.config().redirect_limit.max(1);
+    let redirect_count = case.current_direction_seq.saturating_sub(1);
+    if redirect_count < redirect_limit {
+        return Ok(None);
+    }
+
+    if let Some(recovery) = find_rotation_recovery_candidate(client, case, request).await? {
+        match recovery {
+            RotationRecovery::EmptyResidue { case: residue } => {
+                client
+                    .update_case_status(
+                        &residue.id,
+                        CaseStatus::Closed,
+                        "discarded partial rotated case residue before retry",
+                    )
+                    .await?;
+            }
+            RotationRecovery::Ready {
+                case: rotated_case,
+                direction: rotated_direction,
+            } => {
+                let rotation_note = append_rotation_note(
+                    client,
+                    &case.id,
+                    &rotated_case.id,
+                    redirect_limit,
+                    redirect_count,
+                    request,
+                )
+                .await?;
+                let (closed_case, close_summary) =
+                    close_case_for_rotation(client, case, redirect_limit).await?;
+                let close_dispatch = dispatch_event(
+                    client,
+                    CaseDomainEvent::CaseClosed {
+                        case: closed_case,
+                        summary: close_summary.clone(),
+                    },
+                )
+                .await;
+                let note_dispatch = dispatch_event(
+                    client,
+                    CaseDomainEvent::RecordAppended {
+                        case: rotated_case.clone(),
+                        entry: rotation_note.clone(),
+                    },
+                )
+                .await;
+                let open_dispatch = dispatch_event(
+                    client,
+                    CaseDomainEvent::CaseOpened {
+                        case: rotated_case.clone(),
+                        direction: rotated_direction.clone(),
+                    },
+                )
+                .await;
+
+                let next = NextAction {
+                    suggested_command: "step add".to_string(),
+                    why: "the rotated case starts with a fresh direction and no execution queue"
+                        .to_string(),
+                };
+                let mut value = json!({
+                    "ok": true,
+                    "message": format!(
+                        "redirect count exceeded limit after {redirect_count} prior redirects (limit {redirect_limit}); recovered rotated case {} and closed case {}",
+                        rotated_case.id, case.id
+                    ),
+                    "event": {
+                        "seq": serde_json::Value::Null,
+                        "entry_type": "redirect_rotated",
+                        "summary": format!(
+                            "redirect limit reached; recovered rotated case {} from {}",
+                            rotated_case.id, case.id
+                        ),
+                        "from_case_id": case.id,
+                        "to_case_id": rotated_case.id,
+                        "from_direction": prev_dir.summary,
+                        "to_direction": request.direction,
+                        "reason": request.reason,
+                        "context": request.context,
+                        "redirect_count": redirect_count,
+                        "redirect_limit": redirect_limit,
+                        "recovered": true
+                    },
+                    "case": output::case_json(&rotated_case),
+                    "previous_case": {
+                        "id": case.id,
+                        "status": "closed",
+                        "close_summary": close_summary
+                    },
+                    "rotation_note": output::entry_json(&rotation_note),
+                    "direction": output::direction_json(&rotated_direction),
+                    "steps": output::steps_json(&[]),
+                    "context": output::context_json(&rotated_case.id, 1),
+                    "next": output::next_json(&next)
+                });
+                append_dispatch_report(
+                    &mut value,
+                    &merge_dispatch_reports([close_dispatch, open_dispatch, note_dispatch]),
+                );
+                return Ok(Some(value));
+            }
+        }
+    }
+
+    let new_case_id = generate_case_id(client).await?;
+    let new_case = client
+        .create_case(&new_case_id, &case.goal, &case.goal_constraints)
+        .await?;
+    let new_dir = client
+        .create_direction(
+            &new_case_id,
+            1,
+            request.direction,
+            request.constraints,
+            request.success_condition,
+            request.abort_condition,
+            Some(request.reason),
+            Some(request.context),
+        )
+        .await?;
+    let rotation_note = append_rotation_note(
+        client,
+        &case.id,
+        &new_case_id,
+        redirect_limit,
+        redirect_count,
+        request,
+    )
+    .await?;
+    let (closed_case, close_summary) =
+        close_case_for_rotation(client, case, redirect_limit).await?;
+    let open_dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::CaseOpened {
+            case: new_case.clone(),
+            direction: new_dir.clone(),
+        },
+    )
+    .await;
+    let close_dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::CaseClosed {
+            case: closed_case,
+            summary: close_summary.clone(),
+        },
+    )
+    .await;
+    let note_dispatch = dispatch_event(
+        client,
+        CaseDomainEvent::RecordAppended {
+            case: new_case.clone(),
+            entry: rotation_note.clone(),
+        },
+    )
+    .await;
+
+    let next = NextAction {
+        suggested_command: "step add".to_string(),
+        why: "the rotated case starts with a fresh direction and no execution queue".to_string(),
+    };
+    let message = format!(
+        "redirect count exceeded limit after {redirect_count} prior redirects (limit {redirect_limit}); closed case {} and opened {} with copied goal and constraints",
+        case.id, new_case_id
+    );
+
+    let mut value = json!({
+        "ok": true,
+        "message": message,
+        "event": {
+            "seq": serde_json::Value::Null,
+            "entry_type": "redirect_rotated",
+            "summary": format!(
+                "redirect limit reached; moved from case {} to {}",
+                case.id, new_case_id
+            ),
+            "from_case_id": case.id,
+            "to_case_id": new_case_id,
+            "from_direction": prev_dir.summary,
+            "to_direction": request.direction,
+            "reason": request.reason,
+            "context": request.context,
+            "redirect_count": redirect_count,
+            "redirect_limit": redirect_limit
+        },
+        "case": output::case_json(&new_case),
+        "previous_case": {
+            "id": case.id,
+            "status": "closed",
+            "close_summary": close_summary
+        },
+        "rotation_note": output::entry_json(&rotation_note),
+        "direction": output::direction_json(&new_dir),
+        "steps": output::steps_json(&[]),
+        "context": output::context_json(&new_case_id, 1),
+        "next": output::next_json(&next)
+    });
+    append_dispatch_report(
+        &mut value,
+        &merge_dispatch_reports([close_dispatch, open_dispatch, note_dispatch]),
+    );
+    Ok(Some(value))
+}
+
 /// Generate step ID: {case_id}/S-NNN (case-scoped, globally unique)
 async fn generate_step_id(client: &CaseClient, case_id: &str) -> CaseResult<String> {
     let count = client.get_step_count(case_id).await?;
@@ -1096,6 +1444,14 @@ async fn cmd_redirect(
     }
 
     let constraints = parse_constraints(constraint_strs)?;
+    let redirect_request = RedirectRequest {
+        direction,
+        reason,
+        context,
+        constraints: &constraints,
+        success_condition,
+        abort_condition,
+    };
 
     // Get previous direction for from_direction
     let prev_dir = client
@@ -1106,13 +1462,7 @@ async fn cmd_redirect(
     if let Some(existing_dir) = client.find_direction(case_id, new_seq).await? {
         // Recover the common half-written redirect case: the next direction already exists,
         // but the case pointer never advanced because the final UPDATE failed.
-        if existing_dir.summary == direction
-            && existing_dir.constraints == constraints
-            && existing_dir.success_condition == success_condition
-            && existing_dir.abort_condition == abort_condition
-            && existing_dir.reason.as_deref() == Some(reason)
-            && existing_dir.context.as_deref() == Some(context)
-        {
+        if direction_matches_redirect_request(&existing_dir, &redirect_request) {
             client.update_case_direction(case_id, new_seq).await?;
             let updated_case = client.get_case(case_id).await?;
             let dispatch = dispatch_event(
@@ -1153,6 +1503,12 @@ async fn cmd_redirect(
         return Err(CaseError::Other(format!(
             "direction seq {new_seq} already exists for case {case_id}; likely a partial redirect residue with different content"
         )));
+    }
+
+    if let Some(rotated) =
+        maybe_rotate_case_for_redirect_limit(client, &case, &prev_dir, &redirect_request).await?
+    {
+        return Ok(rotated);
     }
 
     // Create redirect entry
@@ -3480,6 +3836,354 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("partial redirect residue"));
+    }
+
+    #[tokio::test]
+    async fn redirect_recovers_residual_direction_before_rotation_limit_logic() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.redirect_limit = 1;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction a", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction b",
+            "reason b",
+            "context b",
+            GoalDriftFlag::No,
+            &[],
+            "done b",
+            "stop b",
+        )
+        .await
+        .expect("first redirect should succeed");
+
+        client
+            .create_direction(
+                &case_id,
+                3,
+                "direction c",
+                &[],
+                "done c",
+                "stop c",
+                Some("reason c"),
+                Some("context c"),
+            )
+            .await
+            .expect("residual direction should be inserted");
+
+        let redirected = cmd_redirect(
+            &client,
+            &case_id,
+            "direction c",
+            "reason c",
+            "context c",
+            GoalDriftFlag::No,
+            &[],
+            "done c",
+            "stop c",
+        )
+        .await
+        .expect("residual redirect should recover before rotation");
+
+        assert_eq!(
+            redirected["event"]["entry_type"].as_str(),
+            Some("redirect_recovered")
+        );
+        assert_eq!(
+            redirected["context"]["active_case_id"].as_str(),
+            Some(case_id.as_str())
+        );
+        let current = client.get_case(&case_id).await.expect("case should reload");
+        assert_eq!(current.status, CaseStatus::Open);
+        assert_eq!(current.current_direction_seq, 3);
+        let open_count = client
+            .list_cases()
+            .await
+            .expect("case list should succeed")
+            .into_iter()
+            .filter(|case| case.status == CaseStatus::Open)
+            .count();
+        assert_eq!(open_count, 1);
+    }
+
+    #[tokio::test]
+    async fn rotation_closes_old_case_only_after_new_direction_exists() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.redirect_limit = 1;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction a", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction b",
+            "reason b",
+            "context b",
+            GoalDriftFlag::No,
+            &[],
+            "done b",
+            "stop b",
+        )
+        .await
+        .expect("first redirect should succeed");
+
+        let rotated = cmd_redirect(
+            &client,
+            &case_id,
+            "direction c",
+            "reason c",
+            "context c",
+            GoalDriftFlag::No,
+            &[],
+            "done c",
+            "stop c",
+        )
+        .await
+        .expect("second redirect should rotate");
+
+        let new_case_id = rotated["case"]["id"]
+            .as_str()
+            .expect("new case id should exist")
+            .to_string();
+        let old_case = client
+            .get_case(&case_id)
+            .await
+            .expect("old case should exist");
+        let new_case = client
+            .get_case(&new_case_id)
+            .await
+            .expect("new case should exist");
+        let new_directions = client
+            .get_directions(&new_case_id)
+            .await
+            .expect("new directions should exist");
+        assert_eq!(old_case.status, CaseStatus::Closed);
+        assert_eq!(new_case.status, CaseStatus::Open);
+        assert_eq!(new_directions.len(), 1);
+        assert_eq!(new_directions[0].summary, "direction c");
+
+        let new_entries = client
+            .get_entries(&new_case_id)
+            .await
+            .expect("new case entries should exist");
+        assert_eq!(new_entries.len(), 1);
+        assert_eq!(new_entries[0].entry_type, EntryType::Record);
+        assert_eq!(new_entries[0].kind.as_deref(), Some("note"));
+        assert!(new_entries[0]
+            .summary
+            .contains(&format!("rotated from case {case_id}")));
+    }
+
+    #[tokio::test]
+    async fn redirect_rotates_into_new_case_when_limit_is_reached() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.redirect_limit = 3;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let goal_constraints =
+            vec![r#"{"rule":"keep evidence first","reason":"avoid drift"}"#.to_string()];
+        let initial_constraints =
+            vec![r#"{"rule":"small diffs","reason":"easy review"}"#.to_string()];
+        let opened = cmd_open_new(
+            &client,
+            "goal",
+            "direction a",
+            &goal_constraints,
+            &initial_constraints,
+            Some("done a"),
+            Some("stop a"),
+        )
+        .await
+        .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction b",
+            "reason b",
+            "context b",
+            GoalDriftFlag::No,
+            &[],
+            "done b",
+            "stop b",
+        )
+        .await
+        .expect("first redirect should succeed");
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction c",
+            "reason c",
+            "context c",
+            GoalDriftFlag::No,
+            &[],
+            "done c",
+            "stop c",
+        )
+        .await
+        .expect("second redirect should succeed");
+
+        cmd_redirect(
+            &client,
+            &case_id,
+            "direction d",
+            "reason d",
+            "context d",
+            GoalDriftFlag::No,
+            &[],
+            "done d",
+            "stop d",
+        )
+        .await
+        .expect("third redirect should still succeed");
+
+        let rotated = cmd_redirect(
+            &client,
+            &case_id,
+            "direction e",
+            "reason e",
+            "context e",
+            GoalDriftFlag::No,
+            &[r#"{"rule":"fresh queue","reason":"new case"}"#.to_string()],
+            "done e",
+            "stop e",
+        )
+        .await
+        .expect("fourth redirect should rotate into a new case");
+
+        assert_eq!(
+            rotated["event"]["entry_type"].as_str(),
+            Some("redirect_rotated")
+        );
+        assert_eq!(rotated["event"]["redirect_limit"].as_u64(), Some(3));
+        assert_eq!(rotated["event"]["redirect_count"].as_u64(), Some(3));
+        assert_eq!(
+            rotated["previous_case"]["id"].as_str(),
+            Some(case_id.as_str())
+        );
+        assert_eq!(rotated["previous_case"]["status"].as_str(), Some("closed"));
+        assert!(rotated["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("closed case")));
+
+        let new_case_id = rotated["case"]["id"]
+            .as_str()
+            .expect("new case id should exist")
+            .to_string();
+        assert_ne!(new_case_id, case_id);
+        assert_eq!(
+            rotated["context"]["active_case_id"].as_str(),
+            Some(new_case_id.as_str())
+        );
+        assert_eq!(
+            rotated["context"]["current_direction_seq"].as_u64(),
+            Some(1)
+        );
+
+        let old_case = client
+            .get_case(&case_id)
+            .await
+            .expect("old case should still exist");
+        assert_eq!(old_case.status, CaseStatus::Closed);
+
+        let new_case = client
+            .get_case(&new_case_id)
+            .await
+            .expect("new case should exist");
+        assert_eq!(new_case.status, CaseStatus::Open);
+        assert_eq!(new_case.goal, "goal");
+        assert_eq!(new_case.goal_constraints.len(), 1);
+        assert_eq!(new_case.current_direction_seq, 1);
+
+        let new_directions = client
+            .get_directions(&new_case_id)
+            .await
+            .expect("new directions should exist");
+        assert_eq!(new_directions.len(), 1);
+        assert_eq!(new_directions[0].summary, "direction e");
+        assert_eq!(new_directions[0].constraints.len(), 1);
+        assert_eq!(new_directions[0].success_condition, "done e");
+        assert_eq!(new_directions[0].abort_condition, "stop e");
+
+        let old_entries = client
+            .get_entries(&case_id)
+            .await
+            .expect("old entries should exist");
+        let new_entries = client
+            .get_entries(&new_case_id)
+            .await
+            .expect("new case entries query should succeed");
+        assert_eq!(old_entries.len(), 3);
+        assert_eq!(new_entries.len(), 1);
+        assert_eq!(new_entries[0].entry_type, EntryType::Record);
+        assert_eq!(new_entries[0].kind.as_deref(), Some("note"));
+        assert!(new_entries[0]
+            .summary
+            .contains(&format!("rotated from case {case_id}")));
+        assert!(rotated["rotation_note"]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains(&case_id)));
+
+        let current = client
+            .find_open_case()
+            .await
+            .expect("open case query should succeed")
+            .expect("new case should now be current");
+        assert_eq!(current.id, new_case_id);
     }
 
     #[tokio::test]
