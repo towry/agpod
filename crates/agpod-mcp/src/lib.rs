@@ -925,86 +925,22 @@ fn describe_case_record_kind_schema(schema: &mut schemars::Schema) {
     );
 }
 
-fn describe_case_open_request_schema(schema: &mut schemars::Schema) {
-    let object = schema.ensure_object();
-    object.insert(
-        "allOf".to_string(),
-        serde_json::json!([
-            {
-                "if": {
-                    "properties": {
-                        "mode": { "const": "new" }
-                    }
-                },
-                "then": {
-                    "required": ["goal", "direction"],
-                    "properties": {
-                        "case_id": { "maxLength": 0 }
-                    }
-                },
-                "else": {
-                    "required": ["case_id"],
-                    "properties": {
-                        "goal": { "maxLength": 0 },
-                        "direction": { "maxLength": 0 },
-                        "goal_constraints": { "maxItems": 0 },
-                        "constraints": { "maxItems": 0 },
-                        "success_condition": { "maxLength": 0 },
-                        "abort_condition": { "maxLength": 0 }
-                    }
-                }
-            }
-        ]),
-    );
+fn describe_case_open_request_schema(_schema: &mut schemars::Schema) {
+    // Conditional validation (mode=new requires goal+direction, mode=reopen
+    // requires case_id) is enforced server-side. Schema-level allOf/if-then
+    // removed for compatibility with providers that reject top-level allOf.
 }
 
-fn describe_case_record_request_schema(schema: &mut schemars::Schema) {
-    let object = schema.ensure_object();
-    object.insert(
-        "allOf".to_string(),
-        serde_json::json!([
-            {
-                "if": {
-                    "properties": {
-                        "kind": { "const": "goal_constraint_update" }
-                    },
-                    "required": ["kind"]
-                },
-                "then": {
-                    "properties": {
-                        "goal_constraints": { "minItems": 1 }
-                    }
-                },
-                "else": {
-                    "properties": {
-                        "goal_constraints": { "maxItems": 0 }
-                    }
-                }
-            }
-        ]),
-    );
+fn describe_case_record_request_schema(_schema: &mut schemars::Schema) {
+    // Conditional validation (kind=goal_constraint_update requires non-empty
+    // goal_constraints) is enforced server-side. Schema-level allOf/if-then
+    // removed for compatibility with providers that reject top-level allOf.
 }
 
-fn describe_case_step_mark_as_request_schema(schema: &mut schemars::Schema) {
-    let object = schema.ensure_object();
-    object.insert(
-        "allOf".to_string(),
-        serde_json::json!([
-            {
-                "if": {
-                    "properties": {
-                        "status": { "const": "blocked" }
-                    }
-                },
-                "then": {
-                    "required": ["reason"],
-                    "properties": {
-                        "reason": { "minLength": 1 }
-                    }
-                }
-            }
-        ]),
-    );
+fn describe_case_step_mark_as_request_schema(_schema: &mut schemars::Schema) {
+    // Conditional validation (status=blocked requires reason) is enforced
+    // server-side. Schema-level allOf/if-then removed for compatibility
+    // with providers that reject top-level allOf.
 }
 
 fn deserialize_optional_record_kind<'de, D>(deserializer: D) -> Result<Option<RecordKind>, D::Error>
@@ -1177,19 +1113,19 @@ impl schemars::JsonSchema for CaseRecallRequest {
         concat!(module_path!(), "::CaseRecallRequest").into()
     }
 
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let mode_schema = generator.subschema_for::<CaseRecallModeInput>();
-        let status_schema = generator.subschema_for::<CaseStatusInput>();
-        let scope_schema = generator.subschema_for::<CaseContextScopeInput>();
-        let shortcut_schema = generator.subschema_for::<CaseContextShortcutInput>();
-
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // Conditional validation (mode-dependent required fields, mutual
+        // exclusion of find_* vs context_* params) is enforced server-side.
+        // Top-level allOf and nested oneOf removed for compatibility with
+        // providers that reject these keywords.
         schemars::json_schema!({
             "type": "object",
             "properties": {
                 "mode": {
+                    "type": "string",
                     "description": "Retrieval mode: discover matching cases or assemble semantic context.",
                     "default": "find",
-                    "oneOf": [mode_schema.clone()]
+                    "enum": ["find", "context"]
                 },
                 "query": {
                     "type": "string",
@@ -1197,19 +1133,22 @@ impl schemars::JsonSchema for CaseRecallRequest {
                 },
                 "context_id": {
                     "type": "string",
-                    "description": "Case ID. Used when `mode=context` and `context_scope=case`."
+                    "description": "Case ID. Required when `mode=context` and `context_scope=case`."
                 },
                 "context_scope": {
-                    "description": "Context retrieval scope. Used when `mode=context`.",
-                    "oneOf": [scope_schema]
+                    "type": "string",
+                    "description": "Context retrieval scope. Used only when `mode=context`.",
+                    "enum": ["case", "repo"]
                 },
                 "context_shortcut": {
-                    "description": "Shortcut for common `mode=context` retrieval patterns.",
-                    "oneOf": [shortcut_schema]
+                    "type": "string",
+                    "description": "Shortcut for common `mode=context` retrieval patterns. When set to `recent_work`, `query` is optional.",
+                    "enum": ["recent_work"]
                 },
                 "find_status": {
-                    "description": "Optional case status filter for `mode=find`.",
-                    "oneOf": [status_schema]
+                    "type": "string",
+                    "description": "Optional case status filter. Used only when `mode=find`.",
+                    "enum": ["open", "closed", "abandoned"]
                 },
                 "find_limit": {
                     "type": "integer",
@@ -1231,65 +1170,7 @@ impl schemars::JsonSchema for CaseRecallRequest {
                     "minimum": 0,
                     "description": "Optional token budget for returned context when `mode=context`."
                 }
-            },
-            "allOf": [
-                {
-                    "if": {
-                        "properties": { "mode": { "const": "context" } },
-                        "required": ["mode"]
-                    },
-                    "then": {
-                        "allOf": [
-                            {
-                                "if": {
-                                    "properties": { "context_scope": { "const": "case" } },
-                                    "required": ["context_scope"]
-                                },
-                                "then": { "required": ["context_id"] }
-                            },
-                            {
-                                "if": {
-                                    "properties": { "context_shortcut": { "const": "recent_work" } },
-                                    "required": ["context_shortcut"]
-                                },
-                                "then": {
-                                    "not": { "required": ["query"] }
-                                },
-                                "else": {
-                                    "required": ["query"]
-                                }
-                            }
-                        ]
-                    },
-                    "else": {
-                        "required": ["query"],
-                        "not": {
-                            "anyOf": [
-                                { "required": ["context_id"] },
-                                { "required": ["context_scope"] },
-                                { "required": ["context_shortcut"] },
-                                { "required": ["context_limit"] },
-                                { "required": ["context_token_limit"] }
-                            ]
-                        }
-                    }
-                },
-                {
-                    "if": {
-                        "properties": { "mode": { "const": "context" } },
-                        "required": ["mode"]
-                    },
-                    "then": {
-                        "not": {
-                            "anyOf": [
-                                { "required": ["find_status"] },
-                                { "required": ["find_limit"] },
-                                { "required": ["find_recent_days"] }
-                            ]
-                        }
-                    }
-                }
-            ]
+            }
         })
     }
 }
@@ -1406,7 +1287,6 @@ pub struct StepObjectInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[schemars(transform = describe_case_step_mark_as_request_schema)]
 #[serde(rename_all = "lowercase")]
 pub enum StepStatusInput {
     Started,
