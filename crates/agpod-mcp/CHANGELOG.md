@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.0...agpod-mcp-v0.7.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* **mcp:** remove top-level allOf/oneOf from tool input schemas ([1389130](https://github.com/towry/agpod/commit/138913012982608922eb51a30e2e89a661b66209))
+* **mcp:** update tests for removed allOf/oneOf schema assertions ([e91efff](https://github.com/towry/agpod/commit/e91efff831dfde8b381ecffd49a1d6ebe5ff4874))
+
 ## [0.7.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.6.0...agpod-mcp-v0.7.0) (2026-03-26)
 
 
