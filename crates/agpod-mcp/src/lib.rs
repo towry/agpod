@@ -111,6 +111,132 @@ impl AgpodMcpServer {
         Ok(result)
     }
 
+    async fn run_case_list_request(
+        &self,
+        req: CaseListRequest,
+    ) -> Result<CallToolResult, ErrorData> {
+        validate_list_request(req.limit, req.recent_days)?;
+
+        self.run_case_tool(
+            "case_list",
+            CaseCommand::List {
+                status: req.status.map(Into::into),
+                limit: req.limit,
+                recent_days: req.recent_days,
+            },
+            None,
+        )
+        .await
+    }
+
+    async fn run_case_recall_request(
+        &self,
+        req: CaseRecallRequest,
+    ) -> Result<CallToolResult, ErrorData> {
+        match req.mode.unwrap_or_default() {
+            CaseRecallModeInput::Find => {
+                if req.query.as_deref().unwrap_or_default().trim().is_empty() {
+                    return Err(ErrorData::invalid_params("query must not be empty", None));
+                }
+                if req.context_id.is_some()
+                    || req.context_scope.is_some()
+                    || req.context_shortcut.is_some()
+                    || req.context_limit.is_some()
+                    || req.context_token_limit.is_some()
+                {
+                    return Err(ErrorData::invalid_params(
+                        "`context_*` fields are only supported when mode=`context`",
+                        None,
+                    ));
+                }
+                validate_list_request(req.find_limit, req.find_recent_days)?;
+                self.run_case_tool(
+                    "case_recall",
+                    CaseCommand::Recall {
+                        query: req.query.unwrap_or_default(),
+                        status: req.find_status.map(Into::into),
+                        limit: req.find_limit,
+                        recent_days: req.find_recent_days,
+                    },
+                    None,
+                )
+                .await
+            }
+            CaseRecallModeInput::Context => {
+                if req.context_shortcut.is_some()
+                    && !req.query.as_deref().unwrap_or_default().trim().is_empty()
+                {
+                    return Err(ErrorData::invalid_params(
+                        "`query` cannot be combined with `context_shortcut`; use one or the other",
+                        None,
+                    ));
+                }
+                let resolved_query = match req.context_shortcut {
+                    Some(CaseContextShortcutInput::RecentWork) => {
+                        "Summarize the most recent work completed or in progress in this repository. Focus on latest steps, findings, decisions, blockers, and next actions.".to_string()
+                    }
+                    None => {
+                        if req.query.as_deref().unwrap_or_default().trim().is_empty() {
+                            return Err(ErrorData::invalid_params(
+                                "query must not be empty",
+                                None,
+                            ));
+                        }
+                        req.query.clone().unwrap_or_default()
+                    }
+                };
+                if req.find_status.is_some()
+                    || req.find_limit.is_some()
+                    || req.find_recent_days.is_some()
+                {
+                    return Err(ErrorData::invalid_params(
+                        "`find_*` fields are only supported when mode=`find`",
+                        None,
+                    ));
+                }
+                if matches!(req.context_limit, Some(0)) {
+                    return Err(ErrorData::invalid_params(
+                        "context_limit must be at least 1",
+                        None,
+                    ));
+                }
+                let context_scope = match req.context_shortcut {
+                    Some(CaseContextShortcutInput::RecentWork) => CaseContextScopeInput::Repo,
+                    None => req.context_scope.unwrap_or(CaseContextScopeInput::Repo),
+                };
+                if matches!(context_scope, CaseContextScopeInput::Case)
+                    && req
+                        .context_id
+                        .as_deref()
+                        .unwrap_or_default()
+                        .trim()
+                        .is_empty()
+                {
+                    return Err(ErrorData::invalid_params(
+                        "`context_id` is required when mode=`context` and context_scope=`case`",
+                        None,
+                    ));
+                }
+                let case_id_hint = match context_scope {
+                    CaseContextScopeInput::Case => req.context_id.clone(),
+                    CaseContextScopeInput::Repo => None,
+                };
+                self.run_case_tool(
+                    "case_recall",
+                    CaseCommand::Context {
+                        id: req.context_id,
+                        scope: context_scope.into(),
+                        query: Some(resolved_query),
+                        limit: req.context_limit,
+                        token_limit: req.context_token_limit,
+                    },
+                    case_id_hint,
+                )
+                .await
+            }
+        }
+    }
+
     fn case_tool_result(
         kind: &'static str,
         case_id_hint: Option<String>,
@@ -182,7 +308,7 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.readonly {
-            "agpod case MCP (read-only mode). Only `case_current` and `case_show` are available. They read the current open case in this repository only. No tool in this server can open a case, append records, change steps, redirect, finish, resume by id, or otherwise mutate case state."
+            "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, resume by id, or otherwise mutate case state."
         } else {
             "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
         };
@@ -369,18 +495,7 @@ impl AgpodMcpServer {
         &self,
         Parameters(req): Parameters<CaseListRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        validate_list_request(req.limit, req.recent_days)?;
-
-        self.run_case_tool(
-            "case_list",
-            CaseCommand::List {
-                status: req.status.map(Into::into),
-                limit: req.limit,
-                recent_days: req.recent_days,
-            },
-            None,
-        )
-        .await
+        self.run_case_list_request(req).await
     }
 
     #[tool(
@@ -392,108 +507,7 @@ impl AgpodMcpServer {
         &self,
         Parameters(req): Parameters<CaseRecallRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        match req.mode.unwrap_or_default() {
-            CaseRecallModeInput::Find => {
-                if req.query.as_deref().unwrap_or_default().trim().is_empty() {
-                    return Err(ErrorData::invalid_params("query must not be empty", None));
-                }
-                if req.context_id.is_some()
-                    || req.context_scope.is_some()
-                    || req.context_shortcut.is_some()
-                    || req.context_limit.is_some()
-                    || req.context_token_limit.is_some()
-                {
-                    return Err(ErrorData::invalid_params(
-                        "`context_*` fields are only supported when mode=`context`",
-                        None,
-                    ));
-                }
-                validate_list_request(req.find_limit, req.find_recent_days)?;
-                self.run_case_tool(
-                    "case_recall",
-                    CaseCommand::Recall {
-                        query: req.query.unwrap_or_default(),
-                        status: req.find_status.map(Into::into),
-                        limit: req.find_limit,
-                        recent_days: req.find_recent_days,
-                    },
-                    None,
-                )
-                .await
-            }
-            CaseRecallModeInput::Context => {
-                if req.context_shortcut.is_some()
-                    && !req.query.as_deref().unwrap_or_default().trim().is_empty()
-                {
-                    return Err(ErrorData::invalid_params(
-                        "`query` cannot be combined with `context_shortcut`; use one or the other",
-                        None,
-                    ));
-                }
-                let resolved_query = match req.context_shortcut {
-                    Some(CaseContextShortcutInput::RecentWork) => {
-                        "Summarize the most recent work completed or in progress in this repository. Focus on latest steps, findings, decisions, blockers, and next actions.".to_string()
-                    }
-                    None => {
-                        if req.query.as_deref().unwrap_or_default().trim().is_empty() {
-                            return Err(ErrorData::invalid_params(
-                                "query must not be empty",
-                                None,
-                            ));
-                        }
-                        req.query.clone().unwrap_or_default()
-                    }
-                };
-                if req.find_status.is_some()
-                    || req.find_limit.is_some()
-                    || req.find_recent_days.is_some()
-                {
-                    return Err(ErrorData::invalid_params(
-                        "`find_*` fields are only supported when mode=`find`",
-                        None,
-                    ));
-                }
-                if matches!(req.context_limit, Some(0)) {
-                    return Err(ErrorData::invalid_params(
-                        "context_limit must be at least 1",
-                        None,
-                    ));
-                }
-                let context_scope = match req.context_shortcut {
-                    Some(CaseContextShortcutInput::RecentWork) => CaseContextScopeInput::Repo,
-                    None => req.context_scope.unwrap_or(CaseContextScopeInput::Repo),
-                };
-                if matches!(context_scope, CaseContextScopeInput::Case)
-                    && req
-                        .context_id
-                        .as_deref()
-                        .unwrap_or_default()
-                        .trim()
-                        .is_empty()
-                {
-                    return Err(ErrorData::invalid_params(
-                        "`context_id` is required when mode=`context` and context_scope=`case`",
-                        None,
-                    ));
-                }
-                let case_id_hint = match context_scope {
-                    CaseContextScopeInput::Case => req.context_id.clone(),
-                    CaseContextScopeInput::Repo => None,
-                };
-                self.run_case_tool(
-                    "case_recall",
-                    CaseCommand::Context {
-                        id: req.context_id,
-                        scope: context_scope.into(),
-                        query: Some(resolved_query),
-                        limit: req.context_limit,
-                        token_limit: req.context_token_limit,
-                    },
-                    case_id_hint,
-                )
-                .await
-            }
-        }
+        self.run_case_recall_request(req).await
     }
 
     #[tool(
@@ -656,6 +670,30 @@ impl AgpodMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.run_case_tool("case_show", CaseCommand::Show { id: None }, None)
             .await
+    }
+
+    #[tool(
+        name = "case_list",
+        description = "List repo cases with optional status, recency, and limit filters. Safe discovery call.",
+        output_schema = case_tool_output_schema()
+    )]
+    async fn readonly_case_list(
+        &self,
+        Parameters(req): Parameters<CaseListRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_case_list_request(req).await
+    }
+
+    #[tool(
+        name = "case_recall",
+        description = "Unified case retrieval entrypoint. Use `mode=find` plus `query` to discover past cases. Use `mode=context` to build semantic context: provide `query` to state the retrieval focus, or omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required.",
+        output_schema = case_tool_output_schema()
+    )]
+    async fn readonly_case_recall(
+        &self,
+        Parameters(req): Parameters<CaseRecallRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_case_recall_request(req).await
     }
 }
 
@@ -1478,23 +1516,24 @@ mod tests {
         let tools = server.tool_router.list_all();
         let tool_names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
 
-        assert_eq!(tool_names.len(), 2);
+        assert_eq!(tool_names.len(), 4);
         assert!(tool_names.contains(&"case_current"));
         assert!(tool_names.contains(&"case_show"));
+        assert!(tool_names.contains(&"case_list"));
+        assert!(tool_names.contains(&"case_recall"));
         assert!(!tool_names.contains(&"case_open"));
         assert!(!tool_names.contains(&"case_record"));
         assert!(!tool_names.contains(&"case_decide"));
         assert!(!tool_names.contains(&"case_redirect"));
         assert!(!tool_names.contains(&"case_finish"));
-        assert!(!tool_names.contains(&"case_list"));
-        assert!(!tool_names.contains(&"case_recall"));
         assert!(!tool_names.contains(&"case_resume"));
         assert!(!tool_names.contains(&"case_steps_add"));
         assert!(!tool_names.contains(&"case_step_mark_as"));
 
         let info = server.get_info();
         let instructions = info.instructions.expect("instructions should exist");
-        assert!(instructions.contains("Only `case_current` and `case_show` are available"));
+        assert!(instructions
+            .contains("`case_current`, `case_show`, `case_list`, and `case_recall` are available"));
         assert!(instructions.contains("No tool in this server can open a case"));
     }
 

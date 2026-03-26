@@ -7,3 +7,6 @@ install-agpod-local:
     cp -f target/debug/agpod ~/.local/bin/agpod
     cp -f target/debug/agpod-case-server ~/.local/bin/agpod-case-server
     cp -f target/debug/agpod-mcp ~/.local/bin/agpod-mcp
+
+mcp-full-smoke:
+    python3 scripts/mcp_full_smoke.py
