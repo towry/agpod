@@ -2238,11 +2238,31 @@ mod tests {
 
     fn temp_db_config(temp_dir: &TempDir) -> DbConfig {
         let db_path = temp_dir.path().join("case.db");
-        DbConfig::from_data_dir(Some(
+        let mut config = DbConfig::from_data_dir(Some(
             db_path
                 .to_str()
                 .expect("temporary database path should be valid UTF-8"),
-        ))
+        ));
+        config.honcho_enabled = false;
+        config.semantic_recall_enabled = false;
+        config
+    }
+
+    fn show_entries_or_spilled(value: &serde_json::Value) -> Vec<serde_json::Value> {
+        if let Some(entries) = value.get("entries").and_then(|entries| entries.as_array()) {
+            return entries.clone();
+        }
+
+        let spill_path = value["spill"]["path"]
+            .as_str()
+            .expect("spill path should exist when entries are omitted");
+        let spilled = std::fs::read_to_string(spill_path).expect("spill file should exist");
+        let spilled_json: serde_json::Value =
+            serde_json::from_str(&spilled).expect("spill file should contain valid json");
+        spilled_json["entries"]
+            .as_array()
+            .expect("spilled show should include entries")
+            .clone()
     }
 
     #[tokio::test]
@@ -2793,9 +2813,7 @@ mod tests {
         let shown = cmd_show(&client, Some(&case_id))
             .await
             .expect("show should succeed");
-        let entries = shown["entries"]
-            .as_array()
-            .expect("show should include entries");
+        let entries = show_entries_or_spilled(&shown);
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["summary"].as_str(), Some("record summary"));
@@ -3155,9 +3173,7 @@ mod tests {
         let shown = cmd_show(&client, Some(&case_id))
             .await
             .expect("show should succeed");
-        let entries = shown["entries"]
-            .as_array()
-            .expect("show should include entries");
+        let entries = show_entries_or_spilled(&shown);
         assert_eq!(entries[0]["kind"].as_str(), Some("goal_constraint_update"));
         assert_eq!(entries[0]["artifacts"].as_array().map(Vec::len), Some(2));
     }
