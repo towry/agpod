@@ -11,6 +11,7 @@ description = "MCP server for agpod case workflows"
 agpod-case = { workspace = true }
 agpod-core = { workspace = true }
 anyhow = { workspace = true }
+clap = { workspace = true }
 dirs = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }

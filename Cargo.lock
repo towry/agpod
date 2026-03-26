@@ -110,6 +110,7 @@ dependencies = [
  "agpod-case",
  "agpod-core",
  "anyhow",
+ "clap",
  "dirs",
  "rmcp",
  "serde",

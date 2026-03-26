@@ -19,8 +19,12 @@ use crate::GoalDriftFlag;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
 use tracing::{debug, warn};
 use uuid::Uuid;
+
+const CASE_SHOW_SPILL_CHAR_THRESHOLD: usize = 1_000;
 
 async fn dispatch_event(client: &CaseClient, event: CaseDomainEvent) -> CaseDispatchReport {
     let (dispatcher, mut report) = build_dispatcher(client);
@@ -1226,14 +1230,52 @@ async fn cmd_show(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_jso
     let entries = client.get_entries(&case.id).await?;
     let (dir_history, steps_by_dir) =
         build_direction_tree_payload(&directions, &all_steps, Some(case.current_direction_seq));
-
-    Ok(json!({
+    let value = json!({
         "ok": true,
         "case": output::case_json(&case),
         "direction_history": dir_history,
         "steps_by_direction": steps_by_dir,
         "entries": entries.iter().map(output::entry_json).collect::<Vec<_>>()
+    });
+
+    maybe_spill_case_show_output(&case.id, &case, value)
+}
+
+fn maybe_spill_case_show_output(
+    case_id: &str,
+    case: &Case,
+    value: serde_json::Value,
+) -> CaseResult<serde_json::Value> {
+    let rendered = serde_json::to_string_pretty(&value)?;
+    let char_count = rendered.chars().count();
+    if char_count <= CASE_SHOW_SPILL_CHAR_THRESHOLD {
+        return Ok(value);
+    }
+
+    let path = case_show_spill_path(case_id);
+    fs::write(&path, rendered.as_bytes())?;
+
+    let path_text = path.to_string_lossy().to_string();
+    let line_count = rendered.lines().count();
+    Ok(json!({
+        "ok": true,
+        "case": output::case_json(case),
+        "message": format!(
+            "case show output exceeded {} characters; full output written to {}. If you want more, grep the file: {}",
+            CASE_SHOW_SPILL_CHAR_THRESHOLD, path_text, path_text
+        ),
+        "spill": {
+            "path": path_text,
+            "char_count": char_count,
+            "line_count": line_count,
+            "threshold": CASE_SHOW_SPILL_CHAR_THRESHOLD,
+            "format": "json"
+        }
     }))
+}
+
+fn case_show_spill_path(case_id: &str) -> PathBuf {
+    PathBuf::from("/tmp").join(format!("{case_id}-show.txt"))
 }
 
 async fn cmd_close(
@@ -3989,5 +4031,61 @@ mod tests {
         assert!(hits
             .iter()
             .any(|hit| hit["case_id"].as_str() == Some(&case_b)));
+    }
+
+    #[tokio::test]
+    async fn show_spills_large_output_to_tmp_file() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: temp_dir.path().to_string_lossy().to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_record(
+            &client,
+            &case_id,
+            &"x".repeat(2_000),
+            "finding",
+            &[],
+            &[],
+            Some("large context"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let shown = cmd_show(&client, Some(&case_id))
+            .await
+            .expect("show should succeed");
+
+        let spill_path = shown["spill"]["path"]
+            .as_str()
+            .expect("spill path should exist");
+        assert!(spill_path.ends_with(&format!("{case_id}-show.txt")));
+        assert!(shown.get("entries").is_none());
+        assert!(shown["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("grep the file")));
+
+        let spilled = std::fs::read_to_string(spill_path).expect("spill file should exist");
+        assert!(spilled.contains("\"entries\""));
+        assert!(spilled.contains(&case_id));
+
+        std::fs::remove_file(spill_path).expect("spill file cleanup should succeed");
     }
 }
