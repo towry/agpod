@@ -1,9 +1,9 @@
 {
-  "crates/agpod": "0.12.0",
+  "crates/agpod": "0.12.1",
   "crates/agpod-core": "0.11.0",
   "crates/agpod-diff": "0.8.4",
-  "crates/agpod-case": "0.5.0",
-  "crates/agpod-case-server": "0.3.0",
+  "crates/agpod-case": "0.6.0",
+  "crates/agpod-case-server": "0.3.1",
   "crates/agpod-vcs-path": "0.9.3",
-  "crates/agpod-mcp": "0.5.0"
+  "crates/agpod-mcp": "0.6.0"
 }
