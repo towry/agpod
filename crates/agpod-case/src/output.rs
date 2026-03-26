@@ -81,6 +81,13 @@ fn render_text(value: &Value) {
         render_case_header(case);
     }
 
+    if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+        println!("message: {message}");
+    }
+    if let Some(spill) = value.get("spill") {
+        render_spill_info(spill);
+    }
+
     // Event receipt
     if let Some(event) = value.get("event") {
         render_event(event);
@@ -827,6 +834,18 @@ fn render_timestamp_line(label: &str, timestamps: &Value, key: &str) {
         (Some(local), None) => println!("{label}: {local}"),
         (None, Some(utc)) => println!("{label}_utc: {utc}"),
         (None, None) => {}
+    }
+}
+
+fn render_spill_info(value: &Value) {
+    if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
+        println!("spill_path: {path}");
+    }
+    if let Some(char_count) = value.get("char_count").and_then(|v| v.as_u64()) {
+        println!("spill_char_count: {char_count}");
+    }
+    if let Some(line_count) = value.get("line_count").and_then(|v| v.as_u64()) {
+        println!("spill_line_count: {line_count}");
     }
 }
 
