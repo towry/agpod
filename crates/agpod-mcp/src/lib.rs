@@ -1475,15 +1475,11 @@ mod tests {
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(open_schema.to_string().contains("\"reopen\""));
         assert!(open_schema.to_string().contains("\"case_id\""));
-        assert!(open_schema
-            .to_string()
-            .contains("\"required\":[\"goal\",\"direction\"]"));
-        assert!(open_schema
-            .to_string()
-            .contains("\"success_condition\":{\"maxLength\":0}"));
-        assert!(open_schema
-            .to_string()
-            .contains("\"abort_condition\":{\"maxLength\":0}"));
+        // Conditional allOf removed; verify fields still present in schema
+        assert!(open_schema.to_string().contains("\"goal\""));
+        assert!(open_schema.to_string().contains("\"direction\""));
+        assert!(open_schema.to_string().contains("\"success_condition\""));
+        assert!(open_schema.to_string().contains("\"abort_condition\""));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
         assert!(recall_schema.to_string().contains("find_recent_days"));
         assert!(recall_schema.to_string().contains("find_status"));
@@ -1504,9 +1500,8 @@ mod tests {
         assert!(step_mark_schema.to_string().contains("\"started\""));
         assert!(step_mark_schema.to_string().contains("\"done\""));
         assert!(step_mark_schema.to_string().contains("\"blocked\""));
-        assert!(step_mark_schema
-            .to_string()
-            .contains("\"required\":[\"reason\"]"));
+        // Conditional allOf removed; verify reason field still present
+        assert!(step_mark_schema.to_string().contains("\"reason\""));
         assert!(steps_add_schema.to_string().contains("\"minItems\":1"));
 
         let record_tool = tools
@@ -1525,8 +1520,8 @@ mod tests {
         assert!(record_schema_text.contains("`blocker`"));
         assert!(record_schema_text.contains("`goal_constraint_update`"));
         assert!(!record_schema_text.contains("\"decision\""));
-        assert!(record_schema_text.contains("\"minItems\":1"));
-        assert!(record_schema_text.contains("\"maxItems\":0"));
+        // Conditional allOf removed; verify goal_constraints field still present
+        assert!(record_schema_text.contains("\"goal_constraints\""));
     }
 
     #[test]
@@ -1696,10 +1691,10 @@ mod tests {
         let recall_schema =
             serde_json::to_string(&recall_tool.input_schema).expect("schema should serialize");
 
-        assert!(recall_schema.contains("\"context_shortcut\":{\"description\""));
-        assert!(recall_schema.contains("\"const\":\"recent_work\""));
-        assert!(recall_schema.contains("\"required\":[\"context_id\"]"));
-        assert!(recall_schema.contains("\"required\":[\"query\"]"));
+        assert!(recall_schema.contains("\"context_shortcut\""));
+        assert!(recall_schema.contains("\"recent_work\""));
+        assert!(recall_schema.contains("\"context_id\""));
+        assert!(recall_schema.contains("\"query\""));
         assert!(recall_schema.contains("state retrieval focus"));
     }
 
