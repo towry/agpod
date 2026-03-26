@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/towry/agpod/compare/agpod-case-v0.5.0...agpod-case-v0.6.0) (2026-03-26)
+
+
+### Features
+
+* **case:** add fast current state check, optimize show token efficiency, redirections limit ([#122](https://github.com/towry/agpod/issues/122)) ([fde56ec](https://github.com/towry/agpod/commit/fde56ecc59bb6a1f34b787030b939afcdf8817a3))
+
 ## [0.5.0](https://github.com/towry/agpod/compare/agpod-case-v0.4.1...agpod-case-v0.5.0) (2026-03-25)
 
 
