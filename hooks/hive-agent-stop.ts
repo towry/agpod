@@ -1,9 +1,9 @@
 import {
   detectHiveMode,
+  displayMessageToPane,
   queenPaneExists,
   resolveCcHooksPath,
   saveSession,
-  sendKeysToPane,
   updateAgentStatus,
   validateHiveMode,
   withHiveLock,
@@ -38,7 +38,7 @@ defineUnifiedHook({
         transcriptPath: ctx.transcriptPath,
       });
       const message = `HIVE_DONE:${hive.workerPaneId}:${hive.workerName ?? ""}:${summary}`;
-      sendKeysToPane(hive.queenPaneId, message);
+      displayMessageToPane(hive.queenPaneId, message);
       return R.noop();
     });
   },

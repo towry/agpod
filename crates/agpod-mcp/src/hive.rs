@@ -10,6 +10,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::ffi::OsString;
 use std::fs;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
@@ -18,10 +19,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
+use tracing::warn;
 
 const HIVE_VERSION: u32 = 1;
 const HIVE_AGENT_LIMIT: usize = 5;
-const HIVE_BOOTSTRAP_WINDOW: &str = "__agpod_hive__";
+const HIVE_BOOTSTRAP_WINDOW: &str = "__HIVE_HOME_EMPTY__";
 const HIVE_LOCK_STALE_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -32,6 +34,8 @@ pub enum HiveActionInput {
     SpawnAgent,
     SendPrompt,
     ResetAgent,
+    CloseAgent,
+    CloseSession,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq, Default)]
@@ -273,10 +277,24 @@ struct SessionPaneInfo {
 
 impl HiveRuntime {
     fn from_env(session_id_hint: Option<&str>) -> Result<Self, ErrorData> {
-        let queen_pane_id = std::env::var("TMUX_PANE").map_err(|_| {
-            ErrorData::invalid_params("`hive` requires tmux; TMUX_PANE is missing", None)
-        })?;
         let tmux_env = std::env::var("TMUX").ok();
+        let term = std::env::var("TERM").ok();
+        let queen_pane_id = std::env::var("TMUX_PANE").map_err(|_| {
+            let cwd = std::env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unavailable>".to_string());
+            warn!(
+                has_tmux = tmux_env.is_some(),
+                term = term.as_deref().unwrap_or("<missing>"),
+                cwd = cwd.as_str(),
+                "hive runtime missing TMUX_PANE"
+            );
+            ErrorData::invalid_params(
+                "`hive` requires tmux, but `TMUX_PANE` is missing. Check your MCP configuration and ensure it forwards required environment variables such as `TMUX_PANE`.",
+                None,
+            )
+        })?;
         let tmux_socket = tmux_env
             .as_deref()
             .and_then(|value| value.split(',').next())
@@ -466,6 +484,8 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
         HiveActionInput::SpawnAgent => spawn_agent(&runtime, req).await,
         HiveActionInput::SendPrompt => send_prompt(&runtime, req).await,
         HiveActionInput::ResetAgent => reset_agent(&runtime, req).await,
+        HiveActionInput::CloseAgent => close_agent(&runtime, req).await,
+        HiveActionInput::CloseSession => close_session(&runtime).await,
     }
 }
 
@@ -573,10 +593,7 @@ async fn spawn_agent(
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| agent_id.clone());
     let window_name = sanitize_window_name(&worker_name);
-    let (window_id, pane_id) = tmux_new_window(&runtime.session_name, &window_name, &workdir)
-        .await
-        .map_err(internal_error)?;
-    let launch_command = build_worker_launch_command(
+    let launch_command = build_worker_shell_command(
         runtime,
         &agent_id,
         &worker_name,
@@ -585,9 +602,14 @@ async fn spawn_agent(
         &workdir,
     )
     .map_err(internal_error)?;
-    tmux_send_text(&pane_id, &launch_command)
-        .await
-        .map_err(internal_error)?;
+    let (window_id, pane_id) = tmux_new_window(
+        &runtime.session_name,
+        &window_name,
+        &workdir,
+        Some(&launch_command),
+    )
+    .await
+    .map_err(internal_error)?;
 
     let agent = HiveAgentState {
         agent_id: agent_id.clone(),
@@ -749,6 +771,90 @@ async fn reset_agent(
         format!("reset requested for hive agent `{agent_id}`; waiting for session-start hook to mark idle"),
         &state,
         Some(agent),
+    ))
+}
+
+async fn close_agent(
+    runtime: &HiveRuntime,
+    req: HiveRequest,
+) -> Result<Map<String, Value>, ErrorData> {
+    let agent_id = req.agent_id.ok_or_else(|| {
+        ErrorData::invalid_params("`agent_id` is required for action=`close_agent`", None)
+    })?;
+
+    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let mut state = runtime
+        .load_state()
+        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+    sync_state_with_tmux(runtime, &mut state)
+        .await
+        .map_err(internal_error)?;
+
+    let target = state
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead)
+        .cloned()
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                format!(
+                    "live hive agent `{agent_id}` was not found in session `{}`",
+                    runtime.session_id
+                ),
+                None,
+            )
+        })?;
+
+    tmux_kill_window(&target.window_id)
+        .await
+        .map_err(internal_error)?;
+    sync_state_with_tmux(runtime, &mut state)
+        .await
+        .map_err(internal_error)?;
+    state.updated_at_ms = now_ms();
+    runtime.save_state(&state).map_err(internal_error)?;
+
+    let agent = state
+        .agents
+        .iter()
+        .find(|agent| agent.agent_id == agent_id)
+        .or(Some(&target));
+    Ok(build_session_response(
+        "closed_agent",
+        format!("hive agent `{agent_id}` closed"),
+        &state,
+        agent,
+    ))
+}
+
+async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
+    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let mut state = runtime
+        .load_state()
+        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+    sync_state_with_tmux(runtime, &mut state)
+        .await
+        .map_err(internal_error)?;
+
+    if tmux_has_session(&runtime.session_name)
+        .await
+        .map_err(internal_error)?
+    {
+        tmux_kill_session(&runtime.session_name)
+            .await
+            .map_err(internal_error)?;
+    }
+
+    for agent in &mut state.agents {
+        agent.status = HiveAgentStatus::Dead;
+    }
+    state.updated_at_ms = now_ms();
+    runtime.save_state(&state).map_err(internal_error)?;
+    Ok(build_session_response(
+        "closed_session",
+        "hive session closed",
+        &state,
+        None,
     ))
 }
 
@@ -933,19 +1039,16 @@ async fn tmux_new_window(
     session_name: &str,
     window_name: &str,
     workdir: &Path,
+    shell_command: Option<&str>,
 ) -> Result<(String, String)> {
-    let output = Command::new("tmux")
-        .arg("new-window")
-        .arg("-d")
-        .arg("-t")
-        .arg(session_name)
-        .arg("-n")
-        .arg(window_name)
-        .arg("-c")
-        .arg(workdir)
-        .arg("-P")
-        .arg("-F")
-        .arg("#{window_id}\t#{pane_id}")
+    let mut command = Command::new("tmux");
+    command.args(tmux_new_window_args(
+        session_name,
+        window_name,
+        workdir,
+        shell_command,
+    ));
+    let output = command
         .output()
         .await
         .context("failed to run `tmux new-window`")?;
@@ -966,6 +1069,31 @@ async fn tmux_new_window(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("missing tmux pane_id in new-window output"))?;
     Ok((window_id.to_string(), pane_id.to_string()))
+}
+
+fn tmux_new_window_args(
+    session_name: &str,
+    window_name: &str,
+    workdir: &Path,
+    shell_command: Option<&str>,
+) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("new-window"),
+        OsString::from("-d"),
+        OsString::from("-t"),
+        OsString::from(session_name),
+        OsString::from("-n"),
+        OsString::from(window_name),
+        OsString::from("-c"),
+        workdir.as_os_str().to_os_string(),
+        OsString::from("-P"),
+        OsString::from("-F"),
+        OsString::from("#{window_id}\t#{pane_id}"),
+    ];
+    if let Some(command) = shell_command {
+        args.push(OsString::from(command));
+    }
+    args
 }
 
 async fn tmux_list_session_panes(session_name: &str) -> Result<Vec<SessionPaneInfo>> {
@@ -1012,6 +1140,8 @@ async fn tmux_send_text(pane_id: &str, text: &str) -> Result<()> {
     run_tmux_send_keys(pane_id, &["-l", text]).await?;
     sleep(Duration::from_millis(300)).await;
     run_tmux_send_keys(pane_id, &["C-m"]).await?;
+    sleep(Duration::from_millis(300)).await;
+    run_tmux_send_keys(pane_id, &["Enter"]).await?;
     Ok(())
 }
 
@@ -1031,7 +1161,39 @@ async fn run_tmux_send_keys(pane_id: &str, keys: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn build_worker_launch_command(
+async fn tmux_kill_window(window_id: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .arg("kill-window")
+        .arg("-t")
+        .arg(window_id)
+        .status()
+        .await
+        .with_context(|| format!("failed to run `tmux kill-window` for `{window_id}`"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "`tmux kill-window` exited with status {status} for `{window_id}`"
+        ));
+    }
+    Ok(())
+}
+
+async fn tmux_kill_session(session_name: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .arg("kill-session")
+        .arg("-t")
+        .arg(session_name)
+        .status()
+        .await
+        .with_context(|| format!("failed to run `tmux kill-session` for `{session_name}`"))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "`tmux kill-session` exited with status {status} for `{session_name}`"
+        ));
+    }
+    Ok(())
+}
+
+fn build_worker_shell_command(
     runtime: &HiveRuntime,
     agent_id: &str,
     worker_name: &str,
@@ -1278,9 +1440,41 @@ mod tests {
     }
 
     #[test]
+    fn hive_runtime_from_env_reports_missing_tmux_pane_helpfully() {
+        let previous = std::env::var_os("TMUX_PANE");
+        std::env::remove_var("TMUX_PANE");
+
+        let err = HiveRuntime::from_env(None).expect_err("missing TMUX_PANE should fail");
+        assert!(err.message.contains("Check your MCP configuration"));
+        assert!(err.message.contains("TMUX_PANE"));
+
+        if let Some(value) = previous {
+            std::env::set_var("TMUX_PANE", value);
+        }
+    }
+
+    #[test]
     fn window_name_sanitizes_symbols() {
         assert_eq!(sanitize_window_name("worker:alpha"), "worker-alpha");
         assert_eq!(sanitize_window_name("  "), "agent");
+    }
+
+    #[test]
+    fn tmux_new_window_args_append_shell_command_when_present() {
+        let workdir = Path::new("/tmp/project");
+
+        let without_command = tmux_new_window_args("session", "worker", workdir, None);
+        assert_eq!(
+            without_command.last().and_then(|s| s.to_str()),
+            Some("#{window_id}\t#{pane_id}")
+        );
+
+        let with_command = tmux_new_window_args("session", "worker", workdir, Some("exec codex"));
+        assert_eq!(
+            with_command.last().and_then(|s| s.to_str()),
+            Some("exec codex")
+        );
+        assert!(with_command.iter().any(|arg| arg == "worker"));
     }
 
     #[test]

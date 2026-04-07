@@ -192,4 +192,12 @@ export function sendKeysToPane(targetPaneId: string, text: string): void {
   execFileSync("tmux", ["send-keys", "-t", targetPaneId, "-l", text]);
   execFileSync("sleep", ["0.3"]);
   execFileSync("tmux", ["send-keys", "-t", targetPaneId, "C-m"]);
+  execFileSync("sleep", ["0.3"]);
+  execFileSync("tmux", ["send-keys", "-t", targetPaneId, "Enter"]);
+}
+
+export function displayMessageToPane(targetPaneId: string, text: string): void {
+  execFileSync("tmux", ["display-message", "-t", targetPaneId, "-d", "5000", text], {
+    stdio: ["ignore", "ignore", "ignore"],
+  });
 }
