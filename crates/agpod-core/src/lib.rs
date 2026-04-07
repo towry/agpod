@@ -6,8 +6,8 @@
 //! - [mcp] - MCP server settings
 
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;

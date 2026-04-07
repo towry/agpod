@@ -2439,8 +2439,8 @@ fn step_json_min(step: &Step) -> serde_json::Value {
     })
 }
 
-fn select_next_pending_step<'a>(
-    steps: &'a [Step],
+fn select_next_pending_step(
+    steps: &[Step],
     completed_step: &Step,
     explicit_next_step_id: Option<&str>,
     next_step_auto: bool,

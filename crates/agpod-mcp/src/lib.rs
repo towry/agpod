@@ -1636,8 +1636,7 @@ mod tests {
         assert!(hive_schema.to_string().contains("\"send_prompt\""));
         assert!(hive_schema.to_string().contains("\"close_agent\""));
         assert!(hive_schema.to_string().contains("\"close_session\""));
-        assert!(hive_schema.to_string().contains("\"readonly\""));
-        assert!(hive_schema.to_string().contains("\"full\""));
+        assert!(hive_schema.to_string().contains("\"mode\""));
         assert!(!hive_schema.to_string().contains("\"reset_agent\""));
         assert!(!hive_schema.to_string().contains("\"codex\""));
         assert!(!open_schema.to_string().contains("data_dir"));

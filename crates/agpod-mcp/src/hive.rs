@@ -517,7 +517,9 @@ fn parse_hive_session_state(raw: &str) -> Result<HiveSessionState> {
         Ok(state) => Ok(state),
         Err(current_err) => match serde_json::from_str::<LegacyHiveSessionState>(raw) {
             Ok(legacy) => Ok(migrate_legacy_hive_session_state(legacy)),
-            Err(_) => Err(current_err).context("failed to parse current or legacy hive session state"),
+            Err(_) => {
+                Err(current_err).context("failed to parse current or legacy hive session state")
+            }
         },
     }
 }
@@ -544,7 +546,9 @@ fn migrate_legacy_hive_agent_state(legacy: LegacyHiveAgentState) -> HiveAgentSta
     let (status, current_run) = match legacy.status {
         LegacyHiveAgentStatus::Idle => (HiveAgentStatus::Idle, None),
         LegacyHiveAgentStatus::Dead => (HiveAgentStatus::Closed, None),
-        LegacyHiveAgentStatus::Busy | LegacyHiveAgentStatus::Resetting | LegacyHiveAgentStatus::Spawning => (
+        LegacyHiveAgentStatus::Busy
+        | LegacyHiveAgentStatus::Resetting
+        | LegacyHiveAgentStatus::Spawning => (
             HiveAgentStatus::Running,
             Some(HiveRunState {
                 run_id: format!("legacy-{}", legacy.agent_id),
@@ -672,8 +676,15 @@ async fn ensure_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Err
     ))
 }
 
-async fn mode_info(runtime: &HiveRuntime, req: HiveRequest) -> Result<Map<String, Value>, ErrorData> {
-    let requested = req.mode.as_deref().map(str::trim).filter(|value| !value.is_empty());
+async fn mode_info(
+    runtime: &HiveRuntime,
+    req: HiveRequest,
+) -> Result<Map<String, Value>, ErrorData> {
+    let requested = req
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let selected = requested.unwrap_or("readonly");
     if !SUPPORTED_MODE_NAMES.contains(&selected) {
         return Err(ErrorData::invalid_params(
@@ -1427,7 +1438,10 @@ fn prompt_preview(prompt: &str) -> String {
     }
 }
 
-fn validate_mode_config(mode_name: &str, config: &McpHiveClaudeModeConfig) -> Result<(), ErrorData> {
+fn validate_mode_config(
+    mode_name: &str,
+    config: &McpHiveClaudeModeConfig,
+) -> Result<(), ErrorData> {
     if config
         .command
         .as_deref()
@@ -1443,7 +1457,9 @@ fn validate_mode_config(mode_name: &str, config: &McpHiveClaudeModeConfig) -> Re
         let first = key.chars().next();
         if first.is_none()
             || first.is_some_and(|ch| ch.is_ascii_digit())
-            || !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            || !key
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         {
             return Err(ErrorData::invalid_params(
                 format!("hive mode `{mode_name}` has invalid env key `{key}`; env keys must start with a letter or `_`"),
