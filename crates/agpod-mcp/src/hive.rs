@@ -1,7 +1,8 @@
-//! Hive tool support for tmux-backed worker orchestration.
+//! Hive tool support for tmux-backed Claude exec workers.
 //!
-//! Keywords: hive, tmux, worker session, idle state, hook integration
+//! Keywords: hive, tmux, claude, exec, output file, worker status
 
+use agpod_core::{Config, McpHiveClaudeConfig, McpHiveClaudeModeConfig};
 use anyhow::{anyhow, Context, Result};
 use rmcp::{
     model::{CallToolResult, Content, JsonObject},
@@ -9,50 +10,36 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
-use tokio::time::{sleep, Duration};
 use tracing::warn;
+use uuid::Uuid;
 
-const HIVE_VERSION: u32 = 1;
+const HIVE_VERSION: u32 = 2;
 const HIVE_AGENT_LIMIT: usize = 5;
 const HIVE_BOOTSTRAP_WINDOW: &str = "__HIVE_HOME_EMPTY__";
 const HIVE_LOCK_STALE_MS: u64 = 30_000;
+const OUTPUT_EXCERPT_LIMIT: usize = 1200;
+const SUPPORTED_MODE_NAMES: [&str; 2] = ["readonly", "full"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HiveActionInput {
     EnsureSession,
+    ModeInfo,
     ListAgents,
     SpawnAgent,
     SendPrompt,
-    ResetAgent,
     CloseAgent,
     CloseSession,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum HiveAgentKindInput {
-    #[default]
-    Codex,
-    Claude,
-}
-
-impl HiveAgentKindInput {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -61,13 +48,11 @@ pub struct HiveRequest {
     pub action: HiveActionInput,
     /// Derived session ID from the caller tmux pane. Optional validation guard for chained calls.
     pub session_id: Option<String>,
-    /// Existing worker agent ID for `send_prompt` and `reset_agent`.
+    /// Existing worker agent ID for `send_prompt` and `close_agent`.
     pub agent_id: Option<String>,
-    /// Worker runtime kind for `spawn_agent`.
-    #[serde(default)]
-    pub agent_kind: HiveAgentKindInput,
-    /// Optional worker model hint passed through to the spawned agent command.
-    pub model: Option<String>,
+    /// Named Claude mode from agpod config. Supported public modes are `readonly` and `full`.
+    /// Reads `[mcp.hive.claude.modes.<name>]`; `~` in configured paths is expanded.
+    pub mode: Option<String>,
     /// Optional worker display name / tmux window label.
     pub worker_name: Option<String>,
     /// Optional working directory. Relative paths are resolved from the repo root.
@@ -222,34 +207,42 @@ struct HiveSessionState {
 struct HiveAgentState {
     agent_id: String,
     worker_name: String,
-    agent_kind: HiveAgentKindInput,
-    model: Option<String>,
+    mode: String,
     workdir: String,
-    window_id: String,
-    window_name: String,
-    pane_id: String,
     status: HiveAgentStatus,
+    current_run: Option<HiveRunState>,
+    last_run: Option<HiveRunState>,
     last_used_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HiveRunState {
+    run_id: String,
+    prompt_preview: String,
+    output_path: String,
+    prompt_path: String,
+    result_path: String,
+    window_id: Option<String>,
+    pane_id: Option<String>,
+    started_at_ms: u64,
+    finished_at_ms: Option<u64>,
+    exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum HiveAgentStatus {
-    Spawning,
     Idle,
-    Busy,
-    Resetting,
-    Dead,
+    Running,
+    Closed,
 }
 
 impl HiveAgentStatus {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::Spawning => "spawning",
             Self::Idle => "idle",
-            Self::Busy => "busy",
-            Self::Resetting => "resetting",
-            Self::Dead => "dead",
+            Self::Running => "running",
+            Self::Closed => "closed",
         }
     }
 }
@@ -266,13 +259,54 @@ struct HiveRuntime {
     session_name: String,
     queen_pane_id: String,
     tmux_socket: Option<String>,
+    config: Config,
 }
 
 #[derive(Debug, Clone)]
 struct SessionPaneInfo {
     window_id: String,
-    window_name: String,
     pane_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HiveRunResultFile {
+    exit_code: i32,
+    started_at_ms: u64,
+    finished_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyHiveSessionState {
+    version: u32,
+    session_id: String,
+    session_name: String,
+    queen_pane_id: String,
+    tmux_socket: Option<String>,
+    repo_root: String,
+    agent_limit: usize,
+    updated_at_ms: u64,
+    agents: Vec<LegacyHiveAgentState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyHiveAgentState {
+    agent_id: String,
+    worker_name: String,
+    workdir: String,
+    window_id: String,
+    pane_id: String,
+    status: LegacyHiveAgentStatus,
+    last_used_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyHiveAgentStatus {
+    Spawning,
+    Idle,
+    Busy,
+    Resetting,
+    Dead,
 }
 
 impl HiveRuntime {
@@ -330,6 +364,7 @@ impl HiveRuntime {
             session_id,
             queen_pane_id,
             tmux_socket,
+            config: Config::load(),
         })
     }
 
@@ -387,7 +422,7 @@ impl HiveRuntime {
 
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read hive session file `{}`", path.display()))?;
-        let mut state: HiveSessionState = serde_json::from_str(&raw)
+        let mut state = parse_hive_session_state(&raw)
             .with_context(|| format!("failed to parse hive session file `{}`", path.display()))?;
         if state.session_id != self.session_id {
             return Err(anyhow!(
@@ -396,6 +431,7 @@ impl HiveRuntime {
                 state.session_id
             ));
         }
+        state.version = HIVE_VERSION;
         state.session_name = self.session_name.clone();
         state.queen_pane_id = self.queen_pane_id.clone();
         state.tmux_socket = self.tmux_socket.clone();
@@ -434,6 +470,106 @@ impl HiveRuntime {
         self.ensure_state_dirs()?;
         ensure_valid_session_id(session_id)?;
         acquire_lock_file(self.state_dir.join(format!("{session_id}.lock")))
+    }
+
+    fn claude_config(&self) -> Option<&McpHiveClaudeConfig> {
+        self.config
+            .mcp
+            .as_ref()
+            .and_then(|mcp| mcp.hive.as_ref())
+            .and_then(|hive| hive.claude.as_ref())
+    }
+
+    fn resolve_mode_name(&self, requested: Option<&str>) -> String {
+        requested
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "readonly".to_string())
+    }
+
+    fn resolve_mode_config(&self, mode_name: &str) -> Result<McpHiveClaudeModeConfig, ErrorData> {
+        if !SUPPORTED_MODE_NAMES.contains(&mode_name) {
+            return Err(ErrorData::invalid_params(
+                format!("unsupported hive mode `{mode_name}`; use `readonly` or `full`"),
+                None,
+            ));
+        }
+        let config = self
+            .claude_config()
+            .and_then(|cfg| cfg.modes.get(mode_name))
+            .cloned()
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!(
+                        "missing hive Claude mode config `{mode_name}` in `[mcp.hive.claude.modes.{mode_name}]`; call `hive` with action=`mode_info` for the expected shape"
+                    ),
+                    None,
+                )
+            })?;
+        validate_mode_config(mode_name, &config)?;
+        Ok(config)
+    }
+}
+
+fn parse_hive_session_state(raw: &str) -> Result<HiveSessionState> {
+    match serde_json::from_str::<HiveSessionState>(raw) {
+        Ok(state) => Ok(state),
+        Err(current_err) => match serde_json::from_str::<LegacyHiveSessionState>(raw) {
+            Ok(legacy) => Ok(migrate_legacy_hive_session_state(legacy)),
+            Err(_) => Err(current_err).context("failed to parse current or legacy hive session state"),
+        },
+    }
+}
+
+fn migrate_legacy_hive_session_state(legacy: LegacyHiveSessionState) -> HiveSessionState {
+    HiveSessionState {
+        version: HIVE_VERSION,
+        session_id: legacy.session_id,
+        session_name: legacy.session_name,
+        queen_pane_id: legacy.queen_pane_id,
+        tmux_socket: legacy.tmux_socket,
+        repo_root: legacy.repo_root,
+        agent_limit: legacy.agent_limit,
+        updated_at_ms: legacy.updated_at_ms,
+        agents: legacy
+            .agents
+            .into_iter()
+            .map(migrate_legacy_hive_agent_state)
+            .collect(),
+    }
+}
+
+fn migrate_legacy_hive_agent_state(legacy: LegacyHiveAgentState) -> HiveAgentState {
+    let (status, current_run) = match legacy.status {
+        LegacyHiveAgentStatus::Idle => (HiveAgentStatus::Idle, None),
+        LegacyHiveAgentStatus::Dead => (HiveAgentStatus::Closed, None),
+        LegacyHiveAgentStatus::Busy | LegacyHiveAgentStatus::Resetting | LegacyHiveAgentStatus::Spawning => (
+            HiveAgentStatus::Running,
+            Some(HiveRunState {
+                run_id: format!("legacy-{}", legacy.agent_id),
+                prompt_preview: "legacy interactive hive state".to_string(),
+                output_path: String::new(),
+                prompt_path: String::new(),
+                result_path: String::new(),
+                window_id: Some(legacy.window_id.clone()),
+                pane_id: Some(legacy.pane_id.clone()),
+                started_at_ms: legacy.last_used_at_ms.unwrap_or(0),
+                finished_at_ms: None,
+                exit_code: None,
+            }),
+        ),
+    };
+
+    HiveAgentState {
+        agent_id: legacy.agent_id,
+        worker_name: legacy.worker_name,
+        mode: "readonly".to_string(),
+        workdir: legacy.workdir,
+        status,
+        current_run,
+        last_run: None,
+        last_used_at_ms: legacy.last_used_at_ms,
     }
 }
 
@@ -498,10 +634,10 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
 
     match req.action {
         HiveActionInput::EnsureSession => ensure_session(&runtime).await,
+        HiveActionInput::ModeInfo => mode_info(&runtime, req).await,
         HiveActionInput::ListAgents => list_agents(&runtime).await,
         HiveActionInput::SpawnAgent => spawn_agent(&runtime, req).await,
         HiveActionInput::SendPrompt => send_prompt(&runtime, req).await,
-        HiveActionInput::ResetAgent => reset_agent(&runtime, req).await,
         HiveActionInput::CloseAgent => close_agent(&runtime, req).await,
         HiveActionInput::CloseSession => close_session(&runtime).await,
     }
@@ -534,6 +670,80 @@ async fn ensure_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Err
         &state,
         None,
     ))
+}
+
+async fn mode_info(runtime: &HiveRuntime, req: HiveRequest) -> Result<Map<String, Value>, ErrorData> {
+    let requested = req.mode.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let selected = requested.unwrap_or("readonly");
+    if !SUPPORTED_MODE_NAMES.contains(&selected) {
+        return Err(ErrorData::invalid_params(
+            format!("unsupported hive mode `{selected}`; use `readonly` or `full`"),
+            None,
+        ));
+    }
+
+    let config = runtime
+        .claude_config()
+        .and_then(|cfg| cfg.modes.get(selected))
+        .cloned();
+    let configured = config.is_some();
+    let mode_config = config.as_ref();
+    let mut raw = Map::new();
+    raw.insert("ok".to_string(), Value::Bool(true));
+    raw.insert("state".to_string(), Value::String("mode_info".to_string()));
+    raw.insert(
+        "message".to_string(),
+        Value::String(if configured {
+            format!("hive mode `{selected}` is configured")
+        } else {
+            format!(
+                "hive mode `{selected}` is not configured; add `[mcp.hive.claude.modes.{selected}]`"
+            )
+        }),
+    );
+    raw.insert(
+        "mode_info".to_string(),
+        serde_json::json!({
+            "selected_mode": selected,
+            "supported_modes": SUPPORTED_MODE_NAMES,
+            "configured": configured,
+            "config_path": format!("[mcp.hive.claude.modes.{selected}]"),
+            "default_mode_behavior": "hive defaults to `readonly` when `mode` is omitted",
+            "fields": ["description", "command", "args", "settings", "mcp_config", "env"],
+            "notes": [
+                "Only `readonly` and `full` are valid public mode names.",
+                "Configured `settings` and `mcp_config` paths may begin with `~`; hive expands them to the current user home directory before launch.",
+                "If a mode is missing, `spawn_agent` and `send_prompt` fail fast instead of guessing defaults."
+            ],
+            "configured_values": mode_config.map(|cfg| serde_json::json!({
+                "description": cfg.description.clone(),
+                "command": cfg.command.clone(),
+                "args": cfg.args.clone(),
+                "settings": cfg.settings.clone(),
+                "mcp_config": cfg.mcp_config.clone(),
+                "env_keys": cfg.env.keys().cloned().collect::<Vec<_>>(),
+            })),
+            "example": {
+                "readonly": {
+                    "description": "Read-only Claude worker for inspection, summarization, and analysis.",
+                    "command": "claw",
+                    "args": ["--dangerously-skip-permissions"],
+                    "settings": "~/.claude/settings.json",
+                    "mcp_config": "~/.claude/generated/mcp-readonly.json",
+                    "env": { "MAX_MCP_OUTPUT_TOKENS": "12000" }
+                },
+                "full": {
+                    "description": "Full-access Claude worker for implementation and editing tasks.",
+                    "command": "claw",
+                    "args": [],
+                    "settings": "~/.claude/settings.json",
+                    "mcp_config": "~/.mcp.json",
+                    "env": {}
+                }
+            }
+        }),
+    );
+    Ok(raw)
 }
 
 async fn list_agents(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
@@ -585,7 +795,7 @@ async fn spawn_agent(
     let live_count = state
         .agents
         .iter()
-        .filter(|agent| agent.status != HiveAgentStatus::Dead)
+        .filter(|agent| agent.status != HiveAgentStatus::Closed)
         .count();
     if live_count >= HIVE_AGENT_LIMIT {
         return Ok(build_error_response(
@@ -607,48 +817,30 @@ async fn spawn_agent(
         ));
     }
 
+    let mode = runtime.resolve_mode_name(req.mode.as_deref());
+    let _ = runtime.resolve_mode_config(&mode)?;
     let agent_id = next_agent_id(&state.agents);
     let worker_name = req
         .worker_name
         .clone()
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| agent_id.clone());
-    let window_name = sanitize_window_name(&worker_name);
-    let launch_command = build_worker_shell_command(
-        runtime,
-        &agent_id,
-        &worker_name,
-        &req.agent_kind,
-        req.model.as_deref(),
-        &workdir,
-    )
-    .map_err(internal_error)?;
-    let (window_id, pane_id) = tmux_new_window(
-        &runtime.session_name,
-        &window_name,
-        &workdir,
-        Some(&launch_command),
-    )
-    .await
-    .map_err(internal_error)?;
 
     let agent = HiveAgentState {
         agent_id: agent_id.clone(),
         worker_name,
-        agent_kind: req.agent_kind,
-        model: req.model,
+        mode,
         workdir: workdir.display().to_string(),
-        window_id,
-        window_name,
-        pane_id,
-        status: HiveAgentStatus::Spawning,
+        status: HiveAgentStatus::Idle,
+        current_run: None,
+        last_run: None,
         last_used_at_ms: None,
     };
     state.agents.push(agent.clone());
     state.updated_at_ms = now_ms();
     runtime.save_state(&state).map_err(internal_error)?;
     Ok(build_session_response(
-        "spawning",
+        "spawned",
         "hive agent spawned",
         &state,
         Some(&agent),
@@ -673,11 +865,11 @@ async fn send_prompt(
     sync_state_with_tmux(runtime, &mut state)
         .await
         .map_err(internal_error)?;
-    let existing_status = state
+
+    let agent_index = state
         .agents
         .iter()
-        .find(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead)
-        .map(|agent| agent.status.clone())
+        .position(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Closed)
         .ok_or_else(|| {
             ErrorData::invalid_params(
                 format!(
@@ -687,12 +879,8 @@ async fn send_prompt(
                 None,
             )
         })?;
-    if !prompt_accept_state(&existing_status) {
-        let agent = state
-            .agents
-            .iter()
-            .find(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead)
-            .expect("checked above");
+    if !prompt_accept_state(&state.agents[agent_index].status) {
+        let agent = &state.agents[agent_index];
         return Ok(build_error_response(
             agent.status.as_str(),
             format!(
@@ -704,92 +892,73 @@ async fn send_prompt(
         ));
     }
 
-    let pane_id = state
-        .agents
-        .iter()
-        .find(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead)
-        .map(|agent| agent.pane_id.clone())
-        .expect("checked above");
-    tmux_send_text(&pane_id, &prompt)
-        .await
+    let mode = state.agents[agent_index].mode.clone();
+    let worker_name = state.agents[agent_index].worker_name.clone();
+    let workdir = state.agents[agent_index].workdir.clone();
+    let mode_config = runtime.resolve_mode_config(&mode)?;
+    let run_id = format!("run-{}", Uuid::new_v4().simple());
+    let run_dir = runtime
+        .session_dir()
+        .join(&agent_id)
+        .join("runs")
+        .join(&run_id);
+    fs::create_dir_all(&run_dir)
+        .with_context(|| format!("failed to create run dir `{}`", run_dir.display()))
         .map_err(internal_error)?;
+
+    let prompt_path = run_dir.join("prompt.txt");
+    let output_path = run_dir.join("output.log");
+    let result_path = run_dir.join("result.json");
+    fs::write(&prompt_path, &prompt)
+        .with_context(|| format!("failed to write prompt file `{}`", prompt_path.display()))
+        .map_err(internal_error)?;
+
+    let window_name = sanitize_window_name(&worker_name);
+    let launch_command = build_claude_exec_command(
+        runtime,
+        &mode_config,
+        Path::new(&workdir),
+        &prompt_path,
+        &output_path,
+        &result_path,
+    )
+    .map_err(internal_error)?;
+    let (window_id, pane_id) = tmux_new_window(
+        &runtime.session_name,
+        &window_name,
+        Path::new(&workdir),
+        Some(&launch_command),
+    )
+    .await
+    .map_err(internal_error)?;
+
     let now = now_ms();
-    let mut response_agent_id = None;
-    for agent in &mut state.agents {
-        if agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead {
-            agent.status = HiveAgentStatus::Busy;
-            agent.last_used_at_ms = Some(now);
-            response_agent_id = Some(agent.agent_id.clone());
-            break;
-        }
-    }
+    let agent = &mut state.agents[agent_index];
+    agent.status = HiveAgentStatus::Running;
+    agent.last_used_at_ms = Some(now);
+    agent.current_run = Some(HiveRunState {
+        run_id,
+        prompt_preview: prompt_preview(&prompt),
+        output_path: output_path.display().to_string(),
+        prompt_path: prompt_path.display().to_string(),
+        result_path: result_path.display().to_string(),
+        window_id: Some(window_id),
+        pane_id: Some(pane_id),
+        started_at_ms: now,
+        finished_at_ms: None,
+        exit_code: None,
+    });
+
     state.updated_at_ms = now;
     runtime.save_state(&state).map_err(internal_error)?;
     let agent = state
         .agents
         .iter()
-        .find(|agent| response_agent_id.as_deref() == Some(agent.agent_id.as_str()))
+        .find(|agent| agent.agent_id == agent_id)
         .expect("updated agent should exist");
     Ok(build_session_response(
-        "busy",
-        format!("prompt sent to hive agent `{agent_id}`"),
-        &state,
-        Some(agent),
-    ))
-}
-
-async fn reset_agent(
-    runtime: &HiveRuntime,
-    req: HiveRequest,
-) -> Result<Map<String, Value>, ErrorData> {
-    let agent_id = req.agent_id.ok_or_else(|| {
-        ErrorData::invalid_params("`agent_id` is required for action=`reset_agent`", None)
-    })?;
-
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
-    let mut state = runtime
-        .load_state()
-        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
-    sync_state_with_tmux(runtime, &mut state)
-        .await
-        .map_err(internal_error)?;
-    let pane_id = state
-        .agents
-        .iter()
-        .find(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead)
-        .map(|agent| agent.pane_id.clone())
-        .ok_or_else(|| {
-            ErrorData::invalid_params(
-                format!(
-                    "live hive agent `{agent_id}` was not found in session `{}`",
-                    runtime.session_id
-                ),
-                None,
-            )
-        })?;
-    tmux_send_text(&pane_id, "/new")
-        .await
-        .map_err(internal_error)?;
-    let now = now_ms();
-    let mut response_agent_id = None;
-    for agent in &mut state.agents {
-        if agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead {
-            agent.status = HiveAgentStatus::Resetting;
-            agent.last_used_at_ms = Some(now);
-            response_agent_id = Some(agent.agent_id.clone());
-            break;
-        }
-    }
-    state.updated_at_ms = now;
-    runtime.save_state(&state).map_err(internal_error)?;
-    let agent = state
-        .agents
-        .iter()
-        .find(|agent| response_agent_id.as_deref() == Some(agent.agent_id.as_str()))
-        .expect("updated agent should exist");
-    Ok(build_session_response(
-        "resetting",
-        format!("reset requested for hive agent `{agent_id}`; waiting for session-start hook to mark idle"),
+        "running",
+        format!("prompt started for hive agent `{agent_id}`"),
         &state,
         Some(agent),
     ))
@@ -811,11 +980,10 @@ async fn close_agent(
         .await
         .map_err(internal_error)?;
 
-    let target = state
+    let agent_index = state
         .agents
         .iter()
-        .find(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Dead)
-        .cloned()
+        .position(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Closed)
         .ok_or_else(|| {
             ErrorData::invalid_params(
                 format!(
@@ -826,12 +994,23 @@ async fn close_agent(
             )
         })?;
 
-    tmux_kill_window(&target.window_id)
-        .await
-        .map_err(internal_error)?;
-    sync_state_with_tmux(runtime, &mut state)
-        .await
-        .map_err(internal_error)?;
+    let window_id = state.agents[agent_index]
+        .current_run
+        .as_ref()
+        .and_then(|run| run.window_id.clone());
+    if let Some(window_id) = window_id.as_deref() {
+        tmux_kill_window(window_id).await.map_err(internal_error)?;
+    }
+
+    let agent = &mut state.agents[agent_index];
+    if let Some(run) = agent.current_run.as_mut() {
+        run.finished_at_ms = Some(now_ms());
+    }
+    if agent.current_run.is_some() {
+        agent.last_run = agent.current_run.take();
+    }
+    agent.status = HiveAgentStatus::Closed;
+    agent.last_used_at_ms = Some(now_ms());
     state.updated_at_ms = now_ms();
     runtime.save_state(&state).map_err(internal_error)?;
 
@@ -839,12 +1018,12 @@ async fn close_agent(
         .agents
         .iter()
         .find(|agent| agent.agent_id == agent_id)
-        .or(Some(&target));
+        .expect("closed agent should exist");
     Ok(build_session_response(
         "closed_agent",
         format!("hive agent `{agent_id}` closed"),
         &state,
-        agent,
+        Some(agent),
     ))
 }
 
@@ -867,7 +1046,13 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
     }
 
     for agent in &mut state.agents {
-        agent.status = HiveAgentStatus::Dead;
+        agent.status = HiveAgentStatus::Closed;
+        if let Some(run) = agent.current_run.as_mut() {
+            run.finished_at_ms = Some(now_ms());
+        }
+        if agent.current_run.is_some() {
+            agent.last_run = agent.current_run.take();
+        }
     }
     state.updated_at_ms = now_ms();
     runtime.save_state(&state).map_err(internal_error)?;
@@ -938,7 +1123,7 @@ fn hive_session_state_files(state_dir: &Path) -> Result<Vec<PathBuf>> {
 fn load_hive_session_state(path: &Path) -> Result<HiveSessionState> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read hive session file `{}`", path.display()))?;
-    serde_json::from_str(&raw)
+    parse_hive_session_state(&raw)
         .with_context(|| format!("failed to parse hive session file `{}`", path.display()))
 }
 
@@ -1004,7 +1189,7 @@ fn orphan_cleanup_action(
     session_exists: bool,
     queen_pane_exists: bool,
 ) -> OrphanCleanupAction {
-    if !state.session_name.starts_with("agpod-hive-") {
+    if !state.session_name.starts_with("agpod-") {
         return OrphanCleanupAction::Skip;
     }
     if state.session_id == current_session_id {
@@ -1037,21 +1222,58 @@ fn resolve_workdir(workdir: Option<&str>, runtime: &HiveRuntime) -> PathBuf {
 }
 
 async fn sync_state_with_tmux(runtime: &HiveRuntime, state: &mut HiveSessionState) -> Result<()> {
-    let panes = tmux_list_session_panes(&runtime.session_name).await?;
-    let pane_map: HashMap<_, _> = panes
+    let panes = if tmux_has_session(&runtime.session_name).await? {
+        tmux_list_session_panes(&runtime.session_name).await?
+    } else {
+        Vec::new()
+    };
+    let pane_map: BTreeMap<_, _> = panes
         .into_iter()
         .map(|pane| (pane.pane_id.clone(), pane))
         .collect();
 
     for agent in &mut state.agents {
-        if let Some(pane) = pane_map.get(&agent.pane_id) {
-            agent.window_id = pane.window_id.clone();
-            agent.window_name = pane.window_name.clone();
-        } else {
-            agent.status = HiveAgentStatus::Dead;
+        if agent.status == HiveAgentStatus::Closed {
+            continue;
+        }
+        let mut completed = false;
+        if let Some(run) = agent.current_run.as_mut() {
+            if let Some(pane_id) = run.pane_id.as_deref() {
+                if let Some(pane) = pane_map.get(pane_id) {
+                    run.window_id = Some(pane.window_id.clone());
+                    run.pane_id = Some(pane.pane_id.clone());
+                    agent.status = HiveAgentStatus::Running;
+                } else {
+                    hydrate_run_result(run);
+                    completed = true;
+                }
+            } else {
+                hydrate_run_result(run);
+                completed = true;
+            }
+        }
+        if completed {
+            agent.last_run = agent.current_run.take();
+            agent.status = HiveAgentStatus::Idle;
         }
     }
     Ok(())
+}
+
+fn hydrate_run_result(run: &mut HiveRunState) {
+    let result_path = Path::new(&run.result_path);
+    if let Ok(raw) = fs::read_to_string(result_path) {
+        if let Ok(result) = serde_json::from_str::<HiveRunResultFile>(&raw) {
+            run.exit_code = Some(result.exit_code);
+            run.started_at_ms = result.started_at_ms;
+            run.finished_at_ms = Some(result.finished_at_ms);
+        }
+    }
+    if run.finished_at_ms.is_none() {
+        run.finished_at_ms = Some(now_ms());
+    }
+    run.window_id = None;
+    run.pane_id = None;
 }
 
 fn next_agent_id(existing: &[HiveAgentState]) -> String {
@@ -1158,15 +1380,78 @@ fn agent_json(agent: &HiveAgentState) -> Value {
     serde_json::json!({
         "agent_id": agent.agent_id,
         "worker_name": agent.worker_name,
-        "agent_kind": agent.agent_kind.as_str(),
-        "model": agent.model,
+        "mode": agent.mode,
         "workdir": agent.workdir,
-        "window_id": agent.window_id,
-        "window_name": agent.window_name,
-        "pane_id": agent.pane_id,
         "status": agent.status.as_str(),
-        "last_used_at_ms": agent.last_used_at_ms
+        "last_used_at_ms": agent.last_used_at_ms,
+        "current_run": agent.current_run.as_ref().map(run_json),
+        "last_run": agent.last_run.as_ref().map(run_json),
     })
+}
+
+fn run_json(run: &HiveRunState) -> Value {
+    serde_json::json!({
+        "run_id": run.run_id,
+        "prompt_preview": run.prompt_preview,
+        "output_path": run.output_path,
+        "prompt_path": run.prompt_path,
+        "result_path": run.result_path,
+        "window_id": run.window_id,
+        "pane_id": run.pane_id,
+        "started_at_ms": run.started_at_ms,
+        "finished_at_ms": run.finished_at_ms,
+        "exit_code": run.exit_code,
+        "output_excerpt": read_output_excerpt(&run.output_path),
+    })
+}
+
+fn read_output_excerpt(path: &str) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let seek_back = std::cmp::min(file_len, OUTPUT_EXCERPT_LIMIT as u64);
+    if file.seek(SeekFrom::End(-(seek_back as i64))).is_err() {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(seek_back as usize);
+    file.read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn prompt_preview(prompt: &str) -> String {
+    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview: String = normalized.chars().take(120).collect();
+    if normalized.chars().count() > 120 {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn validate_mode_config(mode_name: &str, config: &McpHiveClaudeModeConfig) -> Result<(), ErrorData> {
+    if config
+        .command
+        .as_deref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return Err(ErrorData::invalid_params(
+            format!("hive mode `{mode_name}` requires non-empty `command`"),
+            None,
+        ));
+    }
+    for key in config.env.keys() {
+        let first = key.chars().next();
+        if first.is_none()
+            || first.is_some_and(|ch| ch.is_ascii_digit())
+            || !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return Err(ErrorData::invalid_params(
+                format!("hive mode `{mode_name}` has invalid env key `{key}`; env keys must start with a letter or `_`"),
+                None,
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn tmux_has_session(session_name: &str) -> Result<bool> {
@@ -1284,14 +1569,13 @@ async fn tmux_list_session_panes(session_name: &str) -> Result<Vec<SessionPaneIn
             continue;
         }
         let window_id = parts.next().unwrap_or_default();
-        let window_name = parts.next().unwrap_or_default();
+        let _window_name = parts.next().unwrap_or_default();
         let pane_id = parts.next().unwrap_or_default();
         if pane_id.is_empty() {
             continue;
         }
         panes.push(SessionPaneInfo {
             window_id: window_id.to_string(),
-            window_name: window_name.to_string(),
             pane_id: pane_id.to_string(),
         });
     }
@@ -1341,33 +1625,6 @@ async fn tmux_list_all_panes() -> Result<HashSet<String>> {
         .filter(|line| !line.trim().is_empty())
         .map(ToOwned::to_owned)
         .collect())
-}
-
-async fn tmux_send_text(pane_id: &str, text: &str) -> Result<()> {
-    run_tmux_send_keys(pane_id, &["C-u"]).await?;
-    sleep(Duration::from_millis(300)).await;
-    run_tmux_send_keys(pane_id, &["-l", text]).await?;
-    sleep(Duration::from_millis(300)).await;
-    run_tmux_send_keys(pane_id, &["C-m"]).await?;
-    sleep(Duration::from_millis(300)).await;
-    run_tmux_send_keys(pane_id, &["Enter"]).await?;
-    Ok(())
-}
-
-async fn run_tmux_send_keys(pane_id: &str, keys: &[&str]) -> Result<()> {
-    let mut command = Command::new("tmux");
-    command.arg("send-keys").arg("-t").arg(pane_id);
-    command.args(keys);
-    let status = command
-        .status()
-        .await
-        .with_context(|| format!("failed to run `tmux send-keys` for pane `{pane_id}`"))?;
-    if !status.success() {
-        return Err(anyhow!(
-            "`tmux send-keys` exited with status {status} for pane `{pane_id}`"
-        ));
-    }
-    Ok(())
 }
 
 async fn tmux_kill_window(window_id: &str) -> Result<()> {
@@ -1423,228 +1680,109 @@ async fn tmux_kill_session_if_exists(session_name: &str) -> Result<()> {
     ))
 }
 
-fn build_worker_shell_command(
+fn build_claude_exec_command(
     runtime: &HiveRuntime,
-    agent_id: &str,
-    worker_name: &str,
-    agent_kind: &HiveAgentKindInput,
-    model: Option<&str>,
+    mode_config: &McpHiveClaudeModeConfig,
     workdir: &Path,
+    prompt_path: &Path,
+    output_path: &Path,
+    result_path: &Path,
 ) -> Result<String> {
-    let hook_session_start = runtime
-        .repo_root
-        .join("hooks")
-        .join("hive-session-start.ts");
-    let hook_agent_stop = runtime.repo_root.join("hooks").join("hive-agent-stop.ts");
-    let cc_hooks_src = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".dotfiles")
-        .join("packages")
-        .join("cc-hooks")
-        .join("src");
-    let env_prefix = format!(
-        "AGPOD_HIVE_MODE=1 AGPOD_HIVE_STATE_DIR={} AGPOD_HIVE_SESSION_ID={} AGPOD_HIVE_AGENT_ID={} TMUX_HIVE_QUEEN={} TMUX_HIVE_WORKER_NAME={} CC_HOOKS_SRC={}",
-        shell_escape(&runtime.state_dir.display().to_string()),
-        shell_escape(&runtime.session_id),
-        shell_escape(agent_id),
-        shell_escape(&runtime.queen_pane_id),
-        shell_escape(worker_name),
-        shell_escape(&cc_hooks_src.display().to_string()),
+    let command = mode_config
+        .command
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("claw");
+    let expanded_settings = mode_config
+        .settings
+        .as_deref()
+        .map(expand_home_like)
+        .transpose()?;
+    let expanded_mcp = mode_config
+        .mcp_config
+        .as_deref()
+        .map(expand_home_like)
+        .transpose()?;
+
+    let mut command_parts = vec![shell_escape(command)];
+    command_parts.extend(
+        mode_config
+            .args
+            .iter()
+            .map(|arg| shell_escape(arg))
+            .collect::<Vec<_>>(),
     );
-
-    match agent_kind {
-        HiveAgentKindInput::Claude => {
-            let settings_path =
-                build_claude_settings(runtime, agent_id, &hook_session_start, &hook_agent_stop)?;
-            let mut command = format!(
-                "{env_prefix} claude --settings {} -n {}",
-                shell_escape(&settings_path.display().to_string()),
-                shell_escape(worker_name),
-            );
-            if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
-                command.push_str(" --model ");
-                command.push_str(&shell_escape(model));
-            }
-            if workdir != runtime.repo_root {
-                command.push_str(" --add-dir ");
-                command.push_str(&shell_escape(&workdir.display().to_string()));
-            }
-            Ok(command)
-        }
-        HiveAgentKindInput::Codex => {
-            let codex_home =
-                build_codex_home(runtime, agent_id, &hook_session_start, &hook_agent_stop)?;
-            let mut command = format!(
-                "CODEX_HOME={} {env_prefix} codex --no-alt-screen -C {}",
-                shell_escape(&codex_home.display().to_string()),
-                shell_escape(&workdir.display().to_string()),
-            );
-            if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
-                command.push_str(" -m ");
-                command.push_str(&shell_escape(model));
-            }
-            Ok(command)
-        }
+    if let Some(settings) = expanded_settings {
+        command_parts.push("--settings".to_string());
+        command_parts.push(shell_escape(&settings.display().to_string()));
     }
-}
-
-fn build_claude_settings(
-    runtime: &HiveRuntime,
-    agent_id: &str,
-    hook_session_start: &Path,
-    hook_agent_stop: &Path,
-) -> Result<PathBuf> {
-    let settings_path = runtime
-        .session_dir()
-        .join(agent_id)
-        .join("claude-settings.json");
-    if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)?;
+    if let Some(mcp_config) = expanded_mcp {
+        command_parts.push("--mcp-config".to_string());
+        command_parts.push(shell_escape(&mcp_config.display().to_string()));
     }
 
-    let source = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".claude")
-        .join("settings.json");
-    let mut root: Value = if source.exists() {
-        serde_json::from_str(&fs::read_to_string(&source)?)
-            .context("failed to parse ~/.claude/settings.json")?
-    } else {
-        serde_json::json!({})
-    };
-    let object = root
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("claude settings root must be a JSON object"))?;
-    let hooks = object
-        .entry("hooks".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    let hooks_obj = hooks
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("claude settings `hooks` must be an object"))?;
+    let mut script = String::from("set -euo pipefail\n");
+    script.push_str(&format!(
+        "cd {}\n",
+        shell_escape(&workdir.display().to_string())
+    ));
+    script.push_str(&format!(
+        "mkdir -p {}\n",
+        shell_escape(&runtime.session_dir().display().to_string())
+    ));
+    for (key, value) in &mode_config.env {
+        script.push_str(&format!(
+            "export {}={}\n",
+            shell_var_name(key)?,
+            shell_escape(value)
+        ));
+    }
+    script.push_str(&format!(
+        "PROMPT=$(cat {})\n",
+        shell_escape(&prompt_path.display().to_string())
+    ));
+    script.push_str("STARTED_AT_MS=$(date +%s000)\n");
+    script.push_str("RC=0\n");
+    script.push_str("set +e\n");
+    script.push_str(&format!(
+        "{} -p \"$PROMPT\" >{} 2>&1 || RC=$?\n",
+        command_parts.join(" "),
+        shell_escape(&output_path.display().to_string()),
+    ));
+    script.push_str("set -e\n");
+    script.push_str("FINISHED_AT_MS=$(date +%s000)\n");
+    script.push_str(&format!(
+        "printf '{{\"exit_code\":%s,\"started_at_ms\":%s,\"finished_at_ms\":%s}}\\n' \"$RC\" \"$STARTED_AT_MS\" \"$FINISHED_AT_MS\" >{}\n",
+        shell_escape(&result_path.display().to_string()),
+    ));
+    script.push_str("exit \"$RC\"\n");
 
-    append_hook_command(
-        hooks_obj,
-        "SessionStart",
-        format!(
-            "bun run -i --silent {} --agent claude",
-            hook_session_start.display()
-        ),
-    );
-    append_hook_command(
-        hooks_obj,
-        "Stop",
-        format!(
-            "bun run -i --silent {} --agent claude",
-            hook_agent_stop.display()
-        ),
-    );
-
-    fs::write(&settings_path, serde_json::to_vec_pretty(&root)?)?;
-    Ok(settings_path)
+    Ok(format!("bash -lc {}", shell_escape(&script)))
 }
 
-fn append_hook_command(hooks_obj: &mut Map<String, Value>, event: &str, command: String) {
-    let entry = hooks_obj
-        .entry(event.to_string())
-        .or_insert_with(|| Value::Array(Vec::new()));
-    let events = entry.as_array_mut().expect("hook event should be array");
-    events.push(serde_json::json!({
-        "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": command
-            }
-        ]
-    }));
-}
-
-fn build_codex_home(
-    runtime: &HiveRuntime,
-    agent_id: &str,
-    hook_session_start: &Path,
-    hook_agent_stop: &Path,
-) -> Result<PathBuf> {
-    let source_home = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("~"))
-        .join(".codex");
-    let target_home = runtime.session_dir().join(agent_id).join("codex-home");
-    fs::create_dir_all(&target_home)?;
-
-    for entry in fs::read_dir(&source_home)
-        .with_context(|| format!("failed to read `{}`", source_home.display()))?
+fn shell_var_name(name: &str) -> Result<String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
-        let entry = entry?;
-        let source = entry.path();
-        let file_name = entry.file_name();
-        if file_name == "hooks.json" {
-            continue;
-        }
-        let target = target_home.join(&file_name);
-        replace_with_symlink(&source, &target)?;
+        return Err(anyhow!("invalid env key `{name}`"));
     }
-
-    let source_hooks = source_home.join("hooks.json");
-    let mut hooks_root: Value = if source_hooks.exists() {
-        serde_json::from_str(&fs::read_to_string(&source_hooks)?)
-            .context("failed to parse ~/.codex/hooks.json")?
-    } else {
-        serde_json::json!({ "hooks": {} })
-    };
-    let object = hooks_root
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("codex hooks root must be a JSON object"))?;
-    let hooks = object
-        .entry("hooks".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    let hooks_obj = hooks
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("codex hooks `hooks` must be an object"))?;
-
-    append_hook_command(
-        hooks_obj,
-        "SessionStart",
-        format!(
-            "bun run -i --silent {} --agent codex",
-            hook_session_start.display()
-        ),
-    );
-    append_hook_command(
-        hooks_obj,
-        "Stop",
-        format!(
-            "bun run -i --silent {} --agent codex",
-            hook_agent_stop.display()
-        ),
-    );
-    fs::write(
-        target_home.join("hooks.json"),
-        serde_json::to_vec_pretty(&hooks_root)?,
-    )?;
-    Ok(target_home)
+    if name.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
+        return Err(anyhow!("invalid env key `{name}`"));
+    }
+    Ok(name.to_string())
 }
 
-fn replace_with_symlink(source: &Path, target: &Path) -> Result<()> {
-    if let Ok(metadata) = fs::symlink_metadata(target) {
-        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
-            fs::remove_dir_all(target)?;
-        } else {
-            fs::remove_file(target)?;
-        }
+fn expand_home_like(path: &str) -> Result<PathBuf> {
+    if path == "~" {
+        return dirs::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"));
     }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(source, target)?;
+    if let Some(stripped) = path.strip_prefix("~/") {
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"))?;
+        return Ok(home.join(stripped));
     }
-    #[cfg(not(unix))]
-    {
-        if source.is_dir() {
-            fs::create_dir_all(target)?;
-        } else {
-            fs::copy(source, target)?;
-        }
-    }
-    Ok(())
+    Ok(PathBuf::from(path))
 }
 
 fn shell_escape(input: &str) -> String {
@@ -1699,10 +1837,10 @@ mod tests {
             Some("#{window_id}\t#{pane_id}")
         );
 
-        let with_command = tmux_new_window_args("session", "worker", workdir, Some("exec codex"));
+        let with_command = tmux_new_window_args("session", "worker", workdir, Some("exec claude"));
         assert_eq!(
             with_command.last().and_then(|s| s.to_str()),
-            Some("exec codex")
+            Some("exec claude")
         );
         assert!(with_command.iter().any(|arg| arg == "worker"));
     }
@@ -1713,25 +1851,21 @@ mod tests {
             HiveAgentState {
                 agent_id: "agent-01".to_string(),
                 worker_name: "a".to_string(),
-                agent_kind: HiveAgentKindInput::Codex,
-                model: None,
+                mode: "default".to_string(),
                 workdir: "/tmp".to_string(),
-                window_id: "@1".to_string(),
-                window_name: "a".to_string(),
-                pane_id: "%1".to_string(),
-                status: HiveAgentStatus::Dead,
+                status: HiveAgentStatus::Closed,
+                current_run: None,
+                last_run: None,
                 last_used_at_ms: None,
             },
             HiveAgentState {
                 agent_id: "agent-03".to_string(),
                 worker_name: "b".to_string(),
-                agent_kind: HiveAgentKindInput::Claude,
-                model: None,
+                mode: "default".to_string(),
                 workdir: "/tmp".to_string(),
-                window_id: "@2".to_string(),
-                window_name: "b".to_string(),
-                pane_id: "%2".to_string(),
                 status: HiveAgentStatus::Idle,
+                current_run: None,
+                last_run: None,
                 last_used_at_ms: None,
             },
         ];
@@ -1753,25 +1887,32 @@ mod tests {
                 HiveAgentState {
                     agent_id: "agent-01".to_string(),
                     worker_name: "idle".to_string(),
-                    agent_kind: HiveAgentKindInput::Codex,
-                    model: None,
+                    mode: "readonly".to_string(),
                     workdir: "/repo".to_string(),
-                    window_id: "@1".to_string(),
-                    window_name: "idle".to_string(),
-                    pane_id: "%11".to_string(),
                     status: HiveAgentStatus::Idle,
+                    current_run: None,
+                    last_run: None,
                     last_used_at_ms: Some(1),
                 },
                 HiveAgentState {
                     agent_id: "agent-02".to_string(),
                     worker_name: "busy".to_string(),
-                    agent_kind: HiveAgentKindInput::Claude,
-                    model: None,
+                    mode: "readonly".to_string(),
                     workdir: "/repo".to_string(),
-                    window_id: "@2".to_string(),
-                    window_name: "busy".to_string(),
-                    pane_id: "%12".to_string(),
-                    status: HiveAgentStatus::Busy,
+                    status: HiveAgentStatus::Running,
+                    current_run: Some(HiveRunState {
+                        run_id: "run-1".to_string(),
+                        prompt_preview: "hello".to_string(),
+                        output_path: "/tmp/output".to_string(),
+                        prompt_path: "/tmp/prompt".to_string(),
+                        result_path: "/tmp/result".to_string(),
+                        window_id: Some("@1".to_string()),
+                        pane_id: Some("%12".to_string()),
+                        started_at_ms: 2,
+                        finished_at_ms: None,
+                        exit_code: None,
+                    }),
+                    last_run: None,
                     last_used_at_ms: Some(2),
                 },
             ],
@@ -1788,10 +1929,8 @@ mod tests {
     #[test]
     fn prompt_only_targets_idle_agents() {
         assert!(prompt_accept_state(&HiveAgentStatus::Idle));
-        assert!(!prompt_accept_state(&HiveAgentStatus::Spawning));
-        assert!(!prompt_accept_state(&HiveAgentStatus::Busy));
-        assert!(!prompt_accept_state(&HiveAgentStatus::Resetting));
-        assert!(!prompt_accept_state(&HiveAgentStatus::Dead));
+        assert!(!prompt_accept_state(&HiveAgentStatus::Running));
+        assert!(!prompt_accept_state(&HiveAgentStatus::Closed));
     }
 
     #[test]
@@ -1804,6 +1943,7 @@ mod tests {
             session_name: "agpod-hive-q1".to_string(),
             queen_pane_id: "%1".to_string(),
             tmux_socket: Some("/tmp/tmux".to_string()),
+            config: Config::default(),
         };
 
         let first = runtime.acquire_lock().expect("first lock");
@@ -1824,6 +1964,7 @@ mod tests {
             session_name: "agpod-hive-q1".to_string(),
             queen_pane_id: "%1".to_string(),
             tmux_socket: Some("/tmp/tmux".to_string()),
+            config: Config::default(),
         };
         runtime.ensure_state_dirs().expect("state dir");
         let lock = runtime.session_lock_file();
@@ -1845,46 +1986,6 @@ mod tests {
             session_id: "hive-q1".to_string(),
             session_name: "agpod-hive-q1".to_string(),
             queen_pane_id: "%1".to_string(),
-            tmux_socket: Some("/tmp/tmux".to_string()),
-            repo_root: "/repo".to_string(),
-            agent_limit: HIVE_AGENT_LIMIT,
-            updated_at_ms: 1,
-            agents: Vec::new(),
-        };
-
-        assert_eq!(
-            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), true, false),
-            OrphanCleanupAction::Skip
-        );
-    }
-
-    #[test]
-    fn orphan_cleanup_skips_other_tmux_server() {
-        let state = HiveSessionState {
-            version: HIVE_VERSION,
-            session_id: "hive-q2".to_string(),
-            session_name: "agpod-hive-q2".to_string(),
-            queen_pane_id: "%2".to_string(),
-            tmux_socket: Some("/tmp/other".to_string()),
-            repo_root: "/repo".to_string(),
-            agent_limit: HIVE_AGENT_LIMIT,
-            updated_at_ms: 1,
-            agents: Vec::new(),
-        };
-
-        assert_eq!(
-            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), true, false),
-            OrphanCleanupAction::Skip
-        );
-    }
-
-    #[test]
-    fn orphan_cleanup_skips_non_hive_session_records() {
-        let state = HiveSessionState {
-            version: HIVE_VERSION,
-            session_id: "foreign".to_string(),
-            session_name: "other-session".to_string(),
-            queen_pane_id: "%2".to_string(),
             tmux_socket: Some("/tmp/tmux".to_string()),
             repo_root: "/repo".to_string(),
             agent_limit: HIVE_AGENT_LIMIT,
@@ -1971,6 +2072,7 @@ mod tests {
             session_name: "agpod-hive-q1".to_string(),
             queen_pane_id: "%1".to_string(),
             tmux_socket: Some("/tmp/tmux".to_string()),
+            config: Config::default(),
         };
 
         let err = match runtime.acquire_session_lock("../bad") {
@@ -1978,5 +2080,80 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("invalid hive session_id"));
+    }
+
+    #[test]
+    fn validate_mode_config_requires_command() {
+        let cfg = McpHiveClaudeModeConfig::default();
+        let err = validate_mode_config("readonly", &cfg).expect_err("missing command should fail");
+        assert!(err.message.contains("requires non-empty `command`"));
+    }
+
+    #[test]
+    fn validate_mode_config_rejects_env_key_starting_with_digit() {
+        let mut cfg = McpHiveClaudeModeConfig::default();
+        cfg.command = Some("claw".to_string());
+        cfg.env.insert("1BAD".to_string(), "x".to_string());
+        let err = validate_mode_config("readonly", &cfg).expect_err("invalid env key should fail");
+        assert!(err.message.contains("invalid env key"));
+    }
+
+    #[test]
+    fn validate_mode_config_rejects_env_key_with_dash() {
+        let mut cfg = McpHiveClaudeModeConfig::default();
+        cfg.command = Some("claw".to_string());
+        cfg.env.insert("BAD-KEY".to_string(), "x".to_string());
+        let err = validate_mode_config("readonly", &cfg).expect_err("invalid env key should fail");
+        assert!(err.message.contains("invalid env key"));
+    }
+
+    #[test]
+    fn load_state_migrates_legacy_session_shape() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = HiveRuntime {
+            repo_root: temp.path().to_path_buf(),
+            state_dir: temp.path().join("state"),
+            session_id: "hive-q1".to_string(),
+            session_name: "agpod-hive-q1".to_string(),
+            queen_pane_id: "%1".to_string(),
+            tmux_socket: Some("/tmp/tmux".to_string()),
+            config: Config::default(),
+        };
+        runtime.ensure_state_dirs().expect("state dirs");
+        fs::write(
+            runtime.session_file(),
+            serde_json::json!({
+                "version": 1,
+                "session_id": "hive-q1",
+                "session_name": "agpod-hive-q1",
+                "queen_pane_id": "%1",
+                "tmux_socket": "/tmp/tmux",
+                "repo_root": "/repo",
+                "agent_limit": 5,
+                "updated_at_ms": 10,
+                "agents": [{
+                    "agent_id": "agent-01",
+                    "worker_name": "legacy",
+                    "agent_kind": "claude",
+                    "model": null,
+                    "workdir": "/repo",
+                    "window_id": "@1",
+                    "window_name": "legacy",
+                    "pane_id": "%11",
+                    "status": "busy",
+                    "last_used_at_ms": 9
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write state");
+
+        let state = runtime.load_state().expect("load legacy state");
+        assert_eq!(state.version, HIVE_VERSION);
+        assert_eq!(state.agents.len(), 1);
+        let agent = &state.agents[0];
+        assert_eq!(agent.mode, "readonly");
+        assert_eq!(agent.status, HiveAgentStatus::Running);
+        assert!(agent.current_run.is_some());
     }
 }

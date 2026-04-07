@@ -9,6 +9,11 @@
 - [x] impl: implement tmux hive state and tool
 - [x] hooks: add hook scripts for idle tracking
 - [x] test: verify with tests and review
+- [x] smoke-case: smoke core case tool flows on the current repo case
+- [>] smoke-hive-env: finish hive end-to-end smoke once MCP config forwards tmux variables
+- [x] handoff: write restart handoff summary for current hive smoke work
+- [x] config-mode: define hive mode introspection and required mode config
 
 ## Document References
-- None yet.
+- .agents/docs/hive-mcp-smoke-handoff-2026-04-07.md - restart handoff for current MCP smoke work
+- docs/hive-claude-modes.md - Claude-only hive mode config and mode_info contract

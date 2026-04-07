@@ -321,7 +321,7 @@ impl ServerHandler for AgpodMcpServer {
         let instructions = if self.readonly {
             "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, resume by id, or otherwise mutate case state."
         } else {
-            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input that can ask for how-to topics, docs, pitfalls, and known patterns; it may return `startup_context` with status `ok`, `empty`, or `degraded`, but open itself should still succeed. Use `case_steps_add` to add steps, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. `hive` manages tmux-backed worker sessions for the current tmux pane only: `ensure_session` creates or reuses the pane-derived session, `spawn_agent` opens one worker per window up to 5, `list_agents` reports live workers, `send_prompt` sends a prompt to a chosen worker, `reset_agent` sends `/new` then waits for session-start hooks to mark the worker idle again, `close_agent` terminates one worker window, and `close_session` terminates the whole hive session. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
+            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input that can ask for how-to topics, docs, pitfalls, and known patterns; it may return `startup_context` with status `ok`, `empty`, or `degraded`, but open itself should still succeed. Use `case_steps_add` to add steps, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. `hive` manages tmux-backed Claude exec workers for the current tmux pane only: `ensure_session` creates or reuses the pane-derived session, `mode_info` explains the required mode config, `spawn_agent` registers a reusable Claude worker profile, `list_agents` reports worker state and output files, `send_prompt` runs one Claude exec job whose streaming output is written to a file, `close_agent` closes one worker, and `close_session` terminates the whole hive session. Public `mode` names are fixed to `readonly` and `full`. The server never guesses a launch profile: if `[mcp.hive.claude.modes.readonly]` or `[mcp.hive.claude.modes.full]` is missing, the corresponding hive action fails fast and tells you to call `mode_info`. Each mode may configure `command`, `args`, `settings`, `mcp_config`, and `env`. Paths in mode config may begin with `~`, and the server expands them to the user home directory before launch. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -342,7 +342,7 @@ impl ServerHandler for AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "hive",
-        description = "Manage a tmux hive session derived from the current tmux pane. Use action=`ensure_session` first, then `spawn_agent`, `list_agents`, `send_prompt`, `reset_agent`, `close_agent`, or `close_session` against that session.",
+        description = "Manage a tmux hive session derived from the current tmux pane. Claude-only exec workers. Use action=`ensure_session` first, then `mode_info`, `spawn_agent`, `list_agents`, `send_prompt`, `close_agent`, or `close_session`. Public `mode` names are fixed to `readonly` and `full`; missing mode config is an error. `~` in configured paths is expanded to the home directory.",
         output_schema = hive_tool_output_schema()
     )]
     async fn hive(
@@ -1537,7 +1537,8 @@ mod tests {
         assert!(instructions.contains("startup_context"));
         assert!(instructions.contains("omit `query` only when `context_shortcut=recent_work`"));
         assert!(instructions.contains("When `context_scope=case`, `context_id` is required"));
-        assert!(instructions.contains("`hive` manages tmux-backed worker sessions"));
+        assert!(instructions.contains("`mode_info` explains the required mode config"));
+        assert!(instructions.contains("Public `mode` names are fixed to `readonly` and `full`"));
     }
 
     #[test]
@@ -1630,13 +1631,15 @@ mod tests {
 
         assert!(!current_schema.to_string().contains("data_dir"));
         assert!(hive_schema.to_string().contains("\"ensure_session\""));
+        assert!(hive_schema.to_string().contains("\"mode_info\""));
         assert!(hive_schema.to_string().contains("\"spawn_agent\""));
         assert!(hive_schema.to_string().contains("\"send_prompt\""));
-        assert!(hive_schema.to_string().contains("\"reset_agent\""));
         assert!(hive_schema.to_string().contains("\"close_agent\""));
         assert!(hive_schema.to_string().contains("\"close_session\""));
-        assert!(hive_schema.to_string().contains("\"codex\""));
-        assert!(hive_schema.to_string().contains("\"claude\""));
+        assert!(hive_schema.to_string().contains("\"readonly\""));
+        assert!(hive_schema.to_string().contains("\"full\""));
+        assert!(!hive_schema.to_string().contains("\"reset_agent\""));
+        assert!(!hive_schema.to_string().contains("\"codex\""));
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(open_schema.to_string().contains("\"reopen\""));
         assert!(open_schema.to_string().contains("\"case_id\""));
