@@ -2107,8 +2107,10 @@ mod tests {
 
     #[test]
     fn validate_mode_config_rejects_env_key_starting_with_digit() {
-        let mut cfg = McpHiveClaudeModeConfig::default();
-        cfg.command = Some("claw".to_string());
+        let mut cfg = McpHiveClaudeModeConfig {
+            command: Some("claw".to_string()),
+            ..Default::default()
+        };
         cfg.env.insert("1BAD".to_string(), "x".to_string());
         let err = validate_mode_config("readonly", &cfg).expect_err("invalid env key should fail");
         assert!(err.message.contains("invalid env key"));
@@ -2116,8 +2118,10 @@ mod tests {
 
     #[test]
     fn validate_mode_config_rejects_env_key_with_dash() {
-        let mut cfg = McpHiveClaudeModeConfig::default();
-        cfg.command = Some("claw".to_string());
+        let mut cfg = McpHiveClaudeModeConfig {
+            command: Some("claw".to_string()),
+            ..Default::default()
+        };
         cfg.env.insert("BAD-KEY".to_string(), "x".to_string());
         let err = validate_mode_config("readonly", &cfg).expect_err("invalid env key should fail");
         assert!(err.message.contains("invalid env key"));
