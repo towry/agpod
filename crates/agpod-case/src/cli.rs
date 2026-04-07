@@ -4,6 +4,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -80,6 +81,22 @@ pub struct CaseArgs {
     pub command: CaseCommand,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, Args)]
+pub struct NeededContextQueryArg {
+    #[serde(default)]
+    #[arg(long = "how-to")]
+    pub how_to: Vec<String>,
+    #[serde(default)]
+    #[arg(long = "doc-about")]
+    pub doc_about: Vec<String>,
+    #[serde(default)]
+    #[arg(long = "pitfalls-about")]
+    pub pitfalls_about: Vec<String>,
+    #[serde(default)]
+    #[arg(long = "known-patterns-for")]
+    pub known_patterns_for: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Subcommand)]
 pub enum CaseCommand {
     /// Open a new exploration case
@@ -115,6 +132,26 @@ pub enum CaseCommand {
         /// Abort condition for the initial direction
         #[arg(long = "abort-condition")]
         abort_condition: Option<String>,
+
+        /// Startup memory query: how-to topics
+        #[serde(default)]
+        #[arg(long = "how-to")]
+        how_to: Vec<String>,
+
+        /// Startup memory query: document topics
+        #[serde(default)]
+        #[arg(long = "doc-about")]
+        doc_about: Vec<String>,
+
+        /// Startup memory query: pitfall topics
+        #[serde(default)]
+        #[arg(long = "pitfalls-about")]
+        pitfalls_about: Vec<String>,
+
+        /// Startup memory query: known pattern topics
+        #[serde(default)]
+        #[arg(long = "known-patterns-for")]
+        known_patterns_for: Vec<String>,
     },
 
     /// Show current case navigation panel
@@ -380,5 +417,40 @@ pub enum StepCommand {
         /// Reason for blocking
         #[arg(long)]
         reason: String,
+    },
+
+    /// Complete the current active step, optionally record a fact, and optionally start the next step
+    Advance {
+        /// Case ID (defaults to the open case)
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Step ID (defaults to the current active step)
+        #[arg(long)]
+        step_id: Option<String>,
+
+        /// Record summary to append while advancing
+        #[arg(long = "record-summary")]
+        record_summary: Option<String>,
+
+        /// Record kind
+        #[arg(long = "record-kind")]
+        record_kind: Option<String>,
+
+        /// Related file path; repeatable
+        #[arg(long = "record-file")]
+        record_files: Vec<String>,
+
+        /// Record context
+        #[arg(long = "record-context")]
+        record_context: Option<String>,
+
+        /// Explicit next step to start after completion
+        #[arg(long = "next-step-id")]
+        next_step_id: Option<String>,
+
+        /// Automatically start the next pending step by `order_index`
+        #[arg(long = "next-step-auto")]
+        next_step_auto: bool,
     },
 }

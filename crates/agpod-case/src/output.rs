@@ -709,6 +709,7 @@ pub fn entry_json(entry: &Entry) -> Value {
         "seq": entry.seq,
         "entry_type": entry.entry_type.as_str(),
         "kind": entry.kind,
+        "step_id": entry.step_id,
         "summary": entry.summary,
         "reason": entry.reason,
         "context": entry.context,

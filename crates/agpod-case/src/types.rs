@@ -235,6 +235,7 @@ pub struct Entry {
     pub seq: u32,
     pub entry_type: EntryType,
     pub kind: Option<String>,
+    pub step_id: Option<String>,
     pub summary: String,
     pub reason: Option<String>,
     pub context: Option<String>,
