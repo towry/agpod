@@ -2,11 +2,14 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
+mod hive;
+
 use agpod_case::{
     CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg, RecordKind,
     StepCommand,
 };
 use anyhow::Result;
+use hive::{hive_tool_output_schema, HiveRequest, HiveToolEnvelope, HiveToolResponse};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -237,6 +240,14 @@ impl AgpodMcpServer {
         }
     }
 
+    async fn run_hive_request(&self, req: HiveRequest) -> Result<CallToolResult, ErrorData> {
+        let result = hive::run_hive_request(req).await?;
+        HiveToolResponse {
+            result: HiveToolEnvelope::from_raw(result),
+        }
+        .into_call_tool_result()
+    }
+
     fn case_tool_result(
         kind: &'static str,
         case_id_hint: Option<String>,
@@ -310,7 +321,7 @@ impl ServerHandler for AgpodMcpServer {
         let instructions = if self.readonly {
             "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, resume by id, or otherwise mutate case state."
         } else {
-            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input that can ask for how-to topics, docs, pitfalls, and known patterns; it may return `startup_context` with status `ok`, `empty`, or `degraded`, but open itself should still succeed. Use `case_steps_add` to add steps, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
+            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input that can ask for how-to topics, docs, pitfalls, and known patterns; it may return `startup_context` with status `ok`, `empty`, or `degraded`, but open itself should still succeed. Use `case_steps_add` to add steps, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. `hive` manages tmux-backed worker sessions for the current tmux pane only: `ensure_session` creates or reuses the pane-derived session, `spawn_agent` opens one worker per window up to 5, `list_agents` reports live workers, `send_prompt` sends a prompt to a chosen worker, and `reset_agent` sends `/new` then waits for session-start hooks to mark the worker idle again. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -329,6 +340,18 @@ impl ServerHandler for AgpodMcpServer {
 
 #[tool_router(router = full_tool_router)]
 impl AgpodMcpServer {
+    #[tool(
+        name = "hive",
+        description = "Manage a tmux hive session derived from the current tmux pane. Use action=`ensure_session` first, then `spawn_agent`, `list_agents`, `send_prompt`, or `reset_agent` against that session.",
+        output_schema = hive_tool_output_schema()
+    )]
+    async fn hive(
+        &self,
+        Parameters(req): Parameters<HiveRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_hive_request(req).await
+    }
+
     #[tool(
         name = "case_current",
         description = "Read active case state after you have decided the task should use case tracking, or when resuming known case-aware work.",
@@ -1487,6 +1510,7 @@ mod tests {
         let tool_names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
 
         assert!(tool_names.contains(&"case_current"));
+        assert!(tool_names.contains(&"hive"));
         assert!(tool_names.contains(&"case_open"));
         assert!(tool_names.contains(&"case_step_advance"));
         assert!(tool_names.contains(&"case_steps_add"));
@@ -1513,6 +1537,7 @@ mod tests {
         assert!(instructions.contains("startup_context"));
         assert!(instructions.contains("omit `query` only when `context_shortcut=recent_work`"));
         assert!(instructions.contains("When `context_scope=case`, `context_id` is required"));
+        assert!(instructions.contains("`hive` manages tmux-backed worker sessions"));
     }
 
     #[test]
@@ -1534,6 +1559,7 @@ mod tests {
         assert!(!tool_names.contains(&"case_resume"));
         assert!(!tool_names.contains(&"case_steps_add"));
         assert!(!tool_names.contains(&"case_step_mark_as"));
+        assert!(!tool_names.contains(&"hive"));
 
         let info = server.get_info();
         let instructions = info.instructions.expect("instructions should exist");
@@ -1557,6 +1583,12 @@ mod tests {
 
         let current_schema =
             serde_json::to_value(&current_tool.input_schema).expect("schema should serialize");
+        let hive_tool = tools
+            .iter()
+            .find(|tool| tool.name == "hive")
+            .expect("hive tool should exist");
+        let hive_schema =
+            serde_json::to_value(&hive_tool.input_schema).expect("schema should serialize");
         let open_schema =
             serde_json::to_value(&open_tool.input_schema).expect("schema should serialize");
         let redirect_tool = tools
@@ -1597,6 +1629,12 @@ mod tests {
             serde_json::to_value(&steps_add_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
+        assert!(hive_schema.to_string().contains("\"ensure_session\""));
+        assert!(hive_schema.to_string().contains("\"spawn_agent\""));
+        assert!(hive_schema.to_string().contains("\"send_prompt\""));
+        assert!(hive_schema.to_string().contains("\"reset_agent\""));
+        assert!(hive_schema.to_string().contains("\"codex\""));
+        assert!(hive_schema.to_string().contains("\"claude\""));
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(open_schema.to_string().contains("\"reopen\""));
         assert!(open_schema.to_string().contains("\"case_id\""));
@@ -2145,5 +2183,28 @@ mod tests {
                 }
             }))
         );
+    }
+
+    #[test]
+    fn hive_tool_response_sets_mcp_is_error() {
+        let result = HiveToolResponse {
+            result: HiveToolEnvelope::from_raw(
+                serde_json::json!({
+                    "ok": false,
+                    "state": "limit_reached",
+                    "message": "limit reached",
+                    "session": { "id": "hive-q9" },
+                    "agent": { "agent_id": "agent-01" }
+                })
+                .as_object()
+                .cloned()
+                .expect("raw payload should be object"),
+            ),
+        }
+        .into_call_tool_result()
+        .expect("tool response should serialize");
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.content, vec![Content::text("limit reached")]);
     }
 }
