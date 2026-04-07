@@ -9,7 +9,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::fs::OpenOptions;
@@ -345,6 +345,10 @@ impl HiveRuntime {
         self.state_dir.join(format!("{}.lock", self.session_id))
     }
 
+    fn gc_lock_file(&self) -> PathBuf {
+        self.state_dir.join(".gc.lock")
+    }
+
     fn ensure_state_dirs(&self) -> Result<()> {
         fs::create_dir_all(&self.state_dir).with_context(|| {
             format!(
@@ -418,35 +422,49 @@ impl HiveRuntime {
 
     fn acquire_lock(&self) -> Result<HiveStateGuard> {
         self.ensure_state_dirs()?;
-        let lock_path = self.session_lock_file();
-        for _ in 0..200 {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-            {
-                Ok(_) => {
-                    return Ok(HiveStateGuard { lock_path });
+        acquire_lock_file(self.session_lock_file())
+    }
+
+    fn acquire_gc_lock(&self) -> Result<HiveStateGuard> {
+        self.ensure_state_dirs()?;
+        acquire_lock_file(self.gc_lock_file())
+    }
+
+    fn acquire_session_lock(&self, session_id: &str) -> Result<HiveStateGuard> {
+        self.ensure_state_dirs()?;
+        ensure_valid_session_id(session_id)?;
+        acquire_lock_file(self.state_dir.join(format!("{session_id}.lock")))
+    }
+}
+
+fn acquire_lock_file(lock_path: PathBuf) -> Result<HiveStateGuard> {
+    for _ in 0..200 {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => {
+                return Ok(HiveStateGuard { lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_is_stale(&lock_path, HIVE_LOCK_STALE_MS) {
+                    let _ = fs::remove_file(&lock_path);
+                    continue;
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if lock_is_stale(&lock_path, HIVE_LOCK_STALE_MS) {
-                        let _ = fs::remove_file(&lock_path);
-                        continue;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!("failed to create hive lock file `{}`", lock_path.display())
-                    });
-                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to create hive lock file `{}`", lock_path.display())
+                });
             }
         }
-        Err(anyhow!(
-            "timed out waiting for hive lock `{}`",
-            lock_path.display()
-        ))
     }
+    Err(anyhow!(
+        "timed out waiting for hive lock `{}`",
+        lock_path.display()
+    ))
 }
 
 fn lock_is_stale(path: &Path, stale_after_ms: u64) -> bool {
@@ -490,6 +508,9 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
 }
 
 async fn ensure_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
+    cleanup_orphaned_hive_sessions(runtime)
+        .await
+        .map_err(internal_error)?;
     let _lock = runtime.acquire_lock().map_err(internal_error)?;
     let mut state = runtime
         .load_state()
@@ -858,6 +879,149 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrphanCleanupAction {
+    Skip,
+    DeleteState,
+    KillSessionThenDeleteState,
+}
+
+async fn cleanup_orphaned_hive_sessions(runtime: &HiveRuntime) -> Result<()> {
+    let _gc_lock = runtime.acquire_gc_lock()?;
+    let session_names = tmux_list_sessions().await?;
+    let pane_ids = tmux_list_all_panes().await?;
+
+    for session_path in hive_session_state_files(&runtime.state_dir)? {
+        let state = match load_hive_session_state(&session_path) {
+            Ok(state) => state,
+            Err(_) => continue,
+        };
+        let action = orphan_cleanup_action(
+            &state,
+            &runtime.session_id,
+            runtime.tmux_socket.as_deref(),
+            session_names.contains(&state.session_name),
+            pane_ids.contains(&state.queen_pane_id),
+        );
+        if action == OrphanCleanupAction::Skip {
+            continue;
+        }
+
+        let Ok(_session_lock) = runtime.acquire_session_lock(&state.session_id) else {
+            continue;
+        };
+
+        if action == OrphanCleanupAction::KillSessionThenDeleteState {
+            tmux_kill_session_if_exists(&state.session_name).await?;
+        }
+        remove_hive_session_state(&runtime.state_dir, &session_path, &state.session_id)?;
+    }
+
+    Ok(())
+}
+
+fn hive_session_state_files(state_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(state_dir)
+        .with_context(|| format!("failed to read hive state dir `{}`", state_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        sessions.push(path);
+    }
+    Ok(sessions)
+}
+
+fn load_hive_session_state(path: &Path) -> Result<HiveSessionState> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read hive session file `{}`", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse hive session file `{}`", path.display()))
+}
+
+fn remove_hive_session_state(
+    state_dir: &Path,
+    session_path: &Path,
+    session_id: &str,
+) -> Result<()> {
+    ensure_valid_session_id(session_id)?;
+    let expected_file_name = format!("{session_id}.json");
+    if session_path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+    {
+        return Err(anyhow!(
+            "session file `{}` does not match session_id `{session_id}`",
+            session_path.display()
+        ));
+    }
+    let session_dir = state_dir.join(session_id);
+
+    match fs::remove_file(session_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to remove hive session file `{}`",
+                    session_path.display()
+                )
+            });
+        }
+    }
+    match fs::remove_dir_all(&session_dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to remove hive session directory `{}`",
+                    session_dir.display()
+                )
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_valid_session_id(session_id: &str) -> Result<()> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Err(anyhow!("invalid hive session_id `{session_id}`"));
+    }
+    Ok(())
+}
+
+fn orphan_cleanup_action(
+    state: &HiveSessionState,
+    current_session_id: &str,
+    current_tmux_socket: Option<&str>,
+    session_exists: bool,
+    queen_pane_exists: bool,
+) -> OrphanCleanupAction {
+    if !state.session_name.starts_with("agpod-hive-") {
+        return OrphanCleanupAction::Skip;
+    }
+    if state.session_id == current_session_id {
+        return OrphanCleanupAction::Skip;
+    }
+    if state.tmux_socket.as_deref() != current_tmux_socket {
+        return OrphanCleanupAction::Skip;
+    }
+    if !session_exists {
+        return OrphanCleanupAction::DeleteState;
+    }
+    if !queen_pane_exists {
+        return OrphanCleanupAction::KillSessionThenDeleteState;
+    }
+    OrphanCleanupAction::Skip
+}
+
 fn resolve_workdir(workdir: Option<&str>, runtime: &HiveRuntime) -> PathBuf {
     match workdir {
         Some(path) if !path.trim().is_empty() => {
@@ -1134,6 +1298,51 @@ async fn tmux_list_session_panes(session_name: &str) -> Result<Vec<SessionPaneIn
     Ok(panes)
 }
 
+async fn tmux_list_sessions() -> Result<HashSet<String>> {
+    let output = Command::new("tmux")
+        .arg("list-sessions")
+        .arg("-F")
+        .arg("#{session_name}")
+        .output()
+        .await
+        .context("failed to run `tmux list-sessions`")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "`tmux list-sessions` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let text = String::from_utf8(output.stdout).context("tmux output was not utf-8")?;
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+async fn tmux_list_all_panes() -> Result<HashSet<String>> {
+    let output = Command::new("tmux")
+        .arg("list-panes")
+        .arg("-a")
+        .arg("-F")
+        .arg("#{pane_id}")
+        .output()
+        .await
+        .context("failed to run `tmux list-panes` for all panes")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "`tmux list-panes -a` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let text = String::from_utf8(output.stdout).context("tmux output was not utf-8")?;
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
 async fn tmux_send_text(pane_id: &str, text: &str) -> Result<()> {
     run_tmux_send_keys(pane_id, &["C-u"]).await?;
     sleep(Duration::from_millis(300)).await;
@@ -1191,6 +1400,27 @@ async fn tmux_kill_session(session_name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+async fn tmux_kill_session_if_exists(session_name: &str) -> Result<()> {
+    let output = Command::new("tmux")
+        .arg("kill-session")
+        .arg("-t")
+        .arg(session_name)
+        .output()
+        .await
+        .with_context(|| format!("failed to run `tmux kill-session` for `{session_name}`"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    if !tmux_has_session(session_name).await? {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(anyhow!(
+        "`tmux kill-session` failed for `{session_name}`: {}",
+        stderr.trim()
+    ))
 }
 
 fn build_worker_shell_command(
@@ -1606,5 +1836,147 @@ mod tests {
             .expect("touch stale lock");
         assert!(status.success());
         assert!(runtime.acquire_lock().is_ok());
+    }
+
+    #[test]
+    fn orphan_cleanup_skips_current_session() {
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: "hive-q1".to_string(),
+            session_name: "agpod-hive-q1".to_string(),
+            queen_pane_id: "%1".to_string(),
+            tmux_socket: Some("/tmp/tmux".to_string()),
+            repo_root: "/repo".to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: Vec::new(),
+        };
+
+        assert_eq!(
+            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), true, false),
+            OrphanCleanupAction::Skip
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_skips_other_tmux_server() {
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: "hive-q2".to_string(),
+            session_name: "agpod-hive-q2".to_string(),
+            queen_pane_id: "%2".to_string(),
+            tmux_socket: Some("/tmp/other".to_string()),
+            repo_root: "/repo".to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: Vec::new(),
+        };
+
+        assert_eq!(
+            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), true, false),
+            OrphanCleanupAction::Skip
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_skips_non_hive_session_records() {
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: "foreign".to_string(),
+            session_name: "other-session".to_string(),
+            queen_pane_id: "%2".to_string(),
+            tmux_socket: Some("/tmp/tmux".to_string()),
+            repo_root: "/repo".to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: Vec::new(),
+        };
+
+        assert_eq!(
+            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), true, false),
+            OrphanCleanupAction::Skip
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_deletes_state_when_tmux_session_is_gone() {
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: "hive-q2".to_string(),
+            session_name: "agpod-hive-q2".to_string(),
+            queen_pane_id: "%2".to_string(),
+            tmux_socket: Some("/tmp/tmux".to_string()),
+            repo_root: "/repo".to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: Vec::new(),
+        };
+
+        assert_eq!(
+            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), false, false),
+            OrphanCleanupAction::DeleteState
+        );
+    }
+
+    #[test]
+    fn orphan_cleanup_kills_session_when_queen_pane_is_gone() {
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: "hive-q2".to_string(),
+            session_name: "agpod-hive-q2".to_string(),
+            queen_pane_id: "%2".to_string(),
+            tmux_socket: Some("/tmp/tmux".to_string()),
+            repo_root: "/repo".to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: Vec::new(),
+        };
+
+        assert_eq!(
+            orphan_cleanup_action(&state, "hive-q1", Some("/tmp/tmux"), true, false),
+            OrphanCleanupAction::KillSessionThenDeleteState
+        );
+    }
+
+    #[test]
+    fn remove_hive_session_state_rejects_mismatched_file_name() {
+        let temp = tempdir().expect("temp dir");
+        let state_dir = temp.path();
+        let session_path = state_dir.join("wrong.json");
+        fs::write(&session_path, "{}").expect("write session file");
+
+        let err = remove_hive_session_state(state_dir, &session_path, "hive-q1")
+            .expect_err("mismatched file name should fail");
+        assert!(err.to_string().contains("does not match session_id"));
+    }
+
+    #[test]
+    fn remove_hive_session_state_rejects_invalid_session_id() {
+        let temp = tempdir().expect("temp dir");
+        let state_dir = temp.path();
+        let session_path = state_dir.join("../bad.json");
+
+        let err = remove_hive_session_state(state_dir, &session_path, "../bad")
+            .expect_err("invalid session_id should fail");
+        assert!(err.to_string().contains("invalid hive session_id"));
+    }
+
+    #[test]
+    fn acquire_session_lock_rejects_invalid_session_id() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = HiveRuntime {
+            repo_root: temp.path().to_path_buf(),
+            state_dir: temp.path().join("state"),
+            session_id: "hive-q1".to_string(),
+            session_name: "agpod-hive-q1".to_string(),
+            queen_pane_id: "%1".to_string(),
+            tmux_socket: Some("/tmp/tmux".to_string()),
+        };
+
+        let err = match runtime.acquire_session_lock("../bad") {
+            Ok(_) => panic!("invalid session_id should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("invalid hive session_id"));
     }
 }
