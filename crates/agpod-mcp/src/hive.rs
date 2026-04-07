@@ -222,11 +222,13 @@ struct HiveRunState {
     output_path: String,
     prompt_path: String,
     result_path: String,
+    window_name: Option<String>,
     window_id: Option<String>,
     pane_id: Option<String>,
     started_at_ms: u64,
     finished_at_ms: Option<u64>,
     exit_code: Option<i32>,
+    termination_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -265,6 +267,7 @@ struct HiveRuntime {
 #[derive(Debug, Clone)]
 struct SessionPaneInfo {
     window_id: String,
+    window_name: String,
     pane_id: String,
 }
 
@@ -556,11 +559,13 @@ fn migrate_legacy_hive_agent_state(legacy: LegacyHiveAgentState) -> HiveAgentSta
                 output_path: String::new(),
                 prompt_path: String::new(),
                 result_path: String::new(),
+                window_name: Some(legacy.worker_name.clone()),
                 window_id: Some(legacy.window_id.clone()),
                 pane_id: Some(legacy.pane_id.clone()),
                 started_at_ms: legacy.last_used_at_ms.unwrap_or(0),
                 finished_at_ms: None,
                 exit_code: None,
+                termination_reason: None,
             }),
         ),
     };
@@ -924,7 +929,30 @@ async fn send_prompt(
         .with_context(|| format!("failed to write prompt file `{}`", prompt_path.display()))
         .map_err(internal_error)?;
 
-    let window_name = sanitize_window_name(&worker_name);
+    let window_name = build_run_window_name(&worker_name, &run_id);
+    let now = now_ms();
+    {
+        let agent = &mut state.agents[agent_index];
+        agent.status = HiveAgentStatus::Running;
+        agent.last_used_at_ms = Some(now);
+        agent.current_run = Some(HiveRunState {
+            run_id: run_id.clone(),
+            prompt_preview: prompt_preview(&prompt),
+            output_path: output_path.display().to_string(),
+            prompt_path: prompt_path.display().to_string(),
+            result_path: result_path.display().to_string(),
+            window_name: Some(window_name.clone()),
+            window_id: None,
+            pane_id: None,
+            started_at_ms: now,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+        });
+    }
+    state.updated_at_ms = now;
+    runtime.save_state(&state).map_err(internal_error)?;
+
     let launch_command = build_claude_exec_command(
         runtime,
         &mode_config,
@@ -934,33 +962,35 @@ async fn send_prompt(
         &result_path,
     )
     .map_err(internal_error)?;
-    let (window_id, pane_id) = tmux_new_window(
+    let (window_id, pane_id) = match tmux_new_window(
         &runtime.session_name,
         &window_name,
         Path::new(&workdir),
         Some(&launch_command),
     )
     .await
-    .map_err(internal_error)?;
+    {
+        Ok(ids) => ids,
+        Err(err) => {
+            let agent = &mut state.agents[agent_index];
+            if let Some(run) = agent.current_run.as_mut() {
+                finalize_run(run, Some("launch_failed"));
+            }
+            agent.last_run = agent.current_run.take();
+            agent.status = HiveAgentStatus::Idle;
+            agent.last_used_at_ms = Some(now_ms());
+            state.updated_at_ms = now_ms();
+            let _ = runtime.save_state(&state);
+            return Err(internal_error(err));
+        }
+    };
 
-    let now = now_ms();
     let agent = &mut state.agents[agent_index];
-    agent.status = HiveAgentStatus::Running;
-    agent.last_used_at_ms = Some(now);
-    agent.current_run = Some(HiveRunState {
-        run_id,
-        prompt_preview: prompt_preview(&prompt),
-        output_path: output_path.display().to_string(),
-        prompt_path: prompt_path.display().to_string(),
-        result_path: result_path.display().to_string(),
-        window_id: Some(window_id),
-        pane_id: Some(pane_id),
-        started_at_ms: now,
-        finished_at_ms: None,
-        exit_code: None,
-    });
-
-    state.updated_at_ms = now;
+    if let Some(run) = agent.current_run.as_mut() {
+        run.window_id = Some(window_id);
+        run.pane_id = Some(pane_id);
+    }
+    state.updated_at_ms = now_ms();
     runtime.save_state(&state).map_err(internal_error)?;
     let agent = state
         .agents
@@ -1014,10 +1044,10 @@ async fn close_agent(
     }
 
     let agent = &mut state.agents[agent_index];
-    if let Some(run) = agent.current_run.as_mut() {
-        run.finished_at_ms = Some(now_ms());
-    }
     if agent.current_run.is_some() {
+        if let Some(run) = agent.current_run.as_mut() {
+            finalize_run(run, Some("killed_by_hive"));
+        }
         agent.last_run = agent.current_run.take();
     }
     agent.status = HiveAgentStatus::Closed;
@@ -1058,10 +1088,10 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
 
     for agent in &mut state.agents {
         agent.status = HiveAgentStatus::Closed;
-        if let Some(run) = agent.current_run.as_mut() {
-            run.finished_at_ms = Some(now_ms());
-        }
         if agent.current_run.is_some() {
+            if let Some(run) = agent.current_run.as_mut() {
+                finalize_run(run, Some("killed_by_hive"));
+            }
             agent.last_run = agent.current_run.take();
         }
     }
@@ -1242,6 +1272,13 @@ async fn sync_state_with_tmux(runtime: &HiveRuntime, state: &mut HiveSessionStat
         .into_iter()
         .map(|pane| (pane.pane_id.clone(), pane))
         .collect();
+    let mut window_name_map: BTreeMap<String, Vec<SessionPaneInfo>> = BTreeMap::new();
+    for pane in pane_map.values() {
+        window_name_map
+            .entry(pane.window_name.clone())
+            .or_default()
+            .push(pane.clone());
+    }
 
     for agent in &mut state.agents {
         if agent.status == HiveAgentStatus::Closed {
@@ -1249,17 +1286,13 @@ async fn sync_state_with_tmux(runtime: &HiveRuntime, state: &mut HiveSessionStat
         }
         let mut completed = false;
         if let Some(run) = agent.current_run.as_mut() {
-            if let Some(pane_id) = run.pane_id.as_deref() {
-                if let Some(pane) = pane_map.get(pane_id) {
-                    run.window_id = Some(pane.window_id.clone());
-                    run.pane_id = Some(pane.pane_id.clone());
-                    agent.status = HiveAgentStatus::Running;
-                } else {
-                    hydrate_run_result(run);
-                    completed = true;
-                }
+            if let Some(pane) = match_run_pane(run, &pane_map, &window_name_map) {
+                run.window_name = Some(pane.window_name.clone());
+                run.window_id = Some(pane.window_id.clone());
+                run.pane_id = Some(pane.pane_id.clone());
+                agent.status = HiveAgentStatus::Running;
             } else {
-                hydrate_run_result(run);
+                finalize_run(run, Some("pane_missing_without_result"));
                 completed = true;
             }
         }
@@ -1271,17 +1304,23 @@ async fn sync_state_with_tmux(runtime: &HiveRuntime, state: &mut HiveSessionStat
     Ok(())
 }
 
-fn hydrate_run_result(run: &mut HiveRunState) {
+fn finalize_run(run: &mut HiveRunState, fallback_reason: Option<&str>) {
     let result_path = Path::new(&run.result_path);
+    let mut loaded = false;
     if let Ok(raw) = fs::read_to_string(result_path) {
         if let Ok(result) = serde_json::from_str::<HiveRunResultFile>(&raw) {
             run.exit_code = Some(result.exit_code);
             run.started_at_ms = result.started_at_ms;
             run.finished_at_ms = Some(result.finished_at_ms);
+            run.termination_reason = None;
+            loaded = true;
         }
     }
     if run.finished_at_ms.is_none() {
         run.finished_at_ms = Some(now_ms());
+    }
+    if !loaded && run.termination_reason.is_none() {
+        run.termination_reason = fallback_reason.map(ToOwned::to_owned);
     }
     run.window_id = None;
     run.pane_id = None;
@@ -1327,6 +1366,13 @@ fn sanitize_window_name(name: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn build_run_window_name(worker_name: &str, run_id: &str) -> String {
+    let base = sanitize_window_name(worker_name);
+    let suffix = run_id.strip_prefix("run-").unwrap_or(run_id);
+    let short: String = suffix.chars().take(8).collect();
+    sanitize_window_name(&format!("{base}-{short}"))
 }
 
 fn now_ms() -> u64 {
@@ -1407,13 +1453,34 @@ fn run_json(run: &HiveRunState) -> Value {
         "output_path": run.output_path,
         "prompt_path": run.prompt_path,
         "result_path": run.result_path,
+        "window_name": run.window_name,
         "window_id": run.window_id,
         "pane_id": run.pane_id,
         "started_at_ms": run.started_at_ms,
         "finished_at_ms": run.finished_at_ms,
         "exit_code": run.exit_code,
+        "termination_reason": run.termination_reason,
         "output_excerpt": read_output_excerpt(&run.output_path),
     })
+}
+
+fn match_run_pane<'a>(
+    run: &HiveRunState,
+    pane_map: &'a BTreeMap<String, SessionPaneInfo>,
+    window_name_map: &'a BTreeMap<String, Vec<SessionPaneInfo>>,
+) -> Option<&'a SessionPaneInfo> {
+    if let Some(pane_id) = run.pane_id.as_deref() {
+        if let Some(pane) = pane_map.get(pane_id) {
+            return Some(pane);
+        }
+    }
+    let window_name = run.window_name.as_deref()?;
+    let matches = window_name_map.get(window_name)?;
+    if matches.len() == 1 {
+        matches.first()
+    } else {
+        None
+    }
 }
 
 fn read_output_excerpt(path: &str) -> Option<String> {
@@ -1585,13 +1652,14 @@ async fn tmux_list_session_panes(session_name: &str) -> Result<Vec<SessionPaneIn
             continue;
         }
         let window_id = parts.next().unwrap_or_default();
-        let _window_name = parts.next().unwrap_or_default();
+        let window_name = parts.next().unwrap_or_default();
         let pane_id = parts.next().unwrap_or_default();
         if pane_id.is_empty() {
             continue;
         }
         panes.push(SessionPaneInfo {
             window_id: window_id.to_string(),
+            window_name: window_name.to_string(),
             pane_id: pane_id.to_string(),
         });
     }
@@ -1922,11 +1990,13 @@ mod tests {
                         output_path: "/tmp/output".to_string(),
                         prompt_path: "/tmp/prompt".to_string(),
                         result_path: "/tmp/result".to_string(),
+                        window_name: Some("busy-run-1".to_string()),
                         window_id: Some("@1".to_string()),
                         pane_id: Some("%12".to_string()),
                         started_at_ms: 2,
                         finished_at_ms: None,
                         exit_code: None,
+                        termination_reason: None,
                     }),
                     last_run: None,
                     last_used_at_ms: Some(2),
@@ -2175,5 +2245,102 @@ mod tests {
         assert_eq!(agent.mode, "readonly");
         assert_eq!(agent.status, HiveAgentStatus::Running);
         assert!(agent.current_run.is_some());
+        assert_eq!(
+            agent
+                .current_run
+                .as_ref()
+                .and_then(|run| run.window_name.as_deref()),
+            Some("legacy")
+        );
+    }
+
+    #[test]
+    fn finalize_run_marks_fallback_reason_when_result_missing() {
+        let mut run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            output_path: "/tmp/output".to_string(),
+            prompt_path: "/tmp/prompt".to_string(),
+            result_path: "/tmp/missing-result".to_string(),
+            window_name: Some("worker-1234".to_string()),
+            window_id: Some("@1".to_string()),
+            pane_id: Some("%1".to_string()),
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+        };
+
+        finalize_run(&mut run, Some("killed_by_hive"));
+        assert_eq!(run.exit_code, None);
+        assert_eq!(run.termination_reason.as_deref(), Some("killed_by_hive"));
+        assert!(run.finished_at_ms.is_some());
+        assert_eq!(run.window_id, None);
+        assert_eq!(run.pane_id, None);
+    }
+
+    #[test]
+    fn finalize_run_prefers_result_file_over_fallback_reason() {
+        let temp = tempdir().expect("temp dir");
+        let result_path = temp.path().join("result.json");
+        fs::write(
+            &result_path,
+            serde_json::json!({
+                "exit_code": 7,
+                "started_at_ms": 11,
+                "finished_at_ms": 22
+            })
+            .to_string(),
+        )
+        .expect("write result");
+
+        let mut run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            output_path: "/tmp/output".to_string(),
+            prompt_path: "/tmp/prompt".to_string(),
+            result_path: result_path.display().to_string(),
+            window_name: Some("worker-1234".to_string()),
+            window_id: Some("@1".to_string()),
+            pane_id: Some("%1".to_string()),
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+        };
+
+        finalize_run(&mut run, Some("killed_by_hive"));
+        assert_eq!(run.exit_code, Some(7));
+        assert_eq!(run.started_at_ms, 11);
+        assert_eq!(run.finished_at_ms, Some(22));
+        assert_eq!(run.termination_reason, None);
+    }
+
+    #[test]
+    fn match_run_pane_recovers_from_window_name_when_pane_id_missing() {
+        let pane = SessionPaneInfo {
+            window_id: "@3".to_string(),
+            window_name: "worker-abc12345".to_string(),
+            pane_id: "%9".to_string(),
+        };
+        let pane_map = BTreeMap::from([(pane.pane_id.clone(), pane.clone())]);
+        let window_name_map = BTreeMap::from([(pane.window_name.clone(), vec![pane.clone()])]);
+        let run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            output_path: "/tmp/output".to_string(),
+            prompt_path: "/tmp/prompt".to_string(),
+            result_path: "/tmp/result".to_string(),
+            window_name: Some("worker-abc12345".to_string()),
+            window_id: None,
+            pane_id: None,
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+        };
+
+        let matched = match_run_pane(&run, &pane_map, &window_name_map).expect("matched pane");
+        assert_eq!(matched.pane_id, "%9");
     }
 }

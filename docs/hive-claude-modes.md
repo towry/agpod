@@ -75,3 +75,10 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 - `result.json`
 
 母 agent 可借 `list_agents` 读其路径与输出摘要，以察“正在做何事”“已运行至何处”。
+
+`list_agents` 中之 `current_run` / `last_run`，今另含：
+
+- `window_name`：本次 run 之 tmux window 名
+- `termination_reason`：若 run 非正常写出 `result.json` 而结束，则记终止缘由；如 `killed_by_hive`、`launch_failed`
+
+`send_prompt` 今先落盘 run 状态，再起 tmux window；若起窗失败，run 会转入 `last_run`，并写 `termination_reason="launch_failed"`。
