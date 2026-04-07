@@ -7,6 +7,8 @@
 - 对外仅二 mode：`readonly`、`full`
 - agent 若不知本机配置，可先调 `hive(action="mode_info")`
 - `spawn_agent` 与 `send_prompt` 若所需 mode 未配，径失败，不猜默认值
+- `spawn_agent` 只注册 worker，不预建 tmux session/window
+- `send_prompt` 方懒创建或复用 pane 派生之 tmux session，并起实窗运行
 - mode 中 `settings`、`mcp_config` 若以 `~` 起首，运行时自动展为家目录
 
 ## 配置位置

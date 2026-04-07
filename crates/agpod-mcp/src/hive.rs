@@ -25,7 +25,6 @@ use uuid::Uuid;
 
 const HIVE_VERSION: u32 = 2;
 const HIVE_AGENT_LIMIT: usize = 5;
-const HIVE_BOOTSTRAP_WINDOW: &str = "__HIVE_HOME_EMPTY__";
 const HIVE_LOCK_STALE_MS: u64 = 30_000;
 const OUTPUT_EXCERPT_LIMIT: usize = 1200;
 const SUPPORTED_MODE_NAMES: [&str; 2] = ["readonly", "full"];
@@ -33,7 +32,6 @@ const SUPPORTED_MODE_NAMES: [&str; 2] = ["readonly", "full"];
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HiveActionInput {
-    EnsureSession,
     ModeInfo,
     ListAgents,
     SpawnAgent,
@@ -642,7 +640,6 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
 
     match req.action {
-        HiveActionInput::EnsureSession => ensure_session(&runtime).await,
         HiveActionInput::ModeInfo => mode_info(&runtime, req).await,
         HiveActionInput::ListAgents => list_agents(&runtime).await,
         HiveActionInput::SpawnAgent => spawn_agent(&runtime, req).await,
@@ -650,35 +647,6 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
         HiveActionInput::CloseAgent => close_agent(&runtime, req).await,
         HiveActionInput::CloseSession => close_session(&runtime).await,
     }
-}
-
-async fn ensure_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
-    cleanup_orphaned_hive_sessions(runtime)
-        .await
-        .map_err(internal_error)?;
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
-    let mut state = runtime
-        .load_state()
-        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
-    if !tmux_has_session(&runtime.session_name)
-        .await
-        .map_err(internal_error)?
-    {
-        tmux_new_session(&runtime.session_name, &runtime.repo_root)
-            .await
-            .map_err(internal_error)?;
-    }
-    sync_state_with_tmux(runtime, &mut state)
-        .await
-        .map_err(internal_error)?;
-    state.updated_at_ms = now_ms();
-    runtime.save_state(&state).map_err(internal_error)?;
-    Ok(build_session_response(
-        "ready",
-        "hive session ready",
-        &state,
-        None,
-    ))
 }
 
 async fn mode_info(
@@ -763,18 +731,13 @@ async fn mode_info(
 }
 
 async fn list_agents(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
+    cleanup_orphaned_hive_sessions(runtime)
+        .await
+        .map_err(internal_error)?;
     let _lock = runtime.acquire_lock().map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
-    if !tmux_has_session(&runtime.session_name)
-        .await
-        .map_err(internal_error)?
-    {
-        tmux_new_session(&runtime.session_name, &runtime.repo_root)
-            .await
-            .map_err(internal_error)?;
-    }
     sync_state_with_tmux(runtime, &mut state)
         .await
         .map_err(internal_error)?;
@@ -792,18 +755,13 @@ async fn spawn_agent(
     runtime: &HiveRuntime,
     req: HiveRequest,
 ) -> Result<Map<String, Value>, ErrorData> {
+    cleanup_orphaned_hive_sessions(runtime)
+        .await
+        .map_err(internal_error)?;
     let _lock = runtime.acquire_lock().map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
-    if !tmux_has_session(&runtime.session_name)
-        .await
-        .map_err(internal_error)?
-    {
-        tmux_new_session(&runtime.session_name, &runtime.repo_root)
-            .await
-            .map_err(internal_error)?;
-    }
     sync_state_with_tmux(runtime, &mut state)
         .await
         .map_err(internal_error)?;
@@ -857,7 +815,7 @@ async fn spawn_agent(
     runtime.save_state(&state).map_err(internal_error)?;
     Ok(build_session_response(
         "spawned",
-        "hive agent spawned",
+        "hive agent registered",
         &state,
         Some(&agent),
     ))
@@ -874,6 +832,9 @@ async fn send_prompt(
         ErrorData::invalid_params("`prompt` is required for action=`send_prompt`", None)
     })?;
 
+    cleanup_orphaned_hive_sessions(runtime)
+        .await
+        .map_err(internal_error)?;
     let _lock = runtime.acquire_lock().map_err(internal_error)?;
     let mut state = runtime
         .load_state()
@@ -881,6 +842,14 @@ async fn send_prompt(
     sync_state_with_tmux(runtime, &mut state)
         .await
         .map_err(internal_error)?;
+    if !tmux_has_session(&runtime.session_name)
+        .await
+        .map_err(internal_error)?
+    {
+        tmux_new_session(&runtime.session_name, &runtime.repo_root)
+            .await
+            .map_err(internal_error)?;
+    }
 
     let agent_index = state
         .agents
@@ -1399,6 +1368,7 @@ fn build_session_response(
         .filter(|agent| agent.status == HiveAgentStatus::Idle)
         .map(|agent| Value::String(agent.agent_id.clone()))
         .collect();
+    let session_state = derive_session_state(state);
 
     let mut raw = Map::new();
     raw.insert("ok".to_string(), Value::Bool(true));
@@ -1411,7 +1381,7 @@ fn build_session_response(
             "name": state.session_name,
             "queen_pane_id": state.queen_pane_id,
             "agent_limit": state.agent_limit,
-            "state": "ready"
+            "state": session_state
         }),
     );
     raw.insert("agents".to_string(), Value::Array(agents));
@@ -1420,6 +1390,20 @@ fn build_session_response(
         raw.insert("agent".to_string(), agent_json(agent));
     }
     raw
+}
+
+fn derive_session_state(state: &HiveSessionState) -> &'static str {
+    if state.agents.iter().any(|agent| agent.status == HiveAgentStatus::Running) {
+        "running"
+    } else if state
+        .agents
+        .iter()
+        .any(|agent| agent.status != HiveAgentStatus::Closed)
+    {
+        "registered"
+    } else {
+        "empty"
+    }
 }
 
 fn build_error_response(
@@ -1554,8 +1538,6 @@ async fn tmux_new_session(session_name: &str, workdir: &Path) -> Result<()> {
         .arg("-d")
         .arg("-s")
         .arg(session_name)
-        .arg("-n")
-        .arg(HIVE_BOOTSTRAP_WINDOW)
         .arg("-c")
         .arg(workdir)
         .status()
@@ -2010,6 +1992,12 @@ mod tests {
             .and_then(Value::as_array)
             .expect("reusable agents should be array");
         assert_eq!(reusable, &vec![Value::String("agent-01".to_string())]);
+        assert_eq!(
+            raw.get("session")
+                .and_then(|session| session.get("state"))
+                .and_then(Value::as_str),
+            Some("running")
+        );
     }
 
     #[test]
