@@ -17,6 +17,10 @@
 
 ```toml
 # ~/.config/agpod/config.toml
+[mcp.hive.claude.env_set]
+ANTHROPIC_BASE_URL = "https://example.invalid"
+ANTHROPIC_AUTH_TOKEN = "token"
+
 [mcp.hive.claude.modes.readonly]
 description = "只读 Claude worker；适合查阅、总结、分析。"
 command = "claude"
@@ -58,7 +62,15 @@ system_prompt_file = "~/.config/agpod/prompts/readonly.md"
 - `mcp_config`：该 mode 所用 MCP 配置
 - `system_prompt`：内联 system prompt 文本；与 `system_prompt_file` 互斥
 - `system_prompt_file`：system prompt 文件路径，支持 `~` 展开；与 `system_prompt` 互斥
+- `env_set`：顶层共享环境变量；对子进程统一注入
 - `env`：附加环境变量
+
+环境合并次序：
+
+- 先继承 `agpod-mcp` 父进程环境（含 `PATH`）
+- 起 worker 时，先经用户登录 shell 启动，再 `exec bash launcher.sh`
+- 再应用 `[mcp.hive.claude.env_set]`
+- 末了应用 mode 内 `env`
 
 ## System Prompt 交付
 
@@ -75,11 +87,10 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 `hive(action="mode_info")` 返回：
 
 - 支持之 mode 名
+- 已配置之 mode 摘要
 - 所选 mode 是否已配
-- 所需配置节路径
-- 已配置字段摘要
-- mode 描述
-- 最小示例
+- mode 描述与是否带 system prompt
+- 不回配置路径、环境变量名或其他敏感细节
 
 ## `probe_mode`
 

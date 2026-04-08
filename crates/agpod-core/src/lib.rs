@@ -213,6 +213,9 @@ pub struct McpHiveConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpHiveClaudeConfig {
     #[serde(default)]
+    pub env_set: BTreeMap<String, String>,
+
+    #[serde(default)]
     pub modes: BTreeMap<String, McpHiveClaudeModeConfig>,
 }
 
@@ -480,6 +483,7 @@ large_file_changes_threshold = 200
 server_addr = "127.0.0.1:6142"
 
 [mcp.hive.claude]
+env_set = { ANTHROPIC_BASE_URL = "https://example.invalid", ANTHROPIC_AUTH_TOKEN = "token" }
 [mcp.hive.claude.modes.readonly]
 description = "只读 Claude worker；适合查阅、总结、分析。"
 command = "claw"
@@ -509,6 +513,17 @@ system_prompt = "You are a full-access coding assistant."
         let mcp = config.mcp.unwrap();
         let hive = mcp.hive.unwrap();
         let claude = hive.claude.unwrap();
+        assert_eq!(
+            claude.env_set.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://example.invalid")
+        );
+        assert_eq!(
+            claude
+                .env_set
+                .get("ANTHROPIC_AUTH_TOKEN")
+                .map(String::as_str),
+            Some("token")
+        );
         let readonly = claude.modes.get("readonly").expect("readonly mode");
         assert_eq!(
             readonly.description.as_deref(),

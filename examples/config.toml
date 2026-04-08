@@ -29,6 +29,12 @@ sync_enabled = true
 # api_key = "honcho_secret"
 # api_key_env = "HONCHO_API_KEY"
 
+[mcp.hive.claude.env_set]
+# Shared environment variables applied to all hive Claude modes.
+# PATH is inherited from the agpod-mcp parent process; add only explicit overrides here.
+# ANTHROPIC_BASE_URL = "https://example.invalid"
+# ANTHROPIC_AUTH_TOKEN = "token"
+
 [mcp.hive.claude.modes.readonly]
 description = "Read-only Claude worker for analysis and review."
 command = "claude"

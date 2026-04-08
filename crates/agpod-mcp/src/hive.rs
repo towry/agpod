@@ -14,6 +14,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
@@ -454,6 +455,12 @@ impl HiveRuntime {
             .and_then(|hive| hive.claude.as_ref())
     }
 
+    fn shared_env_set(&self) -> BTreeMap<String, String> {
+        self.claude_config()
+            .map(|cfg| cfg.env_set.clone())
+            .unwrap_or_default()
+    }
+
     fn resolve_mode_name(&self, requested: Option<&str>) -> String {
         requested
             .map(str::trim)
@@ -481,6 +488,7 @@ impl HiveRuntime {
                     None,
                 )
             })?;
+        validate_env_keys("[mcp.hive.claude.env_set]", &self.shared_env_set())?;
         validate_mode_config(mode_name, &config)?;
         Ok(config)
     }
@@ -638,6 +646,7 @@ async fn probe_mode(
 ) -> Result<Map<String, Value>, ErrorData> {
     let selected = runtime.resolve_mode_name(req.mode.as_deref());
     let config = runtime.resolve_mode_config(&selected)?;
+    let shared_env_set = runtime.shared_env_set();
     let command = config
         .command
         .clone()
@@ -715,6 +724,7 @@ async fn probe_mode(
             "mcp_config": mcp_config,
             "system_prompt_configured": system_prompt_configured,
             "system_prompt_delivery": system_prompt_delivery,
+            "shared_env_keys": shared_env_set.keys().cloned().collect::<Vec<_>>(),
             "env_keys": config.env.keys().cloned().collect::<Vec<_>>(),
             "runtime_dependencies": runtime_dependencies,
             "expected_result_fields": ["provider", "exit_code", "started_at_ms", "finished_at_ms"],
@@ -816,6 +826,24 @@ async fn mode_info(
         .claude_config()
         .and_then(|cfg| cfg.modes.get(selected))
         .cloned();
+    let available_modes = runtime
+        .claude_config()
+        .map(|cfg| {
+            SUPPORTED_MODE_NAMES
+                .iter()
+                .filter_map(|mode_name| {
+                    cfg.modes.get(*mode_name).map(|mode| {
+                        serde_json::json!({
+                            "name": mode_name,
+                            "configured": true,
+                            "description": mode.description.clone(),
+                            "has_system_prompt": mode.system_prompt.is_some() || mode.system_prompt_file.is_some(),
+                        })
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let configured = config.is_some();
     let mode_config = config.as_ref();
     let mut raw = Map::new();
@@ -837,47 +865,19 @@ async fn mode_info(
             "selected_mode": selected,
             "supported_modes": SUPPORTED_MODE_NAMES,
             "configured": configured,
-            "config_path": format!("[mcp.hive.claude.modes.{selected}]"),
             "default_mode_behavior": "hive defaults to `readonly` when `mode` is omitted",
-            "fields": ["description", "command", "args", "settings", "mcp_config", "system_prompt", "system_prompt_file", "env"],
+            "available_modes": available_modes,
             "notes": [
                 "Only `readonly` and `full` are valid public mode names.",
-                "Configured `settings`, `mcp_config`, and `system_prompt_file` paths may begin with `~`; hive expands them to the current user home directory before launch.",
                 "If a mode is missing, `spawn_agent` and `send_prompt` fail fast instead of guessing defaults.",
                 "`send_prompt` supports `resume=true`, but only when the agent already has a saved Claude conversation session id.",
-                "`system_prompt` and `system_prompt_file` are mutually exclusive; setting both is a config error.",
-                "System prompt delivery depends on provider capabilities: the provider capability layer adapts between inline text and file-based delivery automatically."
+                "Workers inherit the parent environment, including PATH.",
+                "This response intentionally hides config paths, environment variables, and other sensitive configuration details."
             ],
             "configured_values": mode_config.map(|cfg| serde_json::json!({
                 "description": cfg.description.clone(),
-                "command": cfg.command.clone(),
-                "args": cfg.args.clone(),
-                "settings": cfg.settings.clone(),
-                "mcp_config": cfg.mcp_config.clone(),
-                "system_prompt": cfg.system_prompt.as_ref().map(|s| prompt_preview(s)),
-                "system_prompt_file": cfg.system_prompt_file.clone(),
-                "env_keys": cfg.env.keys().cloned().collect::<Vec<_>>(),
-            })),
-            "example": {
-                "readonly": {
-                    "description": "Read-only Claude worker for inspection, summarization, and analysis.",
-                    "command": "claude",
-                    "args": ["--dangerously-skip-permissions"],
-                    "settings": "~/.claude/settings.json",
-                    "mcp_config": "~/.claude/generated/mcp-readonly.json",
-                    "system_prompt_file": "~/.config/agpod/prompts/readonly.md",
-                    "env": { "MAX_MCP_OUTPUT_TOKENS": "12000" }
-                },
-                "full": {
-                    "description": "Full-access Claude worker for implementation and editing tasks.",
-                    "command": "claude",
-                    "args": [],
-                    "settings": "~/.claude/settings.json",
-                    "mcp_config": "~/.mcp.json",
-                    "system_prompt": "You are a full-access coding assistant.",
-                    "env": {}
-                }
-            }
+                "has_system_prompt": cfg.system_prompt.is_some() || cfg.system_prompt_file.is_some(),
+            }))
         }),
     );
     Ok(raw)
@@ -1028,11 +1028,14 @@ async fn send_prompt(
     }
 
     let mode_config = runtime.resolve_mode_config(&mode)?;
+    let shared_env_set = runtime.shared_env_set();
     let provider_command = mode_config
         .command
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("claude");
+    let login_shell = default_login_shell();
+    ensure_binary_available(&login_shell).map_err(internal_error)?;
     ensure_binary_available("bash").map_err(internal_error)?;
     ensure_binary_available("python3").map_err(internal_error)?;
     ensure_binary_available(provider_command).map_err(internal_error)?;
@@ -1082,6 +1085,7 @@ async fn send_prompt(
 
     let launch_command = build_claude_exec_command(
         runtime,
+        &shared_env_set,
         &mode_config,
         Path::new(&workdir),
         &prompt_path,
@@ -1108,7 +1112,9 @@ async fn send_prompt(
         })?;
 
     let process_pid =
-        match spawn_hive_run_process(Path::new(&workdir), &launcher_path, &run_id).await {
+        match spawn_hive_run_process(Path::new(&workdir), &launcher_path, &run_id, &login_shell)
+            .await
+        {
             Ok(pid) => pid,
             Err(err) => {
                 rollback_launch_failure(runtime, &mut state, agent_index, "launch_failed");
@@ -1641,7 +1647,12 @@ fn validate_mode_config(
             None,
         ));
     }
-    for key in config.env.keys() {
+    validate_env_keys(&format!("hive mode `{mode_name}`"), &config.env)?;
+    Ok(())
+}
+
+fn validate_env_keys(scope: &str, env_map: &BTreeMap<String, String>) -> Result<(), ErrorData> {
+    for key in env_map.keys() {
         let first = key.chars().next();
         if first.is_none()
             || first.is_some_and(|ch| ch.is_ascii_digit())
@@ -1650,7 +1661,9 @@ fn validate_mode_config(
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         {
             return Err(ErrorData::invalid_params(
-                format!("hive mode `{mode_name}` has invalid env key `{key}`; env keys must start with a letter or `_`"),
+                format!(
+                    "{scope} has invalid env key `{key}`; env keys must start with a letter or `_`"
+                ),
                 None,
             ));
         }
@@ -1661,6 +1674,7 @@ fn validate_mode_config(
 #[allow(clippy::too_many_arguments)]
 fn build_claude_exec_command(
     runtime: &HiveRuntime,
+    shared_env_set: &BTreeMap<String, String>,
     mode_config: &McpHiveClaudeModeConfig,
     workdir: &Path,
     prompt_path: &Path,
@@ -1729,6 +1743,13 @@ fn build_claude_exec_command(
         "mkdir -p {}\n",
         shell_escape(&runtime.session_dir().display().to_string())
     ));
+    for (key, value) in shared_env_set {
+        script.push_str(&format!(
+            "export {}={}\n",
+            shell_var_name(key)?,
+            shell_escape(value)
+        ));
+    }
     for (key, value) in &mode_config.env {
         script.push_str(&format!(
             "export {}={}\n",
@@ -1764,11 +1785,15 @@ fn build_claude_exec_command(
     Ok(script)
 }
 
-async fn spawn_hive_run_process(workdir: &Path, launcher_path: &Path, run_id: &str) -> Result<u32> {
-    let mut command = Command::new("bash");
+async fn spawn_hive_run_process(
+    workdir: &Path,
+    launcher_path: &Path,
+    run_id: &str,
+    login_shell: &str,
+) -> Result<u32> {
+    let mut command = Command::new(login_shell);
     command
-        .arg(launcher_path)
-        .arg(hive_run_marker(run_id))
+        .args(login_shell_command_args(login_shell, launcher_path, run_id))
         .current_dir(workdir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1783,13 +1808,37 @@ async fn spawn_hive_run_process(workdir: &Path, launcher_path: &Path, run_id: &s
     }
     let child = command.spawn().with_context(|| {
         format!(
-            "failed to spawn hive launcher `{}`",
+            "failed to spawn hive launcher `{}` via login shell `{login_shell}`",
             launcher_path.display()
         )
     })?;
     child
         .id()
         .ok_or_else(|| anyhow!("failed to read spawned process pid"))
+}
+
+fn default_login_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "bash".to_string())
+}
+
+fn login_shell_command_args(login_shell: &str, launcher_path: &Path, run_id: &str) -> Vec<String> {
+    let command = format!(
+        "exec bash {} {}",
+        shell_escape(&launcher_path.display().to_string()),
+        shell_escape(&hive_run_marker(run_id))
+    );
+    match Path::new(login_shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(login_shell)
+    {
+        "fish" => vec!["-l".to_string(), "-c".to_string(), command],
+        _ => vec!["-lc".to_string(), command],
+    }
 }
 
 async fn process_is_alive(pid: u32) -> Result<bool> {
@@ -1985,6 +2034,7 @@ fn shell_escape(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::hive_provider::HiveProviderOutputFormat;
+    use std::collections::BTreeMap;
     use std::process::Command as StdCommand;
     use tempfile::tempdir;
 
@@ -2005,6 +2055,57 @@ mod tests {
         let second = derive_session_id(repo);
         assert_eq!(first, second);
         assert!(first.starts_with("hive-repo-"));
+    }
+
+    #[tokio::test]
+    async fn mode_info_hides_sensitive_configuration_details() {
+        let temp = tempdir().expect("temp dir");
+        let mut runtime = sample_runtime(&temp);
+        let mut readonly = McpHiveClaudeModeConfig {
+            description: Some("Read-only worker".to_string()),
+            command: Some("claude".to_string()),
+            settings: Some("~/.claude/settings.json".to_string()),
+            mcp_config: Some("~/.claude/generated/mcp-readonly.json".to_string()),
+            ..Default::default()
+        };
+        readonly
+            .env
+            .insert("MAX_MCP_OUTPUT_TOKENS".to_string(), "12000".to_string());
+        runtime.config.mcp = Some(agpod_core::McpConfig {
+            hive: Some(agpod_core::McpHiveConfig {
+                claude: Some(McpHiveClaudeConfig {
+                    env_set: BTreeMap::from([(
+                        "ANTHROPIC_AUTH_TOKEN".to_string(),
+                        "secret".to_string(),
+                    )]),
+                    modes: BTreeMap::from([("readonly".to_string(), readonly)]),
+                }),
+            }),
+        });
+
+        let raw = mode_info(
+            &runtime,
+            HiveRequest {
+                action: HiveActionInput::ModeInfo,
+                session_id: None,
+                agent_id: None,
+                mode: Some("readonly".to_string()),
+                worker_name: None,
+                workdir: None,
+                prompt: None,
+                resume: None,
+            },
+        )
+        .await
+        .expect("mode_info should succeed");
+
+        let text = serde_json::to_string(&raw).expect("serialize mode_info");
+        assert!(text.contains("available_modes"));
+        assert!(!text.contains("settings"));
+        assert!(!text.contains("mcp_config"));
+        assert!(!text.contains("env_keys"));
+        assert!(!text.contains("config_path"));
+        assert!(!text.contains("ANTHROPIC_AUTH_TOKEN"));
     }
 
     #[test]
@@ -2477,6 +2578,7 @@ mod tests {
         };
         let script = build_claude_exec_command(
             &runtime,
+            &BTreeMap::new(),
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/prompt.txt"),
@@ -2506,6 +2608,7 @@ mod tests {
         };
         let script = build_claude_exec_command(
             &runtime,
+            &BTreeMap::new(),
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/prompt.txt"),
@@ -2537,6 +2640,7 @@ mod tests {
         };
         let script = build_claude_exec_command(
             &runtime,
+            &BTreeMap::new(),
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/prompt.txt"),
@@ -2550,6 +2654,56 @@ mod tests {
 
         assert!(script.contains("--system-prompt-file"));
         assert!(script.contains(&prompt_file.display().to_string()));
+    }
+
+    #[test]
+    fn validate_env_keys_rejects_shared_env_key_with_dash() {
+        let mut env_set = BTreeMap::new();
+        env_set.insert("BAD-KEY".to_string(), "x".to_string());
+        let err = validate_env_keys("[mcp.hive.claude.env_set]", &env_set)
+            .expect_err("invalid env key should fail");
+        assert!(err.message.contains("invalid env key"));
+    }
+
+    #[test]
+    fn build_claude_exec_command_exports_shared_env_set_before_mode_env() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let run_dir = temp.path().join("run");
+        fs::create_dir_all(&run_dir).expect("run dir");
+        let mut shared_env_set = BTreeMap::new();
+        shared_env_set.insert(
+            "ANTHROPIC_AUTH_TOKEN".to_string(),
+            "shared-token".to_string(),
+        );
+        let mut mode_env = BTreeMap::new();
+        mode_env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), "mode-token".to_string());
+        let cfg = McpHiveClaudeModeConfig {
+            command: Some("claude".to_string()),
+            env: mode_env,
+            ..Default::default()
+        };
+        let script = build_claude_exec_command(
+            &runtime,
+            &shared_env_set,
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/prompt.txt"),
+            Path::new("/tmp/output.log"),
+            Path::new("/tmp/result.json"),
+            &run_dir,
+            None,
+            false,
+        )
+        .expect("script should build");
+
+        let shared_pos = script
+            .find("export ANTHROPIC_AUTH_TOKEN='shared-token'")
+            .expect("shared export should exist");
+        let mode_pos = script
+            .rfind("export ANTHROPIC_AUTH_TOKEN='mode-token'")
+            .expect("mode export should exist");
+        assert!(shared_pos < mode_pos);
     }
 
     #[test]
@@ -2631,6 +2785,33 @@ mod tests {
             "bash /tmp/hive run/launcher.sh.old",
             "/tmp/hive run/launcher.sh"
         ));
+    }
+
+    #[test]
+    fn login_shell_command_args_use_login_mode_for_bash_like_shells() {
+        let args = login_shell_command_args(
+            "/bin/bash",
+            Path::new("/tmp/hive run/launcher.sh"),
+            "run-123",
+        );
+        assert_eq!(args[0], "-lc");
+        assert!(args[1].contains("exec bash"));
+        assert!(args[1].contains("/tmp/hive run/launcher.sh"));
+        assert!(args[1].contains("--agpod-hive-run=run-123"));
+    }
+
+    #[test]
+    fn login_shell_command_args_use_login_mode_for_fish() {
+        let args = login_shell_command_args(
+            "/opt/homebrew/bin/fish",
+            Path::new("/tmp/hive run/launcher.sh"),
+            "run-456",
+        );
+        assert_eq!(args[0], "-l");
+        assert_eq!(args[1], "-c");
+        assert!(args[2].contains("exec bash"));
+        assert!(args[2].contains("/tmp/hive run/launcher.sh"));
+        assert!(args[2].contains("--agpod-hive-run=run-456"));
     }
 
     #[test]
