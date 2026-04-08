@@ -22,6 +22,7 @@ Source local env: `source .env.sh && <cmd>`
 - For MCP smoke on local build output: run `target/debug/agpod-mcp` and verify `case_current` / `case_open` over stdio; if you need example command patterns, see `.agents/docs/feedback.md`
 - For MCP stdio debugging: keep stdin open and send one JSON-RPC per line in order `initialize` -> `notifications/initialized` -> `tools/list` -> `tools/call`; a working local smoke is `cd <repo> && AGPOD_CASE_DATA_DIR=/tmp/agpod-case-smoke-stdio.db python3 - <<'PY'` then spawn `target/debug/agpod-mcp`, write JSON lines, and read line responses
 - For MCP stdio call shape: `tools/call` uses `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"case_current","arguments":{}}}`; local smoke should return structured `isError: true` with message `no open case in this repository` on an empty temp DB
+- When the user asks for smoke testing of MCP behavior, prefer exercising the server through the live in-session MCP tools themselves: use `case_*` tools for case flows and `hive` for hive flows, and verify tool-call results directly instead of only checking CLI wiring. Use CLI/stdin smoke only when the current session cannot call the needed MCP tool directly.
 
 ## Workspace Structure
 

@@ -351,7 +351,10 @@ mod tests {
         let args =
             resolve_system_prompt_args(&caps, None, Some(&file.display().to_string()), temp.path())
                 .expect("should ok");
-        assert_eq!(args, vec!["--sys-file", file.display().to_string()]);
+        assert_eq!(
+            args,
+            vec!["--sys-file".to_string(), file.display().to_string()]
+        );
     }
 
     #[test]
@@ -381,7 +384,10 @@ mod tests {
         let args =
             resolve_system_prompt_args(&caps, None, Some(&file.display().to_string()), temp.path())
                 .expect("should ok");
-        assert_eq!(args, vec!["--sp-file", file.display().to_string()]);
+        assert_eq!(
+            args,
+            vec!["--sp-file".to_string(), file.display().to_string()]
+        );
     }
 
     #[test]
