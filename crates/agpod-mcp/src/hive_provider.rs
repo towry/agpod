@@ -135,7 +135,7 @@ fn expand_home(path: &str) -> Result<std::path::PathBuf> {
 // Provider output parsing (existing)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HiveProviderOutput {
     pub provider: String,
     pub format: HiveProviderOutputFormat,

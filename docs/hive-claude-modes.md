@@ -6,8 +6,8 @@
 
 - 对外仅二 mode：`readonly`、`full`
 - agent 若不知本机配置，可先调 `hive(action="mode_info")`
-- `spawn_agent` 仅注册 worker，不预起进程
-- `send_prompt` 始起一条本地 child process
+- `run_hive_agent` 一步建或复用 worker，并起本地 child process
+- 缺省阻塞至子进程完结；若 `async=true`，则即返，后以 `list_agents(agent_id=...)` 取结果
 - `resume` 由 caller 明定；缺已存 Claude session id 而强求 `resume=true`，径失败
 - `settings`、`mcp_config` 若以 `~` 起首，运行时自动展为家目录
 
@@ -106,8 +106,7 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 
 ## 生命周期
 
-- `spawn_agent`：建 worker profile，尚无进程
-- `send_prompt`：写 `prompt.txt`，生成 `launcher.sh`，再起 child process
+- `run_hive_agent`：建或复用 worker，写 `prompt.txt`，生成 `launcher.sh`，再起 child process
 - Claude 运行时，流式输出入 `output.log`
 - 运行止后，`result.json` 记 `provider`、`exit_code`、起止时刻；会话 id 自 `output.log` 解析入统一封装
 - `list_agents` 会依 pid 与 `result.json` 同步状态，并将所得 `provider_session_id` 回写为 agent 之 `conversation_session_id`
@@ -116,14 +115,14 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 
 ## 输出文件
 
-每次 `send_prompt` 皆写：
+每次 `run_hive_agent` 皆写：
 
 - `prompt.txt`
 - `output.log`
 - `result.json`
 - `launcher.sh`
 
-母 agent 可借 `list_agents` 读其路径与输出摘要，以察“正在做何事”“已运行至何处”。
+母 agent 可借 `list_agents(agent_id=...)` 读其路径与输出摘要，以察“正在做何事”“已运行至何处”。
 
 `current_run` / `last_run` 现含：
 
@@ -146,7 +145,7 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 ## Resume 契约
 
 - 默认 `resume=false`
-- 若 `resume=true`，`hive` 必取该 agent 先前保存之 `conversation_session_id`
+- 若 `run_hive_agent` 指定 `resume=true`，`hive` 必取该 agent 先前保存之 `conversation_session_id`
 - 若无已存会话 id，直接报错，不暗中新开
 - 若 `resume=false`，即起新 Claude 会话
 
