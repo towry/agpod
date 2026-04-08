@@ -86,23 +86,10 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 
 `hive(action="mode_info")` 返回：
 
-- 支持之 mode 名
-- 已配置之 mode 摘要
-- 所选 mode 是否已配
-- mode 描述与是否带 system prompt
+- 诸 public mode 之总览，不按入参筛滤
+- 每一 mode 之 `configured`、`description`、`has_system_prompt`
+- 支持之 mode 名与缺省行为
 - 不回配置路径、环境变量名或其他敏感细节
-
-## `probe_mode`
-
-`hive(action="probe_mode")` 不起长任务，只回：
-
-- 所选 mode 将使用之命令、参数、配置路径、system prompt 配置状态与交付方式、环境键
-- `launch_args`：含 `-p --output-format json` 及 `resume` 追加参数之近似实参
-- `runtime_dependencies`：运行前须可见之 binary，如 `bash`、`python3`、provider command
-- prompt 预览
-- 期望之 `result.json` 字段
-- 期望之 `provider_output` 字段
-- 缺失输出时之解析探针样例
 
 ## 生命周期
 

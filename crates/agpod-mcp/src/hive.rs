@@ -4,7 +4,7 @@
 
 use crate::hive_provider::{
     default_claude_provider, parse_provider_output as parse_provider_output_impl, provider_caps,
-    resolve_system_prompt_args, HiveProviderCaps, HiveProviderOutput, SystemPromptSupport,
+    resolve_system_prompt_args, HiveProviderOutput,
 };
 use agpod_core::{Config, McpHiveClaudeConfig, McpHiveClaudeModeConfig};
 use anyhow::{anyhow, Context, Result};
@@ -41,7 +41,6 @@ const FNV1A_PRIME: u32 = 0x0100_0193;
 #[serde(rename_all = "snake_case")]
 pub enum HiveActionInput {
     ModeInfo,
-    ProbeMode,
     ListAgents,
     RunHiveAgent,
     CloseAgent,
@@ -634,7 +633,6 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
 
     match req.action {
         HiveActionInput::ModeInfo => mode_info(&runtime, req).await,
-        HiveActionInput::ProbeMode => probe_mode(&runtime, req).await,
         HiveActionInput::ListAgents => list_agents(&runtime, req).await,
         HiveActionInput::RunHiveAgent => run_hive_agent(&runtime, req).await,
         HiveActionInput::CloseAgent => close_agent(&runtime, req).await,
@@ -642,233 +640,39 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
     }
 }
 
-async fn probe_mode(
-    runtime: &HiveRuntime,
-    req: HiveRequest,
-) -> Result<Map<String, Value>, ErrorData> {
-    let selected = runtime.resolve_mode_name(req.mode.as_deref());
-    let config = runtime.resolve_mode_config(&selected)?;
-    let shared_env_set = runtime.shared_env_set();
-    let command = config
-        .command
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(default_claude_provider);
-    let settings = config
-        .settings
-        .as_deref()
-        .map(expand_home_like)
-        .transpose()
-        .map_err(internal_error)?
-        .map(|path| path.display().to_string());
-    let mcp_config = config
-        .mcp_config
-        .as_deref()
-        .map(expand_home_like)
-        .transpose()
-        .map_err(internal_error)?
-        .map(|path| path.display().to_string());
-    let workdir = resolve_workdir(req.workdir.as_deref(), runtime);
-    let probe_prompt = req
-        .prompt
-        .unwrap_or_else(|| "Return a short JSON object describing current mode.".to_string());
-    let preview = prompt_preview(&probe_prompt);
-    let mut runtime_dependencies = vec!["bash".to_string(), "python3".to_string()];
-    if !runtime_dependencies.iter().any(|value| value == &command) {
-        runtime_dependencies.push(command.clone());
-    }
-    let caps = provider_caps(&command);
-    let (system_prompt_configured, system_prompt_delivery, system_prompt_probe_args) =
-        probe_system_prompt_preview(
-            &caps,
-            config.system_prompt.as_deref(),
-            config.system_prompt_file.as_deref(),
-        );
-
-    let mut launch_args = config.args.clone();
-    if req.resume.unwrap_or(false) {
-        launch_args.push("--resume".to_string());
-        launch_args.push("<saved_session_id_required>".to_string());
-    }
-    if let Some(settings) = settings.as_ref() {
-        launch_args.push("--settings".to_string());
-        launch_args.push(settings.clone());
-    }
-    if let Some(mcp_config) = mcp_config.as_ref() {
-        launch_args.push("--mcp-config".to_string());
-        launch_args.push(mcp_config.clone());
-    }
-    launch_args.extend(system_prompt_probe_args);
-    launch_args.push("-p".to_string());
-    launch_args.push("--output-format".to_string());
-    launch_args.push("json".to_string());
-    launch_args.push("$PROMPT".to_string());
-
-    let parsed = parse_provider_output(&default_claude_provider(), "/definitely/missing");
-    let mut raw = Map::new();
-    raw.insert("ok".to_string(), Value::Bool(true));
-    raw.insert("state".to_string(), Value::String("probe_mode".to_string()));
-    raw.insert(
-        "message".to_string(),
-        Value::String(format!("hive mode `{selected}` probe plan prepared")),
-    );
-    raw.insert(
-        "probe".to_string(),
-        serde_json::json!({
-            "mode": selected,
-            "provider": default_claude_provider(),
-            "workdir": workdir,
-            "prompt_preview": preview,
-            "command": command,
-            "args": config.args,
-            "launch_args": launch_args,
-            "settings": settings,
-            "mcp_config": mcp_config,
-            "system_prompt_configured": system_prompt_configured,
-            "system_prompt_delivery": system_prompt_delivery,
-            "shared_env_keys": shared_env_set.keys().cloned().collect::<Vec<_>>(),
-            "env_keys": config.env.keys().cloned().collect::<Vec<_>>(),
-            "runtime_dependencies": runtime_dependencies,
-            "expected_result_fields": ["provider", "exit_code", "started_at_ms", "finished_at_ms"],
-            "expected_provider_output_fields": ["provider", "format", "session_id", "summary", "json_keys", "parse_error"],
-            "missing_output_probe": provider_output_json(&parsed),
-        }),
-    );
-    Ok(raw)
-}
-
-fn probe_system_prompt_preview(
-    caps: &HiveProviderCaps,
-    system_prompt: Option<&str>,
-    system_prompt_file: Option<&str>,
-) -> (bool, &'static str, Vec<String>) {
-    let configured = system_prompt.is_some() || system_prompt_file.is_some();
-    if !configured {
-        return (false, "none", Vec::new());
-    }
-
-    match (&caps.system_prompt, system_prompt, system_prompt_file) {
-        (SystemPromptSupport::None, _, _) => (true, "unsupported_by_provider", Vec::new()),
-        (
-            SystemPromptSupport::Supported {
-                text_flag,
-                file_flag,
-            },
-            Some(_),
-            None,
-        ) => {
-            if let Some(flag) = text_flag {
-                (
-                    true,
-                    "text",
-                    vec![flag.to_string(), "<system_prompt_text>".to_string()],
-                )
-            } else if let Some(flag) = file_flag {
-                (
-                    true,
-                    "file",
-                    vec![
-                        flag.to_string(),
-                        "<system_prompt_file_from_text>".to_string(),
-                    ],
-                )
-            } else {
-                (true, "invalid", Vec::new())
-            }
-        }
-        (
-            SystemPromptSupport::Supported {
-                text_flag,
-                file_flag,
-            },
-            None,
-            Some(_),
-        ) => {
-            if let Some(flag) = file_flag {
-                (
-                    true,
-                    "file",
-                    vec![flag.to_string(), "<system_prompt_file>".to_string()],
-                )
-            } else if let Some(flag) = text_flag {
-                (
-                    true,
-                    "text",
-                    vec![
-                        flag.to_string(),
-                        "<system_prompt_text_from_file>".to_string(),
-                    ],
-                )
-            } else {
-                (true, "invalid", Vec::new())
-            }
-        }
-        _ => (true, "invalid", Vec::new()),
-    }
-}
-
 async fn mode_info(
     runtime: &HiveRuntime,
-    req: HiveRequest,
+    _req: HiveRequest,
 ) -> Result<Map<String, Value>, ErrorData> {
-    let requested = req
-        .mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let selected = requested.unwrap_or("readonly");
-    if !SUPPORTED_MODE_NAMES.contains(&selected) {
-        return Err(ErrorData::invalid_params(
-            format!("unsupported hive mode `{selected}`; use `readonly` or `full`"),
-            None,
-        ));
-    }
-
-    let config = runtime
-        .claude_config()
-        .and_then(|cfg| cfg.modes.get(selected))
-        .cloned();
-    let available_modes = runtime
-        .claude_config()
-        .map(|cfg| {
-            SUPPORTED_MODE_NAMES
-                .iter()
-                .filter_map(|mode_name| {
-                    cfg.modes.get(*mode_name).map(|mode| {
-                        serde_json::json!({
-                            "name": mode_name,
-                            "configured": true,
-                            "description": mode.description.clone(),
-                            "has_system_prompt": mode.system_prompt.is_some() || mode.system_prompt_file.is_some(),
-                        })
-                    })
-                })
-                .collect::<Vec<_>>()
+    let modes = SUPPORTED_MODE_NAMES
+        .iter()
+        .map(|mode_name| {
+            let config = runtime
+                .claude_config()
+                .and_then(|cfg| cfg.modes.get(*mode_name));
+            serde_json::json!({
+                "name": mode_name,
+                "configured": config.is_some(),
+                "description": config.and_then(|mode| mode.description.clone()),
+                "has_system_prompt": config
+                    .map(|mode| mode.system_prompt.is_some() || mode.system_prompt_file.is_some())
+                    .unwrap_or(false),
+            })
         })
-        .unwrap_or_default();
-    let configured = config.is_some();
-    let mode_config = config.as_ref();
+        .collect::<Vec<_>>();
     let mut raw = Map::new();
     raw.insert("ok".to_string(), Value::Bool(true));
     raw.insert("state".to_string(), Value::String("mode_info".to_string()));
     raw.insert(
         "message".to_string(),
-        Value::String(if configured {
-            format!("hive mode `{selected}` is configured")
-        } else {
-            format!(
-                "hive mode `{selected}` is not configured; add `[mcp.hive.claude.modes.{selected}]`"
-            )
-        }),
+        Value::String("hive modes listed".to_string()),
     );
     raw.insert(
         "mode_info".to_string(),
         serde_json::json!({
-            "selected_mode": selected,
             "supported_modes": SUPPORTED_MODE_NAMES,
-            "configured": configured,
             "default_mode_behavior": "hive defaults to `readonly` when `mode` is omitted",
-            "available_modes": available_modes,
+            "modes": modes,
             "notes": [
                 "Only `readonly` and `full` are valid public mode names.",
                 "If a mode is missing, `run_hive_agent` fails fast instead of guessing defaults.",
@@ -876,11 +680,7 @@ async fn mode_info(
                 "`run_hive_agent` supports `resume=true`, but only when the agent already has a saved Claude conversation session id.",
                 "Workers inherit the parent environment, including PATH.",
                 "This response intentionally hides config paths, environment variables, and other sensitive configuration details."
-            ],
-            "configured_values": mode_config.map(|cfg| serde_json::json!({
-                "description": cfg.description.clone(),
-                "has_system_prompt": cfg.system_prompt.is_some() || cfg.system_prompt_file.is_some(),
-            }))
+            ]
         }),
     );
     Ok(raw)
@@ -2259,7 +2059,7 @@ mod tests {
                 action: HiveActionInput::ModeInfo,
                 session_id: None,
                 agent_id: None,
-                mode: Some("readonly".to_string()),
+                mode: Some("not-a-real-mode".to_string()),
                 worker_name: None,
                 workdir: None,
                 prompt: None,
@@ -2271,7 +2071,10 @@ mod tests {
         .expect("mode_info should succeed");
 
         let text = serde_json::to_string(&raw).expect("serialize mode_info");
-        assert!(text.contains("available_modes"));
+        assert!(text.contains("\"modes\""));
+        assert!(text.contains("\"readonly\""));
+        assert!(text.contains("\"full\""));
+        assert!(!text.contains("selected_mode"));
         assert!(!text.contains("settings"));
         assert!(!text.contains("mcp_config"));
         assert!(!text.contains("env_keys"));
@@ -2602,25 +2405,6 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_mode_config("readonly", &cfg).is_ok());
-    }
-
-    #[test]
-    fn probe_system_prompt_preview_reports_file_delivery_for_claude_file_config() {
-        let caps = provider_caps("claude");
-        let (configured, delivery, args) =
-            probe_system_prompt_preview(&caps, None, Some("/tmp/prompt.md"));
-        assert!(configured);
-        assert_eq!(delivery, "file");
-        assert_eq!(args, vec!["--system-prompt-file", "<system_prompt_file>"]);
-    }
-
-    #[test]
-    fn probe_system_prompt_preview_reports_text_delivery_for_claude_inline_config() {
-        let caps = provider_caps("claude");
-        let (configured, delivery, args) = probe_system_prompt_preview(&caps, Some("inline"), None);
-        assert!(configured);
-        assert_eq!(delivery, "text");
-        assert_eq!(args, vec!["--system-prompt", "<system_prompt_text>"]);
     }
 
     #[test]
