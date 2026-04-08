@@ -3601,7 +3601,7 @@ mod tests {
         .into_iter()
         .map(|(title, reason, start)| CaseCommand::Step {
             command: StepCommand::Add {
-                id: case_id.clone(),
+                id: Some(case_id.clone()),
                 title: title.to_string(),
                 reason,
                 start,
@@ -3988,7 +3988,7 @@ mod tests {
         let error_value = build_error_value(
             &client,
             &CaseCommand::Close {
-                id: case_id.clone(),
+                id: Some(case_id.clone()),
                 summary: "done".to_string(),
                 confirm_token: None,
             },
@@ -4039,7 +4039,7 @@ mod tests {
         let error_value = build_error_value(
             &client,
             &CaseCommand::Close {
-                id: case_id.clone(),
+                id: Some(case_id.clone()),
                 summary: "done".to_string(),
                 confirm_token: None,
             },
