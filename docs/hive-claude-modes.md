@@ -71,6 +71,8 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 `hive(action="probe_mode")` 不起长任务，只回：
 
 - 所选 mode 将使用之命令、参数、配置路径、环境键
+- `launch_args`：含 `-p --output-format json` 及 `resume` 追加参数之近似实参
+- `runtime_dependencies`：运行前须可见之 binary，如 `bash`、`python3`、provider command
 - prompt 预览
 - 期望之 `result.json` 字段
 - 期望之 `provider_output` 字段
@@ -84,6 +86,7 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 - 运行止后，`result.json` 记 `provider`、`exit_code`、起止时刻；会话 id 自 `output.log` 解析入统一封装
 - `list_agents` 会依 pid 与 `result.json` 同步状态，并将所得 `provider_session_id` 回写为 agent 之 `conversation_session_id`
 - `close_agent` / `close_session` 先发 `TERM`，短待后仍存者再 `KILL`
+- 若 pid 尚存而进程指纹已不符，`hive` 不自动判死、不自动收尾，改报 `identity_mismatch`，待人工处置
 
 ## 输出文件
 
@@ -126,4 +129,5 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 - 若 Claude 自行再 fork 并脱离原 pid，`hive` 仅能管理已记录之进程；故 `close_*` 先 `TERM` 后 `KILL`，尽量收束遗留
 - 若 Claude 未产出合法 JSON stdout，`result.json` 仍会写出退出码与时刻，但 `provider_session_id` 或为空
 - 若外部手动杀死子进程，`list_agents` 会将该 run 以 `process_missing_without_result` 收尾
+- 默认 repo session id 现取稳定哈希；若仅存唯一旧默认 state，`hive` 会续用旧 session id；若旧默认态多于一，则弃旧取新，免误接他会话
 - 运行机须有 `python3`，因 `launcher.sh` 借之写毫秒时间；provider 输出之解析则在 Rust 侧收束

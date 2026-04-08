@@ -13,10 +13,9 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::hash_map::DefaultHasher;
+use tracing::warn;
 use std::fs;
 use std::fs::OpenOptions;
-use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -31,6 +30,9 @@ const HIVE_AGENT_LIMIT: usize = 5;
 const HIVE_LOCK_STALE_MS: u64 = 30_000;
 const OUTPUT_EXCERPT_LIMIT: usize = 1200;
 const SUPPORTED_MODE_NAMES: [&str; 2] = ["readonly", "full"];
+const HIVE_RUN_MARKER_PREFIX: &str = "--agpod-hive-run=";
+const FNV1A_OFFSET_BASIS: u32 = 0x811c_9dc5;
+const FNV1A_PRIME: u32 = 0x0100_0193;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -333,13 +335,6 @@ impl HiveRuntime {
         let repo_root = std::env::current_dir().map_err(|err| {
             ErrorData::internal_error(format!("failed to resolve current directory: {err}"), None)
         })?;
-        let session_id = match session_id_hint {
-            Some(value) => {
-                ensure_valid_session_id(value).map_err(internal_error)?;
-                value.to_string()
-            }
-            None => derive_session_id(&repo_root),
-        };
         let state_dir = std::env::var("AGPOD_HIVE_STATE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -348,6 +343,13 @@ impl HiveRuntime {
                     .join("agpod")
                     .join("hive")
             });
+        let session_id = match session_id_hint {
+            Some(value) => {
+                ensure_valid_session_id(value).map_err(internal_error)?;
+                value.to_string()
+            }
+            None => resolve_default_session_id(&repo_root, &state_dir),
+        };
 
         Ok(Self {
             repo_root,
@@ -438,9 +440,9 @@ impl HiveRuntime {
         Ok(())
     }
 
-    fn acquire_lock(&self) -> Result<HiveStateGuard> {
+    async fn acquire_lock(&self) -> Result<HiveStateGuard> {
         self.ensure_state_dirs()?;
-        acquire_lock_file(self.session_lock_file())
+        acquire_lock_file(self.session_lock_file()).await
     }
 
     fn claude_config(&self) -> Option<&McpHiveClaudeConfig> {
@@ -552,22 +554,33 @@ fn migrate_legacy_hive_agent_state(legacy: LegacyHiveAgentState) -> HiveAgentSta
     }
 }
 
-fn acquire_lock_file(lock_path: PathBuf) -> Result<HiveStateGuard> {
+async fn acquire_lock_file(lock_path: PathBuf) -> Result<HiveStateGuard> {
     for _ in 0..200 {
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(_) => {
-                return Ok(HiveStateGuard { lock_path });
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_is_stale(&lock_path, HIVE_LOCK_STALE_MS) {
-                    let _ = fs::remove_file(&lock_path);
-                    continue;
+        let path = lock_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => Ok(true),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&path, HIVE_LOCK_STALE_MS) {
+                        let _ = fs::remove_file(&path);
+                        return Ok(false); // retry
+                    }
+                    Ok(false) // contended
                 }
-                std::thread::sleep(std::time::Duration::from_millis(25));
+                Err(err) => Err(err),
+            }
+        })
+        .await
+        .map_err(|err| anyhow!("failed to join hive lock task: {err}"))?;
+
+        match result {
+            Ok(true) => return Ok(HiveStateGuard { lock_path }),
+            Ok(false) => {
+                sleep(Duration::from_millis(25)).await;
             }
             Err(err) => {
                 return Err(err).with_context(|| {
@@ -628,6 +641,11 @@ async fn probe_mode(
 ) -> Result<Map<String, Value>, ErrorData> {
     let selected = runtime.resolve_mode_name(req.mode.as_deref());
     let config = runtime.resolve_mode_config(&selected)?;
+    let command = config
+        .command
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(default_claude_provider);
     let settings = config
         .settings
         .as_deref()
@@ -647,6 +665,27 @@ async fn probe_mode(
         .prompt
         .unwrap_or_else(|| "Return a short JSON object describing current mode.".to_string());
     let preview = prompt_preview(&probe_prompt);
+    let mut runtime_dependencies = vec!["bash".to_string(), "python3".to_string()];
+    if !runtime_dependencies.iter().any(|value| value == &command) {
+        runtime_dependencies.push(command.clone());
+    }
+    let mut launch_args = config.args.clone();
+    if req.resume.unwrap_or(false) {
+        launch_args.push("--resume".to_string());
+        launch_args.push("<saved_session_id_required>".to_string());
+    }
+    if let Some(settings) = settings.as_ref() {
+        launch_args.push("--settings".to_string());
+        launch_args.push(settings.clone());
+    }
+    if let Some(mcp_config) = mcp_config.as_ref() {
+        launch_args.push("--mcp-config".to_string());
+        launch_args.push(mcp_config.clone());
+    }
+    launch_args.push("-p".to_string());
+    launch_args.push("--output-format".to_string());
+    launch_args.push("json".to_string());
+    launch_args.push("$PROMPT".to_string());
 
     let parsed = parse_provider_output(&default_claude_provider(), "/definitely/missing");
     let mut raw = Map::new();
@@ -663,11 +702,13 @@ async fn probe_mode(
             "provider": default_claude_provider(),
             "workdir": workdir,
             "prompt_preview": preview,
-            "command": config.command,
+            "command": command,
             "args": config.args,
+            "launch_args": launch_args,
             "settings": settings,
             "mcp_config": mcp_config,
             "env_keys": config.env.keys().cloned().collect::<Vec<_>>(),
+            "runtime_dependencies": runtime_dependencies,
             "expected_result_fields": ["provider", "exit_code", "started_at_ms", "finished_at_ms"],
             "expected_provider_output_fields": ["provider", "format", "session_id", "summary", "json_keys", "parse_error"],
             "missing_output_probe": provider_output_json(&parsed),
@@ -759,7 +800,7 @@ async fn mode_info(
 }
 
 async fn list_agents(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
@@ -780,7 +821,7 @@ async fn spawn_agent(
     runtime: &HiveRuntime,
     req: HiveRequest,
 ) -> Result<Map<String, Value>, ErrorData> {
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
@@ -855,7 +896,7 @@ async fn send_prompt(
         ErrorData::invalid_params("`prompt` is required for action=`send_prompt`", None)
     })?;
 
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
@@ -903,6 +944,14 @@ async fn send_prompt(
     }
 
     let mode_config = runtime.resolve_mode_config(&mode)?;
+    let provider_command = mode_config
+        .command
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("claude");
+    ensure_binary_available("bash").map_err(internal_error)?;
+    ensure_binary_available("python3").map_err(internal_error)?;
+    ensure_binary_available(provider_command).map_err(internal_error)?;
     let run_id = format!("run-{}", Uuid::new_v4().simple());
     let run_dir = runtime
         .session_dir()
@@ -968,7 +1017,8 @@ async fn send_prompt(
             internal_error(err)
         })?;
 
-    let process_pid = match spawn_hive_run_process(Path::new(&workdir), &launcher_path).await {
+    let process_pid = match spawn_hive_run_process(Path::new(&workdir), &launcher_path, &run_id).await
+    {
         Ok(pid) => pid,
         Err(err) => {
             rollback_launch_failure(runtime, &mut state, agent_index, "launch_failed");
@@ -982,7 +1032,7 @@ async fn send_prompt(
     }
     state.updated_at_ms = now_ms();
     if let Err(err) = runtime.save_state(&state) {
-        terminate_process_group_if_owned(process_pid, &launcher_path)
+        terminate_process_group_if_owned(process_pid, &run_id, &launcher_path)
             .await
             .map_err(internal_error)?;
         rollback_launch_failure(runtime, &mut state, agent_index, "state_persist_failed");
@@ -1009,7 +1059,7 @@ async fn close_agent(
         ErrorData::invalid_params("`agent_id` is required for action=`close_agent`", None)
     })?;
 
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
@@ -1037,12 +1087,29 @@ async fn close_agent(
             .map_err(internal_error)?,
         None => TerminateRunResult::NotRunning,
     };
+    if terminate_result == TerminateRunResult::IdentityMismatch {
+        warn!(
+            agent_id = %agent_id,
+            "close_agent refused because process identity no longer matches recorded launcher"
+        );
+        state.updated_at_ms = now_ms();
+        runtime.save_state(&state).map_err(internal_error)?;
+        let agent = &state.agents[agent_index];
+        return Ok(build_error_response(
+            "identity_mismatch",
+            format!(
+                "hive agent `{agent_id}` may still be running, but its pid no longer matches the recorded launcher; refusing automatic close"
+            ),
+            &state,
+            Some(agent),
+        ));
+    }
 
     let agent = &mut state.agents[agent_index];
     if let Some(run) = agent.current_run.as_mut() {
         let reason = match terminate_result {
             TerminateRunResult::Terminated | TerminateRunResult::NotRunning => "killed_by_hive",
-            TerminateRunResult::IdentityMismatch => "process_identity_mismatch",
+            TerminateRunResult::IdentityMismatch => unreachable!("handled above"),
         };
         finalize_run(run, Some(reason));
     }
@@ -1068,7 +1135,7 @@ async fn close_agent(
 }
 
 async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
-    let _lock = runtime.acquire_lock().map_err(internal_error)?;
+    let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
     let mut state = runtime
         .load_state()
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
@@ -1076,6 +1143,7 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
         .await
         .map_err(internal_error)?;
 
+    let mut mismatched_agents = Vec::new();
     for agent in &mut state.agents {
         let terminate_result = match agent.current_run.as_ref() {
             Some(run) => terminate_run_process_if_owned(run)
@@ -1083,12 +1151,20 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
                 .map_err(internal_error)?,
             None => TerminateRunResult::NotRunning,
         };
+        if terminate_result == TerminateRunResult::IdentityMismatch {
+            warn!(
+                agent_id = %agent.agent_id,
+                "close_session skipped agent because process identity no longer matches recorded launcher"
+            );
+            mismatched_agents.push(agent.agent_id.clone());
+            continue;
+        }
         if let Some(run) = agent.current_run.as_mut() {
             let reason = match terminate_result {
                 TerminateRunResult::Terminated | TerminateRunResult::NotRunning => {
                     "killed_by_hive"
                 }
-                TerminateRunResult::IdentityMismatch => "process_identity_mismatch",
+                TerminateRunResult::IdentityMismatch => unreachable!("handled above"),
             };
             finalize_run(run, Some(reason));
         }
@@ -1100,6 +1176,17 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
     }
     state.updated_at_ms = now_ms();
     runtime.save_state(&state).map_err(internal_error)?;
+    if !mismatched_agents.is_empty() {
+        return Ok(build_error_response(
+            "identity_mismatch",
+            format!(
+                "hive session not fully closed; agents still need manual inspection: {}",
+                mismatched_agents.join(", ")
+            ),
+            &state,
+            None,
+        ));
+    }
     Ok(build_session_response(
         "closed_session",
         "hive session closed",
@@ -1134,7 +1221,9 @@ fn rollback_launch_failure(
         agent.last_used_at_ms = Some(now_ms());
     }
     state.updated_at_ms = now_ms();
-    let _ = runtime.save_state(state);
+    if let Err(err) = runtime.save_state(state) {
+        warn!(reason = %reason, error = %err, "failed to persist hive rollback state");
+    }
 }
 
 fn resolve_workdir(workdir: Option<&str>, runtime: &HiveRuntime) -> PathBuf {
@@ -1166,14 +1255,18 @@ async fn sync_state_with_processes(state: &mut HiveSessionState) -> Result<()> {
             agent.status = HiveAgentStatus::Running;
             continue;
         }
+        if process_state == RunProcessState::IdentityMismatch {
+            warn!(
+                agent_id = %agent.agent_id,
+                pid = ?run.process_pid,
+                launcher = %run.launcher_path,
+                "sync detected process identity mismatch; preserving running state for manual inspection"
+            );
+            agent.status = HiveAgentStatus::Running;
+            continue;
+        }
 
-        let fallback_reason = match process_state {
-            RunProcessState::IdentityMismatch => "process_identity_mismatch",
-            RunProcessState::FinishedOrMissing | RunProcessState::LiveOwned => {
-                "process_missing_without_result"
-            }
-        };
-        finalize_run(run, Some(fallback_reason));
+        finalize_run(run, Some("process_missing_without_result"));
         let session_id = run.provider_session_id.clone();
         agent.last_run = agent.current_run.take();
         if session_id.is_some() {
@@ -1233,9 +1326,7 @@ fn next_agent_id(existing: &[HiveAgentState]) -> String {
 }
 
 fn derive_session_id(repo_root: &Path) -> String {
-    let mut hasher = DefaultHasher::new();
-    repo_root.display().to_string().hash(&mut hasher);
-    format!("hive-repo-{:08x}", (hasher.finish() & 0xffff_ffff) as u32)
+    format!("hive-repo-{:08x}", stable_repo_hash(repo_root))
 }
 
 fn now_ms() -> u64 {
@@ -1247,6 +1338,59 @@ fn now_ms() -> u64 {
 
 fn internal_error(err: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(err.to_string(), None)
+}
+
+fn stable_repo_hash(repo_root: &Path) -> u32 {
+    repo_root
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(FNV1A_OFFSET_BASIS, |acc, byte| {
+            (acc ^ u32::from(*byte)).wrapping_mul(FNV1A_PRIME)
+        })
+}
+
+fn resolve_default_session_id(repo_root: &Path, state_dir: &Path) -> String {
+    let stable = derive_session_id(repo_root);
+    if state_dir.join(format!("{stable}.json")).exists() {
+        return stable;
+    }
+    if let Some(existing) = find_existing_default_session_id_for_repo(repo_root, state_dir) {
+        return existing;
+    }
+    stable
+}
+
+fn find_existing_default_session_id_for_repo(repo_root: &Path, state_dir: &Path) -> Option<String> {
+    let repo_root_str = repo_root.display().to_string();
+    let mut matches = fs::read_dir(state_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|value| value.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter_map(|path| {
+            let raw = fs::read_to_string(&path).ok()?;
+            let state = parse_hive_session_state(&raw).ok()?;
+            if state.repo_root != repo_root_str {
+                return None;
+            }
+            if state.session_id.starts_with("hive-repo-") {
+                return Some(state.session_id);
+            }
+            None
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    if matches.len() == 1 {
+        return matches.into_iter().next();
+    }
+    if matches.len() > 1 {
+        warn!(
+            repo_root = %repo_root.display(),
+            "multiple historical default hive sessions found; using the new stable default session id"
+        );
+    }
+    None
 }
 
 fn build_session_response(
@@ -1504,10 +1648,11 @@ fn build_claude_exec_command(
     Ok(script)
 }
 
-async fn spawn_hive_run_process(workdir: &Path, launcher_path: &Path) -> Result<u32> {
+async fn spawn_hive_run_process(workdir: &Path, launcher_path: &Path, run_id: &str) -> Result<u32> {
     let mut command = Command::new("bash");
     command
         .arg(launcher_path)
+        .arg(hive_run_marker(run_id))
         .current_dir(workdir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1552,7 +1697,7 @@ enum TerminateRunResult {
     IdentityMismatch,
 }
 
-async fn process_matches_run(pid: u32, launcher_path: &str) -> Result<bool> {
+async fn process_matches_run(pid: u32, run_id: &str, launcher_path: &str) -> Result<bool> {
     let output = Command::new("ps")
         .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
         .output()
@@ -1562,7 +1707,11 @@ async fn process_matches_run(pid: u32, launcher_path: &str) -> Result<bool> {
         return Ok(false);
     }
     let command_line = String::from_utf8_lossy(&output.stdout);
-    Ok(command_line.contains(launcher_path))
+    let marker = hive_run_marker(run_id);
+    if command_line.split_whitespace().any(|token| token == marker) {
+        return Ok(true);
+    }
+    Ok(command_line_has_launcher_suffix(&command_line, launcher_path))
 }
 
 async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
@@ -1572,7 +1721,7 @@ async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
     if !process_is_alive(pid).await? {
         return Ok(RunProcessState::FinishedOrMissing);
     }
-    if !process_matches_run(pid, &run.launcher_path).await? {
+    if !process_matches_run(pid, &run.run_id, &run.launcher_path).await? {
         return Ok(RunProcessState::IdentityMismatch);
     }
     Ok(RunProcessState::LiveOwned)
@@ -1616,20 +1765,55 @@ async fn terminate_run_process_if_owned(run: &HiveRunState) -> Result<TerminateR
     }
 }
 
-async fn terminate_process_group_if_owned(pid: u32, launcher_path: &Path) -> Result<()> {
+async fn terminate_process_group_if_owned(pid: u32, run_id: &str, launcher_path: &Path) -> Result<()> {
     if !process_is_alive(pid).await? {
         return Ok(());
     }
     let launcher = launcher_path.display().to_string();
-    if !process_matches_run(pid, &launcher).await? {
+    if !process_matches_run(pid, run_id, &launcher).await? {
         return Ok(());
     }
     kill_process_group(pid, "-TERM").await?;
     sleep(Duration::from_millis(100)).await;
-    if process_is_alive(pid).await? && process_matches_run(pid, &launcher).await? {
+    if process_is_alive(pid).await? && process_matches_run(pid, run_id, &launcher).await? {
         kill_process_group(pid, "-KILL").await?;
     }
     Ok(())
+}
+
+fn hive_run_marker(run_id: &str) -> String {
+    format!("{HIVE_RUN_MARKER_PREFIX}{run_id}")
+}
+
+fn command_line_has_launcher_suffix(command_line: &str, launcher_path: &str) -> bool {
+    if launcher_path.is_empty() {
+        return false;
+    }
+    let trimmed = command_line.trim_end();
+    let Some(prefix) = trimmed.strip_suffix(launcher_path) else {
+        return false;
+    };
+    match prefix.chars().last() {
+        None => true,
+        Some(ch) => ch.is_whitespace() || ch == '\'' || ch == '"',
+    }
+}
+
+fn ensure_binary_available(binary: &str) -> Result<()> {
+    let path = Path::new(binary);
+    if path.components().count() > 1 {
+        if path.is_file() {
+            return Ok(());
+        }
+        return Err(anyhow!("required binary `{binary}` does not exist"));
+    }
+    let Some(paths) = std::env::var_os("PATH") else {
+        return Err(anyhow!("required binary `{binary}` is not available in PATH"));
+    };
+    if std::env::split_paths(&paths).any(|dir| dir.join(binary).is_file()) {
+        return Ok(());
+    }
+    Err(anyhow!("required binary `{binary}` is not available in PATH"))
 }
 
 fn shell_var_name(name: &str) -> Result<String> {
@@ -1792,21 +1976,29 @@ mod tests {
         assert!(!prompt_accept_state(&HiveAgentStatus::Closed));
     }
 
-    #[test]
-    fn hive_runtime_lock_blocks_reentry_until_drop() {
+    #[tokio::test]
+    async fn hive_runtime_lock_blocks_reentry_until_drop() {
         let temp = tempdir().expect("temp dir");
         let runtime = sample_runtime(&temp);
 
-        let first = runtime.acquire_lock().expect("first lock");
-        let second = runtime.acquire_lock();
+        let first = runtime.acquire_lock().await.expect("first lock");
+        // The second acquire spins up to 200×25 ms = 5 s before failing.
+        // Use a timeout so the test doesn't hang if something goes wrong,
+        // but still validates that reentry is blocked.
+        let second = tokio::time::timeout(
+            Duration::from_secs(10),
+            runtime.acquire_lock(),
+        )
+        .await
+        .expect("lock attempt should not hang");
         assert!(second.is_err());
         drop(first);
-        let third = runtime.acquire_lock();
+        let third = runtime.acquire_lock().await;
         assert!(third.is_ok());
     }
 
-    #[test]
-    fn stale_lock_is_reclaimed() {
+    #[tokio::test]
+    async fn stale_lock_is_reclaimed() {
         let temp = tempdir().expect("temp dir");
         let runtime = sample_runtime(&temp);
         runtime.ensure_state_dirs().expect("state dir");
@@ -1819,7 +2011,7 @@ mod tests {
             .status()
             .expect("touch stale lock");
         assert!(status.success());
-        assert!(runtime.acquire_lock().is_ok());
+        assert!(runtime.acquire_lock().await.is_ok());
     }
 
     #[test]
@@ -2182,5 +2374,81 @@ mod tests {
             .await
             .expect("state probe should succeed");
         assert_eq!(state, RunProcessState::IdentityMismatch);
+    }
+
+    #[test]
+    fn command_line_has_launcher_suffix_handles_spaces_without_substring_match() {
+        assert!(command_line_has_launcher_suffix(
+            "bash /tmp/hive run/launcher.sh",
+            "/tmp/hive run/launcher.sh"
+        ));
+        assert!(!command_line_has_launcher_suffix(
+            "bash /tmp/hive run/launcher.sh.old",
+            "/tmp/hive run/launcher.sh"
+        ));
+    }
+
+    #[test]
+    fn derive_session_id_is_cross_toolchain_stable() {
+        let id = derive_session_id(Path::new("/tmp/project-a"));
+        assert_eq!(id, "hive-repo-c5e2c6af");
+    }
+
+    #[test]
+    fn derive_session_id_differs_for_different_repos() {
+        let a = derive_session_id(Path::new("/tmp/project-a"));
+        let b = derive_session_id(Path::new("/tmp/project-b"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn resolve_default_session_id_prefers_existing_legacy_state() {
+        let temp = tempdir().expect("temp dir");
+        let state_dir = temp.path().join("state");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        let legacy_session = "hive-repo-legacy1234";
+        fs::write(
+            state_dir.join(format!("{legacy_session}.json")),
+            serde_json::json!({
+                "version": 2,
+                "session_id": legacy_session,
+                "session_name": "agpod-hive-repo-legacy1234",
+                "repo_root": "/tmp/project-a",
+                "agent_limit": 5,
+                "updated_at_ms": 10,
+                "agents": []
+            })
+            .to_string(),
+        )
+        .expect("write legacy session");
+
+        let resolved = resolve_default_session_id(Path::new("/tmp/project-a"), &state_dir);
+        assert_eq!(resolved, legacy_session);
+    }
+
+    #[test]
+    fn resolve_default_session_id_ignores_ambiguous_legacy_defaults() {
+        let temp = tempdir().expect("temp dir");
+        let state_dir = temp.path().join("state");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        for session_id in ["hive-repo-legacy0001", "hive-repo-legacy0002"] {
+            fs::write(
+                state_dir.join(format!("{session_id}.json")),
+                serde_json::json!({
+                    "version": 2,
+                    "session_id": session_id,
+                    "session_name": session_id,
+                    "repo_root": "/tmp/project-a",
+                    "agent_limit": 5,
+                    "updated_at_ms": 10,
+                    "agents": []
+                })
+                .to_string(),
+            )
+            .expect("write ambiguous session");
+        }
+
+        let resolved = resolve_default_session_id(Path::new("/tmp/project-a"), &state_dir);
+        assert_eq!(resolved, "hive-repo-c5e2c6af");
     }
 }
