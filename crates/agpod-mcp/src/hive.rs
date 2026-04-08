@@ -2124,7 +2124,7 @@ mod tests {
                             command: Some("sh".to_string()),
                             args: vec![
                                 "-c".to_string(),
-                                "printf '{\"session_id\":\"sess-analysis\",\"summary\":\"ok\"}\\n'"
+                                "sleep 0.2; printf '{\"session_id\":\"sess-analysis\",\"summary\":\"ok\"}\\n'"
                                     .to_string(),
                             ],
                             ..Default::default()
@@ -2266,7 +2266,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let runtime = runtime_with_shell_mode(
             &temp,
-            "printf '{\"session_id\":\"sess-block\",\"summary\":\"done\"}\\n'",
+            "sleep 0.2; printf '{\"session_id\":\"sess-block\",\"summary\":\"done\"}\\n'",
         );
         let raw = run_hive_agent(
             &runtime,
