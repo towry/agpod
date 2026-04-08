@@ -1835,6 +1835,9 @@ async fn process_matches_run(pid: u32, run_id: &str, launcher_path: &str) -> Res
 }
 
 async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
+    if persisted_run_result_exists(run) {
+        return Ok(RunProcessState::FinishedOrMissing);
+    }
     let Some(pid) = run.process_pid else {
         return Ok(RunProcessState::FinishedOrMissing);
     };
@@ -1845,6 +1848,17 @@ async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
         return Ok(RunProcessState::IdentityMismatch);
     }
     Ok(RunProcessState::LiveOwned)
+}
+
+fn persisted_run_result_exists(run: &HiveRunState) -> bool {
+    let result_path = Path::new(&run.result_path);
+    if !result_path.is_file() {
+        return false;
+    }
+    fs::read_to_string(result_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<HiveRunResultFile>(&raw).ok())
+        .is_some()
 }
 
 async fn kill_process_group(pid: u32, signal: &str) -> Result<()> {
@@ -2850,6 +2864,70 @@ mod tests {
             output_path: "/tmp/output".to_string(),
             prompt_path: "/tmp/prompt".to_string(),
             result_path: "/tmp/result".to_string(),
+            launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
+            process_pid: Some(std::process::id()),
+            resume_requested: false,
+            provider_session_id: None,
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+            provider_output: None,
+        };
+
+        let state = run_process_state(&run)
+            .await
+            .expect("state probe should succeed");
+        assert_eq!(state, RunProcessState::IdentityMismatch);
+    }
+
+    #[tokio::test]
+    async fn run_process_state_prefers_persisted_result_over_pid_identity() {
+        let temp = tempdir().expect("temp dir");
+        let result_path = temp.path().join("result.json");
+        fs::write(
+            &result_path,
+            r#"{"provider":"claude","exit_code":0,"started_at_ms":1,"finished_at_ms":2}"#,
+        )
+        .expect("write result");
+
+        let run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
+            output_path: temp.path().join("output.log").display().to_string(),
+            prompt_path: temp.path().join("prompt.txt").display().to_string(),
+            result_path: result_path.display().to_string(),
+            launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
+            process_pid: Some(std::process::id()),
+            resume_requested: false,
+            provider_session_id: None,
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+            provider_output: None,
+        };
+
+        let state = run_process_state(&run)
+            .await
+            .expect("state probe should succeed");
+        assert_eq!(state, RunProcessState::FinishedOrMissing);
+    }
+
+    #[tokio::test]
+    async fn run_process_state_ignores_malformed_persisted_result() {
+        let temp = tempdir().expect("temp dir");
+        let result_path = temp.path().join("result.json");
+        fs::write(&result_path, "{not-json").expect("write malformed result");
+
+        let run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
+            output_path: temp.path().join("output.log").display().to_string(),
+            prompt_path: temp.path().join("prompt.txt").display().to_string(),
+            result_path: result_path.display().to_string(),
             launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
             process_pid: Some(std::process::id()),
             resume_requested: false,
