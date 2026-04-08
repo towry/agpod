@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.4](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.3...agpod-mcp-v0.7.4) (2026-04-08)
+
+
+### Bug Fixes
+
+* tests ([bc89a44](https://github.com/towry/agpod/commit/bc89a44c290c0f2b1002abf8a502666f730691ce))
+* tools description ([985d7f0](https://github.com/towry/agpod/commit/985d7f0f8c3b63566a060e23ef72bf830152d3b6))
+
 ## [0.7.3](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.2...agpod-mcp-v0.7.3) (2026-04-08)
 
 
