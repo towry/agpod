@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.9.4](https://github.com/towry/agpod/compare/agpod-vcs-path-v0.9.3...agpod-vcs-path-v0.9.4) (2026-04-08)
+
 ## [0.9.3](https://github.com/towry/agpod/compare/agpod-vcs-path-v0.9.2...agpod-vcs-path-v0.9.3) (2026-03-25)
 
 ## [0.9.2](https://github.com/towry/agpod/compare/agpod-vcs-path-v0.9.1...agpod-vcs-path-v0.9.2) (2026-03-23)

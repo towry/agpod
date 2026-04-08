@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/towry/agpod/compare/agpod-case-v0.6.0...agpod-case-v0.6.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* improve agpod tools, add hive mcp tool ([#128](https://github.com/towry/agpod/issues/128)) ([b8212de](https://github.com/towry/agpod/commit/b8212debd812e93d433e3ad19fc9ff77fc9100f5))
+
 ## [0.6.0](https://github.com/towry/agpod/compare/agpod-case-v0.5.0...agpod-case-v0.6.0) (2026-03-26)
 
 
