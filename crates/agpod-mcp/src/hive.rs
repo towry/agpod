@@ -2280,7 +2280,9 @@ mod tests {
             .to_string();
         let expected_message = format!("hive agent `{agent_id}` status fetched");
         let mut listed = None;
-        for _ in 0..10 {
+        let mut last_status = None;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
             let response = list_agents(
                 &runtime,
                 HiveRequest {
@@ -2297,18 +2299,23 @@ mod tests {
             )
             .await
             .expect("list_agents should succeed");
-            if response
+            let status = response
                 .get("agent")
                 .and_then(|agent| agent.get("status"))
-                .and_then(Value::as_str)
-                == Some("idle")
-            {
+                .and_then(Value::as_str);
+            last_status = status.map(ToOwned::to_owned);
+            if status == Some("idle") {
                 listed = Some(response);
                 break;
             }
             sleep(Duration::from_millis(150)).await;
         }
-        let listed = listed.expect("async run should settle to idle");
+        let listed = listed.unwrap_or_else(|| {
+            panic!(
+                "async run should settle to idle; last observed status: {:?}",
+                last_status
+            )
+        });
 
         assert_eq!(listed.get("state").and_then(Value::as_str), Some("listed"));
         assert_eq!(
