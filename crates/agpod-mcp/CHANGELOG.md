@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.5](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.4...agpod-mcp-v0.7.5) (2026-04-08)
+
+
+### Bug Fixes
+
+* hive tests ([adcbfa7](https://github.com/towry/agpod/commit/adcbfa7ac1e0e59dbf502edd3f9859216a3102a3))
+* hive tool ([f440edf](https://github.com/towry/agpod/commit/f440edf2f62b187ca50c5be7b6530712ae81fef5))
+
 ## [0.7.4](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.3...agpod-mcp-v0.7.4) (2026-04-08)
 
 
