@@ -341,7 +341,6 @@ pub enum CaseCommand {
         #[arg(long = "recent-days")]
         recent_days: Option<u32>,
     },
-
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Subcommand)]

@@ -688,12 +688,8 @@ impl AgpodMcpServer {
                 reason: req.reason.unwrap_or_default(),
             },
         };
-        self.run_case_tool(
-            "case_step_mark_as",
-            CaseCommand::Step { command },
-            req.id,
-        )
-        .await
+        self.run_case_tool("case_step_mark_as", CaseCommand::Step { command }, req.id)
+            .await
     }
 
     #[tool(

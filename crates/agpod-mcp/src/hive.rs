@@ -3,7 +3,8 @@
 //! Keywords: hive, process, claude, exec, output file, worker status
 
 use crate::hive_provider::{
-    default_claude_provider, parse_provider_output as parse_provider_output_impl, HiveProviderOutput,
+    default_claude_provider, parse_provider_output as parse_provider_output_impl,
+    HiveProviderOutput,
 };
 use agpod_core::{Config, McpHiveClaudeConfig, McpHiveClaudeModeConfig};
 use anyhow::{anyhow, Context, Result};
@@ -13,7 +14,6 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tracing::warn;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
@@ -23,6 +23,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
+use tracing::warn;
 use uuid::Uuid;
 
 const HIVE_VERSION: u32 = 2;
@@ -558,11 +559,7 @@ async fn acquire_lock_file(lock_path: PathBuf) -> Result<HiveStateGuard> {
     for _ in 0..200 {
         let path = lock_path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => Ok(true),
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     if lock_is_stale(&path, HIVE_LOCK_STALE_MS) {
@@ -1011,20 +1008,25 @@ async fn send_prompt(
         internal_error(err)
     })?;
     fs::write(&launcher_path, &launch_command)
-        .with_context(|| format!("failed to write launcher file `{}`", launcher_path.display()))
+        .with_context(|| {
+            format!(
+                "failed to write launcher file `{}`",
+                launcher_path.display()
+            )
+        })
         .map_err(|err| {
             rollback_launch_failure(runtime, &mut state, agent_index, "launch_prepare_failed");
             internal_error(err)
         })?;
 
-    let process_pid = match spawn_hive_run_process(Path::new(&workdir), &launcher_path, &run_id).await
-    {
-        Ok(pid) => pid,
-        Err(err) => {
-            rollback_launch_failure(runtime, &mut state, agent_index, "launch_failed");
-            return Err(internal_error(err));
-        }
-    };
+    let process_pid =
+        match spawn_hive_run_process(Path::new(&workdir), &launcher_path, &run_id).await {
+            Ok(pid) => pid,
+            Err(err) => {
+                rollback_launch_failure(runtime, &mut state, agent_index, "launch_failed");
+                return Err(internal_error(err));
+            }
+        };
 
     let agent = &mut state.agents[agent_index];
     if let Some(run) = agent.current_run.as_mut() {
@@ -1161,9 +1163,7 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
         }
         if let Some(run) = agent.current_run.as_mut() {
             let reason = match terminate_result {
-                TerminateRunResult::Terminated | TerminateRunResult::NotRunning => {
-                    "killed_by_hive"
-                }
+                TerminateRunResult::Terminated | TerminateRunResult::NotRunning => "killed_by_hive",
                 TerminateRunResult::IdentityMismatch => unreachable!("handled above"),
             };
             finalize_run(run, Some(reason));
@@ -1430,7 +1430,11 @@ fn build_session_response(
 }
 
 fn derive_session_state(state: &HiveSessionState) -> &'static str {
-    if state.agents.iter().any(|agent| agent.status == HiveAgentStatus::Running) {
+    if state
+        .agents
+        .iter()
+        .any(|agent| agent.status == HiveAgentStatus::Running)
+    {
         "running"
     } else if state
         .agents
@@ -1593,9 +1597,8 @@ fn build_claude_exec_command(
             .collect::<Vec<_>>(),
     );
     if resume {
-        let session_id = resume_session_id.ok_or_else(|| {
-            anyhow!("resume requested but agent has no saved Claude session id")
-        })?;
+        let session_id = resume_session_id
+            .ok_or_else(|| anyhow!("resume requested but agent has no saved Claude session id"))?;
         command_parts.push("--resume".to_string());
         command_parts.push(shell_escape(session_id));
     }
@@ -1628,7 +1631,9 @@ fn build_claude_exec_command(
         "PROMPT=$(cat {})\n",
         shell_escape(&prompt_path.display().to_string())
     ));
-    script.push_str("STARTED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n");
+    script.push_str(
+        "STARTED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n",
+    );
     script.push_str("RC=0\n");
     script.push_str("set +e\n");
     script.push_str(&format!(
@@ -1638,7 +1643,9 @@ fn build_claude_exec_command(
     ));
     script.push_str("RC=$?\n");
     script.push_str("set -e\n");
-    script.push_str("FINISHED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n");
+    script.push_str(
+        "FINISHED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n",
+    );
     script.push_str(&format!(
         "python3 - <<'PY' {} \"$STARTED_AT_MS\" \"$FINISHED_AT_MS\" \"$RC\"\nimport json, pathlib, sys\nresult_path = pathlib.Path(sys.argv[1])\nstarted_at_ms = int(sys.argv[2])\nfinished_at_ms = int(sys.argv[3])\nexit_code = int(sys.argv[4])\nresult_path.write_text(json.dumps({\n    'provider': 'claude',\n    'exit_code': exit_code,\n    'started_at_ms': started_at_ms,\n    'finished_at_ms': finished_at_ms,\n}))\nPY\n",
         shell_escape(&result_path.display().to_string()),
@@ -1665,9 +1672,12 @@ async fn spawn_hive_run_process(workdir: &Path, launcher_path: &Path, run_id: &s
             Ok(())
         });
     }
-    let child = command
-        .spawn()
-        .with_context(|| format!("failed to spawn hive launcher `{}`", launcher_path.display()))?;
+    let child = command.spawn().with_context(|| {
+        format!(
+            "failed to spawn hive launcher `{}`",
+            launcher_path.display()
+        )
+    })?;
     child
         .id()
         .ok_or_else(|| anyhow!("failed to read spawned process pid"))
@@ -1711,7 +1721,10 @@ async fn process_matches_run(pid: u32, run_id: &str, launcher_path: &str) -> Res
     if command_line.split_whitespace().any(|token| token == marker) {
         return Ok(true);
     }
-    Ok(command_line_has_launcher_suffix(&command_line, launcher_path))
+    Ok(command_line_has_launcher_suffix(
+        &command_line,
+        launcher_path,
+    ))
 }
 
 async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
@@ -1740,7 +1753,9 @@ async fn kill_process_group(pid: u32, signal: &str) -> Result<()> {
     if !process_is_alive(pid).await? {
         return Ok(());
     }
-    Err(anyhow!("failed to send signal {signal} to process group `{pid}`"))
+    Err(anyhow!(
+        "failed to send signal {signal} to process group `{pid}`"
+    ))
 }
 
 async fn terminate_run_process_if_owned(run: &HiveRunState) -> Result<TerminateRunResult> {
@@ -1765,7 +1780,11 @@ async fn terminate_run_process_if_owned(run: &HiveRunState) -> Result<TerminateR
     }
 }
 
-async fn terminate_process_group_if_owned(pid: u32, run_id: &str, launcher_path: &Path) -> Result<()> {
+async fn terminate_process_group_if_owned(
+    pid: u32,
+    run_id: &str,
+    launcher_path: &Path,
+) -> Result<()> {
     if !process_is_alive(pid).await? {
         return Ok(());
     }
@@ -1808,12 +1827,16 @@ fn ensure_binary_available(binary: &str) -> Result<()> {
         return Err(anyhow!("required binary `{binary}` does not exist"));
     }
     let Some(paths) = std::env::var_os("PATH") else {
-        return Err(anyhow!("required binary `{binary}` is not available in PATH"));
+        return Err(anyhow!(
+            "required binary `{binary}` is not available in PATH"
+        ));
     };
     if std::env::split_paths(&paths).any(|dir| dir.join(binary).is_file()) {
         return Ok(());
     }
-    Err(anyhow!("required binary `{binary}` is not available in PATH"))
+    Err(anyhow!(
+        "required binary `{binary}` is not available in PATH"
+    ))
 }
 
 fn shell_var_name(name: &str) -> Result<String> {
@@ -1985,12 +2008,9 @@ mod tests {
         // The second acquire spins up to 200×25 ms = 5 s before failing.
         // Use a timeout so the test doesn't hang if something goes wrong,
         // but still validates that reentry is blocked.
-        let second = tokio::time::timeout(
-            Duration::from_secs(10),
-            runtime.acquire_lock(),
-        )
-        .await
-        .expect("lock attempt should not hang");
+        let second = tokio::time::timeout(Duration::from_secs(10), runtime.acquire_lock())
+            .await
+            .expect("lock attempt should not hang");
         assert!(second.is_err());
         drop(first);
         let third = runtime.acquire_lock().await;
@@ -2066,7 +2086,10 @@ mod tests {
         assert_eq!(agent.status, HiveAgentStatus::Running);
         assert!(agent.current_run.is_some());
         assert_eq!(
-            agent.current_run.as_ref().map(|run| run.termination_reason.as_deref()),
+            agent
+                .current_run
+                .as_ref()
+                .map(|run| run.termination_reason.as_deref()),
             Some(Some("legacy_unmanaged_run"))
         );
     }
@@ -2268,10 +2291,7 @@ mod tests {
         let agent = &state.agents[0];
         assert_eq!(agent.status, HiveAgentStatus::Idle);
         assert!(agent.current_run.is_none());
-        assert_eq!(
-            agent.conversation_session_id.as_deref(),
-            Some("sess-2")
-        );
+        assert_eq!(agent.conversation_session_id.as_deref(), Some("sess-2"));
         assert_eq!(
             agent.last_run.as_ref().and_then(|run| run.exit_code),
             Some(0)

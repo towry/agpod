@@ -576,9 +576,7 @@ async fn load_context_case(
     if matches!(error, CaseError::RepoHasOpenCase(_) | CaseError::NoOpenCase)
         || matches!(
             command,
-            CaseCommand::Open { .. }
-                | CaseCommand::Current { .. }
-                | CaseCommand::Show { id: None }
+            CaseCommand::Open { .. } | CaseCommand::Current { .. } | CaseCommand::Show { id: None }
         )
     {
         return client.find_open_case().await.ok().flatten();

@@ -54,7 +54,11 @@ pub fn parse_provider_output(
                 .get("result")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
-                .or_else(|| obj.get("summary").and_then(Value::as_str).map(ToOwned::to_owned))
+                .or_else(|| {
+                    obj.get("summary")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
                 .or_else(|| session_id.as_ref().map(|id| format!("session_id={id}")));
             let mut json_keys = obj.keys().cloned().collect::<Vec<_>>();
             json_keys.sort();
