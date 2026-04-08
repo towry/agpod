@@ -32,7 +32,6 @@ const HIVE_AGENT_LIMIT: usize = 5;
 const HIVE_LOCK_STALE_MS: u64 = 30_000;
 const HIVE_BLOCKING_POLL_MS: u64 = 100;
 const OUTPUT_EXCERPT_LIMIT: usize = 1200;
-const SUPPORTED_MODE_NAMES: [&str; 2] = ["readonly", "full"];
 const HIVE_RUN_MARKER_PREFIX: &str = "--agpod-hive-run=";
 const FNV1A_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV1A_PRIME: u32 = 0x0100_0193;
@@ -55,7 +54,7 @@ pub struct HiveRequest {
     pub session_id: Option<String>,
     /// Existing worker agent ID for `run_hive_agent`, `list_agents`, and `close_agent`.
     pub agent_id: Option<String>,
-    /// Public mode name for `run_hive_agent`. Supported values are `readonly` and `full`.
+    /// Mode name for `run_hive_agent`. Call `mode_info` to inspect available names.
     pub mode: Option<String>,
     /// Optional worker display name when `run_hive_agent` creates a new worker.
     pub worker_name: Option<String>,
@@ -462,6 +461,15 @@ impl HiveRuntime {
             .unwrap_or_default()
     }
 
+    fn configured_mode_names(&self) -> Vec<String> {
+        let mut mode_names = self
+            .claude_config()
+            .map(|cfg| cfg.modes.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        mode_names.sort();
+        mode_names
+    }
+
     fn resolve_mode_name(&self, requested: Option<&str>) -> String {
         requested
             .map(str::trim)
@@ -471,12 +479,6 @@ impl HiveRuntime {
     }
 
     fn resolve_mode_config(&self, mode_name: &str) -> Result<McpHiveClaudeModeConfig, ErrorData> {
-        if !SUPPORTED_MODE_NAMES.contains(&mode_name) {
-            return Err(ErrorData::invalid_params(
-                format!("unsupported hive mode `{mode_name}`; use `readonly` or `full`"),
-                None,
-            ));
-        }
         let config = self
             .claude_config()
             .and_then(|cfg| cfg.modes.get(mode_name))
@@ -484,7 +486,7 @@ impl HiveRuntime {
             .ok_or_else(|| {
                 ErrorData::invalid_params(
                     format!(
-                        "missing hive Claude mode config `{mode_name}` in `[mcp.hive.claude.modes.{mode_name}]`; call `hive` with action=`mode_info` for the expected shape"
+                        "hive mode `{mode_name}` is not available; call `hive` with action=`mode_info` to inspect available mode names"
                     ),
                     None,
                 )
@@ -643,15 +645,16 @@ async fn mode_info(
     runtime: &HiveRuntime,
     _req: HiveRequest,
 ) -> Result<Map<String, Value>, ErrorData> {
-    let modes = SUPPORTED_MODE_NAMES
+    let mode_names = runtime.configured_mode_names();
+    let modes = mode_names
         .iter()
         .map(|mode_name| {
             let config = runtime
                 .claude_config()
-                .and_then(|cfg| cfg.modes.get(*mode_name));
+                .and_then(|cfg| cfg.modes.get(mode_name));
             serde_json::json!({
                 "name": mode_name,
-                "configured": config.is_some(),
+                "available": config.is_some(),
                 "description": config.and_then(|mode| mode.description.clone()),
                 "has_system_prompt": config
                     .map(|mode| mode.system_prompt.is_some() || mode.system_prompt_file.is_some())
@@ -669,12 +672,12 @@ async fn mode_info(
     raw.insert(
         "mode_info".to_string(),
         serde_json::json!({
-            "supported_modes": SUPPORTED_MODE_NAMES,
+            "available_modes": mode_names,
             "default_mode_behavior": "hive defaults to `readonly` when `mode` is omitted",
             "modes": modes,
             "notes": [
-                "Only `readonly` and `full` are valid public mode names.",
-                "If a mode is missing, `run_hive_agent` fails fast instead of guessing defaults.",
+                "Use this response to inspect available mode names, including custom configured modes.",
+                "If a mode is unavailable, `run_hive_agent` fails fast instead of guessing defaults.",
                 "`run_hive_agent` blocks by default; set `async=true` only when the caller intends to poll with `list_agents`.",
                 "`run_hive_agent` supports `resume=true`, but only when the agent already has a saved Claude conversation session id.",
                 "Workers inherit the parent environment, including PATH.",
@@ -2041,7 +2044,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mode_info_hides_sensitive_configuration_details() {
+    async fn mode_info_lists_custom_modes_and_hides_sensitive_configuration_details() {
         let temp = tempdir().expect("temp dir");
         let mut runtime = sample_runtime(&temp);
         let mut readonly = McpHiveClaudeModeConfig {
@@ -2061,7 +2064,17 @@ mod tests {
                         "ANTHROPIC_AUTH_TOKEN".to_string(),
                         "secret".to_string(),
                     )]),
-                    modes: BTreeMap::from([("readonly".to_string(), readonly)]),
+                    modes: BTreeMap::from([
+                        ("readonly".to_string(), readonly),
+                        (
+                            "analysis".to_string(),
+                            McpHiveClaudeModeConfig {
+                                description: Some("Analysis worker".to_string()),
+                                command: Some("claude".to_string()),
+                                ..Default::default()
+                            },
+                        ),
+                    ]),
                 }),
             }),
         });
@@ -2085,14 +2098,66 @@ mod tests {
 
         let text = serde_json::to_string(&raw).expect("serialize mode_info");
         assert!(text.contains("\"modes\""));
+        assert!(text.contains("\"available_modes\""));
+        assert!(text.contains("\"analysis\""));
         assert!(text.contains("\"readonly\""));
-        assert!(text.contains("\"full\""));
         assert!(!text.contains("selected_mode"));
         assert!(!text.contains("settings"));
         assert!(!text.contains("mcp_config"));
         assert!(!text.contains("env_keys"));
         assert!(!text.contains("config_path"));
         assert!(!text.contains("ANTHROPIC_AUTH_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn run_hive_agent_accepts_custom_configured_mode() {
+        let temp = tempdir().expect("temp dir");
+        let mut runtime = sample_runtime(&temp);
+        runtime.config.mcp = Some(agpod_core::McpConfig {
+            hive: Some(agpod_core::McpHiveConfig {
+                claude: Some(McpHiveClaudeConfig {
+                    env_set: BTreeMap::new(),
+                    modes: BTreeMap::from([(
+                        "analysis".to_string(),
+                        McpHiveClaudeModeConfig {
+                            description: Some("analysis".to_string()),
+                            command: Some("sh".to_string()),
+                            args: vec![
+                                "-c".to_string(),
+                                "printf '{\"session_id\":\"sess-analysis\",\"summary\":\"ok\"}\\n'"
+                                    .to_string(),
+                            ],
+                            ..Default::default()
+                        },
+                    )]),
+                }),
+            }),
+        });
+
+        let raw = run_hive_agent(
+            &runtime,
+            HiveRequest {
+                action: HiveActionInput::RunHiveAgent,
+                session_id: None,
+                agent_id: None,
+                mode: Some("analysis".to_string()),
+                worker_name: Some("worker".to_string()),
+                workdir: Some(temp.path().display().to_string()),
+                prompt: Some("hello".to_string()),
+                resume: None,
+                async_: false,
+            },
+        )
+        .await
+        .expect("run_hive_agent should accept custom mode");
+
+        assert_eq!(raw.get("state").and_then(Value::as_str), Some("completed"));
+        assert_eq!(
+            raw.get("agent")
+                .and_then(|agent| agent.get("mode"))
+                .and_then(Value::as_str),
+            Some("analysis")
+        );
     }
 
     #[test]
