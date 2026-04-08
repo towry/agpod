@@ -16,6 +16,8 @@
 - [x] impl: implement process-backed hive state and tool
 - [x] hooks: persist worker output files and session metadata
 - [x] smoke-hive-env: finish hive end-to-end smoke for process-backed runtime
+- [x] output-wrap: define provider output envelope and parsing boundary
+- [x] probe: add minimal hive probe-style tests for provider output
 
 ## Document References
 - docs/hive-claude-modes.md - Claude-only hive mode config and mode_info contract

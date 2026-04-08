@@ -71,8 +71,8 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 - `spawn_agent`：建 worker profile，尚无进程
 - `send_prompt`：写 `prompt.txt`，生成 `launcher.sh`，再起 child process
 - Claude 运行时，流式输出入 `output.log`
-- 运行止后，`result.json` 记 `exit_code`、起止时刻、`claude_session_id`
-- `list_agents` 会依 pid 与 `result.json` 同步状态，并将所得 `claude_session_id` 回写为 agent 之 `conversation_session_id`
+- 运行止后，`result.json` 记 `provider`、`exit_code`、起止时刻；会话 id 自 `output.log` 解析入统一封装
+- `list_agents` 会依 pid 与 `result.json` 同步状态，并将所得 `provider_session_id` 回写为 agent 之 `conversation_session_id`
 - `close_agent` / `close_session` 先发 `TERM`，短待后仍存者再 `KILL`
 
 ## 输出文件
@@ -88,10 +88,21 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 
 `current_run` / `last_run` 现含：
 
+- `provider`
 - `process_pid`
 - `resume_requested`
-- `claude_session_id`
+- `provider_session_id`
 - `termination_reason`
+- `provider_output`
+
+`provider_output` 为内部统一封装，供后续接他家 agent/provider：
+
+- `provider`：来源方，如 `claude`
+- `format`：`json` / `text` / `unknown`
+- `session_id`：自 provider 输出中抽得之会话 id
+- `summary`：供母 agent 快读之摘要
+- `json_keys`：若输出为 JSON object，则记其顶层键
+- `parse_error`：解析失败缘由；不阻主状态机
 
 ## Resume 契约
 
@@ -103,6 +114,6 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 ## 边缘风险
 
 - 若 Claude 自行再 fork 并脱离原 pid，`hive` 仅能管理已记录之进程；故 `close_*` 先 `TERM` 后 `KILL`，尽量收束遗留
-- 若 Claude 未产出合法 JSON stdout，`result.json` 仍会写出退出码与时刻，但 `claude_session_id` 为空
+- 若 Claude 未产出合法 JSON stdout，`result.json` 仍会写出退出码与时刻，但 `provider_session_id` 或为空
 - 若外部手动杀死子进程，`list_agents` 会将该 run 以 `process_missing_without_result` 收尾
-- 运行机须有 `python3`，因 `launcher.sh` 借之写毫秒时间与解析 Claude JSON 结果
+- 运行机须有 `python3`，因 `launcher.sh` 借之写毫秒时间；provider 输出之解析则在 Rust 侧收束

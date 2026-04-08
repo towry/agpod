@@ -223,6 +223,8 @@ struct HiveAgentState {
 struct HiveRunState {
     run_id: String,
     prompt_preview: String,
+    #[serde(default = "default_claude_provider")]
+    provider: String,
     output_path: String,
     prompt_path: String,
     result_path: String,
@@ -233,7 +235,8 @@ struct HiveRunState {
     #[serde(default)]
     resume_requested: bool,
     #[serde(default)]
-    claude_session_id: Option<String>,
+    #[serde(alias = "claude_session_id")]
+    provider_session_id: Option<String>,
     started_at_ms: u64,
     #[serde(default)]
     finished_at_ms: Option<u64>,
@@ -241,6 +244,27 @@ struct HiveRunState {
     exit_code: Option<i32>,
     #[serde(default)]
     termination_reason: Option<String>,
+    #[serde(default)]
+    provider_output: Option<HiveProviderOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HiveProviderOutput {
+    provider: String,
+    format: HiveProviderOutputFormat,
+    session_id: Option<String>,
+    summary: Option<String>,
+    #[serde(default)]
+    json_keys: Vec<String>,
+    parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum HiveProviderOutputFormat {
+    Json,
+    Text,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,10 +300,13 @@ struct HiveRuntime {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HiveRunResultFile {
+    #[serde(default = "default_claude_provider")]
+    provider: String,
     exit_code: i32,
     started_at_ms: u64,
     finished_at_ms: u64,
-    claude_session_id: Option<String>,
+    #[serde(default, alias = "claude_session_id")]
+    provider_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,6 +341,10 @@ enum LegacyHiveAgentStatus {
 
 fn default_readonly_mode() -> String {
     "readonly".to_string()
+}
+
+fn default_claude_provider() -> String {
+    "claude".to_string()
 }
 
 impl HiveRuntime {
@@ -510,17 +541,19 @@ fn migrate_legacy_hive_agent_state(legacy: LegacyHiveAgentState) -> HiveAgentSta
             Some(HiveRunState {
                 run_id: format!("legacy-{}", legacy.agent_id),
                 prompt_preview: "legacy interactive hive state".to_string(),
+                provider: default_claude_provider(),
                 output_path: String::new(),
                 prompt_path: String::new(),
                 result_path: String::new(),
                 launcher_path: String::new(),
                 process_pid: None,
                 resume_requested: false,
-                claude_session_id: None,
+                provider_session_id: None,
                 started_at_ms: legacy.last_used_at_ms.unwrap_or(0),
                 finished_at_ms: None,
                 exit_code: None,
                 termination_reason: Some("legacy_unmanaged_run".to_string()),
+                provider_output: None,
             }),
         ),
     };
@@ -860,17 +893,19 @@ async fn send_prompt(
         agent.current_run = Some(HiveRunState {
             run_id: run_id.clone(),
             prompt_preview: prompt_preview(&prompt),
+            provider: default_claude_provider(),
             output_path: output_path.display().to_string(),
             prompt_path: prompt_path.display().to_string(),
             result_path: result_path.display().to_string(),
             launcher_path: launcher_path.display().to_string(),
             process_pid: None,
             resume_requested: resume,
-            claude_session_id: conversation_session_id.clone(),
+            provider_session_id: conversation_session_id.clone(),
             started_at_ms: now,
             finished_at_ms: None,
             exit_code: None,
             termination_reason: None,
+            provider_output: None,
         });
     }
     state.updated_at_ms = now;
@@ -1103,7 +1138,7 @@ async fn sync_state_with_processes(state: &mut HiveSessionState) -> Result<()> {
             }
         };
         finalize_run(run, Some(fallback_reason));
-        let session_id = run.claude_session_id.clone();
+        let session_id = run.provider_session_id.clone();
         agent.last_run = agent.current_run.take();
         if session_id.is_some() {
             agent.conversation_session_id = session_id;
@@ -1119,10 +1154,16 @@ fn finalize_run(run: &mut HiveRunState, fallback_reason: Option<&str>) {
     let mut loaded = false;
     if let Ok(raw) = fs::read_to_string(result_path) {
         if let Ok(result) = serde_json::from_str::<HiveRunResultFile>(&raw) {
+            let provider_output = parse_provider_output(&result.provider, &run.output_path);
             run.exit_code = Some(result.exit_code);
             run.started_at_ms = result.started_at_ms;
             run.finished_at_ms = Some(result.finished_at_ms);
-            run.claude_session_id = result.claude_session_id;
+            run.provider = result.provider;
+            run.provider_output = Some(provider_output.clone());
+            run.provider_session_id = provider_output
+                .session_id
+                .clone()
+                .or(result.provider_session_id);
             run.termination_reason = None;
             loaded = true;
         }
@@ -1132,6 +1173,11 @@ fn finalize_run(run: &mut HiveRunState, fallback_reason: Option<&str>) {
     }
     if !loaded && run.termination_reason.is_none() {
         run.termination_reason = fallback_reason.map(ToOwned::to_owned);
+    }
+    if !loaded && run.provider_output.is_none() {
+        let provider_output = parse_provider_output(&run.provider, &run.output_path);
+        run.provider_session_id = provider_output.session_id.clone();
+        run.provider_output = Some(provider_output);
     }
     run.process_pid = None;
 }
@@ -1246,18 +1292,31 @@ fn run_json(run: &HiveRunState) -> Value {
     serde_json::json!({
         "run_id": run.run_id,
         "prompt_preview": run.prompt_preview,
+        "provider": run.provider,
         "output_path": run.output_path,
         "prompt_path": run.prompt_path,
         "result_path": run.result_path,
         "launcher_path": run.launcher_path,
         "process_pid": run.process_pid,
         "resume_requested": run.resume_requested,
-        "claude_session_id": run.claude_session_id,
+        "provider_session_id": run.provider_session_id,
         "started_at_ms": run.started_at_ms,
         "finished_at_ms": run.finished_at_ms,
         "exit_code": run.exit_code,
         "termination_reason": run.termination_reason,
+        "provider_output": run.provider_output.as_ref().map(provider_output_json),
         "output_excerpt": read_output_excerpt(&run.output_path),
+    })
+}
+
+fn provider_output_json(output: &HiveProviderOutput) -> Value {
+    serde_json::json!({
+        "provider": output.provider,
+        "format": output.format,
+        "session_id": output.session_id,
+        "summary": output.summary,
+        "json_keys": output.json_keys,
+        "parse_error": output.parse_error,
     })
 }
 
@@ -1271,6 +1330,63 @@ fn read_output_excerpt(path: &str) -> Option<String> {
     let mut buf = Vec::with_capacity(seek_back as usize);
     file.read_to_end(&mut buf).ok()?;
     Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn parse_provider_output(provider: &str, output_path: &str) -> HiveProviderOutput {
+    let raw = match fs::read_to_string(output_path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return HiveProviderOutput {
+                provider: provider.to_string(),
+                format: HiveProviderOutputFormat::Unknown,
+                session_id: None,
+                summary: None,
+                json_keys: Vec::new(),
+                parse_error: Some(err.to_string()),
+            };
+        }
+    };
+
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(Value::Object(obj)) => {
+            let session_id = obj
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let summary = obj
+                .get("result")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| obj.get("summary").and_then(Value::as_str).map(ToOwned::to_owned))
+                .or_else(|| session_id.as_ref().map(|id| format!("session_id={id}")));
+            let mut json_keys = obj.keys().cloned().collect::<Vec<_>>();
+            json_keys.sort();
+            HiveProviderOutput {
+                provider: provider.to_string(),
+                format: HiveProviderOutputFormat::Json,
+                session_id,
+                summary,
+                json_keys,
+                parse_error: None,
+            }
+        }
+        Ok(_) => HiveProviderOutput {
+            provider: provider.to_string(),
+            format: HiveProviderOutputFormat::Json,
+            session_id: None,
+            summary: Some(prompt_preview(&raw)),
+            json_keys: Vec::new(),
+            parse_error: Some("provider output is valid json but not an object".to_string()),
+        },
+        Err(err) => HiveProviderOutput {
+            provider: provider.to_string(),
+            format: HiveProviderOutputFormat::Text,
+            session_id: None,
+            summary: Some(prompt_preview(&raw)),
+            json_keys: Vec::new(),
+            parse_error: Some(err.to_string()),
+        },
+    }
 }
 
 fn prompt_preview(prompt: &str) -> String {
@@ -1397,8 +1513,7 @@ fn build_claude_exec_command(
     script.push_str("set -e\n");
     script.push_str("FINISHED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n");
     script.push_str(&format!(
-        "python3 - <<'PY' {} {} \"$STARTED_AT_MS\" \"$FINISHED_AT_MS\" \"$RC\"\nimport json, pathlib, sys\noutput_path = pathlib.Path(sys.argv[1])\nresult_path = pathlib.Path(sys.argv[2])\nstarted_at_ms = int(sys.argv[3])\nfinished_at_ms = int(sys.argv[4])\nexit_code = int(sys.argv[5])\nclaude_session_id = None\ntry:\n    payload = json.loads(output_path.read_text())\n    if isinstance(payload, dict):\n        raw_session_id = payload.get('session_id')\n        if isinstance(raw_session_id, str) and raw_session_id:\n            claude_session_id = raw_session_id\nexcept Exception:\n    pass\nresult_path.write_text(json.dumps({\n    'exit_code': exit_code,\n    'started_at_ms': started_at_ms,\n    'finished_at_ms': finished_at_ms,\n    'claude_session_id': claude_session_id,\n}))\nPY\n",
-        shell_escape(&output_path.display().to_string()),
+        "python3 - <<'PY' {} \"$STARTED_AT_MS\" \"$FINISHED_AT_MS\" \"$RC\"\nimport json, pathlib, sys\nresult_path = pathlib.Path(sys.argv[1])\nstarted_at_ms = int(sys.argv[2])\nfinished_at_ms = int(sys.argv[3])\nexit_code = int(sys.argv[4])\nresult_path.write_text(json.dumps({\n    'provider': 'claude',\n    'exit_code': exit_code,\n    'started_at_ms': started_at_ms,\n    'finished_at_ms': finished_at_ms,\n}))\nPY\n",
         shell_escape(&result_path.display().to_string()),
     ));
     script.push_str("exit \"$RC\"\n");
@@ -1652,17 +1767,19 @@ mod tests {
                     current_run: Some(HiveRunState {
                         run_id: "run-1".to_string(),
                         prompt_preview: "hello".to_string(),
+                        provider: "claude".to_string(),
                         output_path: "/tmp/output".to_string(),
                         prompt_path: "/tmp/prompt".to_string(),
                         result_path: "/tmp/result".to_string(),
                         launcher_path: "/tmp/launcher".to_string(),
                         process_pid: Some(42),
                         resume_requested: false,
-                        claude_session_id: None,
+                        provider_session_id: None,
                         started_at_ms: 2,
                         finished_at_ms: None,
                         exit_code: None,
                         termination_reason: None,
+                        provider_output: None,
                     }),
                     last_run: None,
                     last_used_at_ms: Some(2),
@@ -1827,17 +1944,19 @@ mod tests {
         let mut run = HiveRunState {
             run_id: "run-1".to_string(),
             prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
             output_path: "/tmp/output".to_string(),
             prompt_path: "/tmp/prompt".to_string(),
             result_path: "/tmp/missing-result".to_string(),
             launcher_path: "/tmp/launcher".to_string(),
             process_pid: Some(10),
             resume_requested: false,
-            claude_session_id: None,
+            provider_session_id: None,
             started_at_ms: 1,
             finished_at_ms: None,
             exit_code: None,
             termination_reason: None,
+            provider_output: None,
         };
 
         finalize_run(&mut run, Some("killed_by_hive"));
@@ -1851,13 +1970,23 @@ mod tests {
     fn finalize_run_prefers_result_file_and_session_id() {
         let temp = tempdir().expect("temp dir");
         let result_path = temp.path().join("result.json");
+        let output_path = temp.path().join("output.json");
+        fs::write(
+            &output_path,
+            serde_json::json!({
+                "session_id": "claude-session-1",
+                "result": "done"
+            })
+            .to_string(),
+        )
+        .expect("write output");
         fs::write(
             &result_path,
             serde_json::json!({
+                "provider": "claude",
                 "exit_code": 7,
                 "started_at_ms": 11,
-                "finished_at_ms": 22,
-                "claude_session_id": "claude-session-1"
+                "finished_at_ms": 22
             })
             .to_string(),
         )
@@ -1866,25 +1995,33 @@ mod tests {
         let mut run = HiveRunState {
             run_id: "run-1".to_string(),
             prompt_preview: "hello".to_string(),
-            output_path: "/tmp/output".to_string(),
+            provider: "claude".to_string(),
+            output_path: output_path.display().to_string(),
             prompt_path: "/tmp/prompt".to_string(),
             result_path: result_path.display().to_string(),
             launcher_path: "/tmp/launcher".to_string(),
             process_pid: Some(10),
             resume_requested: true,
-            claude_session_id: None,
+            provider_session_id: None,
             started_at_ms: 1,
             finished_at_ms: None,
             exit_code: None,
             termination_reason: None,
+            provider_output: None,
         };
 
         finalize_run(&mut run, Some("killed_by_hive"));
         assert_eq!(run.exit_code, Some(7));
         assert_eq!(run.started_at_ms, 11);
         assert_eq!(run.finished_at_ms, Some(22));
-        assert_eq!(run.claude_session_id.as_deref(), Some("claude-session-1"));
+        assert_eq!(run.provider_session_id.as_deref(), Some("claude-session-1"));
         assert_eq!(run.termination_reason, None);
+        assert_eq!(
+            run.provider_output
+                .as_ref()
+                .and_then(|output| output.summary.as_deref()),
+            Some("done")
+        );
     }
 
     #[tokio::test]
@@ -1894,14 +2031,24 @@ mod tests {
         fs::write(
             &result_path,
             serde_json::json!({
+                "provider": "claude",
                 "exit_code": 0,
                 "started_at_ms": 1,
-                "finished_at_ms": 2,
-                "claude_session_id": "sess-2"
+                "finished_at_ms": 2
             })
             .to_string(),
         )
         .expect("write result");
+        let output_path = temp.path().join("output.json");
+        fs::write(
+            &output_path,
+            serde_json::json!({
+                "session_id": "sess-2",
+                "summary": "completed"
+            })
+            .to_string(),
+        )
+        .expect("write output");
 
         let mut state = HiveSessionState {
             version: HIVE_VERSION,
@@ -1920,17 +2067,19 @@ mod tests {
                 current_run: Some(HiveRunState {
                     run_id: "run-1".to_string(),
                     prompt_preview: "hello".to_string(),
-                    output_path: "/tmp/output".to_string(),
+                    provider: "claude".to_string(),
+                    output_path: output_path.display().to_string(),
                     prompt_path: "/tmp/prompt".to_string(),
                     result_path: result_path.display().to_string(),
                     launcher_path: "/tmp/launcher".to_string(),
                     process_pid: Some(999_999),
                     resume_requested: false,
-                    claude_session_id: None,
+                    provider_session_id: None,
                     started_at_ms: 1,
                     finished_at_ms: None,
                     exit_code: None,
                     termination_reason: None,
+                    provider_output: None,
                 }),
                 last_run: None,
                 last_used_at_ms: None,
@@ -1989,22 +2138,60 @@ mod tests {
         assert!(expanded.to_string_lossy().contains("test-path"));
     }
 
+    #[test]
+    fn parse_provider_output_extracts_json_session_and_keys() {
+        let temp = tempdir().expect("temp dir");
+        let output_path = temp.path().join("output.json");
+        fs::write(
+            &output_path,
+            serde_json::json!({
+                "session_id": "sess-1",
+                "summary": "ok",
+                "other": 1
+            })
+            .to_string(),
+        )
+        .expect("write output");
+
+        let output = parse_provider_output("claude", &output_path.display().to_string());
+        assert_eq!(output.format, HiveProviderOutputFormat::Json);
+        assert_eq!(output.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(output.summary.as_deref(), Some("ok"));
+        assert!(output.json_keys.contains(&"session_id".to_string()));
+        assert!(output.parse_error.is_none());
+    }
+
+    #[test]
+    fn parse_provider_output_falls_back_to_text_summary() {
+        let temp = tempdir().expect("temp dir");
+        let output_path = temp.path().join("output.log");
+        fs::write(&output_path, "working...\nstep 2\n").expect("write output");
+
+        let output = parse_provider_output("claude", &output_path.display().to_string());
+        assert_eq!(output.format, HiveProviderOutputFormat::Text);
+        assert_eq!(output.session_id, None);
+        assert_eq!(output.summary.as_deref(), Some("working... step 2"));
+        assert!(output.parse_error.is_some());
+    }
+
     #[tokio::test]
     async fn run_process_state_marks_identity_mismatch_when_pid_command_differs() {
         let run = HiveRunState {
             run_id: "run-1".to_string(),
             prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
             output_path: "/tmp/output".to_string(),
             prompt_path: "/tmp/prompt".to_string(),
             result_path: "/tmp/result".to_string(),
             launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
             process_pid: Some(std::process::id()),
             resume_requested: false,
-            claude_session_id: None,
+            provider_session_id: None,
             started_at_ms: 1,
             finished_at_ms: None,
             exit_code: None,
             termination_reason: None,
+            provider_output: None,
         };
 
         let state = run_process_state(&run)
