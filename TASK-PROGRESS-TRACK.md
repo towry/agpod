@@ -1,19 +1,21 @@
 # Task Progress Track
 
 - Track: agpod mcp hive tool contraction
-- Done-when: agpod-mcp exposes one hive tool with session uniqueness, max-5 agents, per-window panes, idle reuse, and hook scripts tracked
-- Updated: 2026-04-07
+- Done-when: agpod-mcp exposes one hive tool with repo-scoped process-backed Claude workers, max-5 agents, caller-controlled resume, and mode config introspection
+- Updated: 2026-04-08
 
 ## Tasks
 - [x] plan: stabilize hive tool contract
-- [x] impl: implement tmux hive state and tool
-- [x] hooks: add hook scripts for idle tracking
 - [x] test: verify with tests and review
 - [x] smoke-case: smoke core case tool flows on the current repo case
-- [>] smoke-hive-env: finish hive end-to-end smoke once MCP config forwards tmux variables
 - [x] handoff: write restart handoff summary for current hive smoke work
 - [x] config-mode: define hive mode introspection and required mode config
+- [x] proc: replace tmux hive runtime with local child-process manager
+- [x] resume: add optional Claude session resume controlled by caller
+- [x] docs: document process-mode lifecycle and edge-case handling
+- [x] impl: implement process-backed hive state and tool
+- [x] hooks: persist worker output files and session metadata
+- [x] smoke-hive-env: finish hive end-to-end smoke for process-backed runtime
 
 ## Document References
-- .agents/docs/hive-mcp-smoke-handoff-2026-04-07.md - restart handoff for current MCP smoke work
 - docs/hive-claude-modes.md - Claude-only hive mode config and mode_info contract

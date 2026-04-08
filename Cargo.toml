@@ -48,6 +48,7 @@ git2 = { version = "0.19", default-features = false }
 termtree = "0.4"
 surrealdb = { version = "3", features = ["kv-rocksdb"] }
 sha2 = "0.10"
+libc = "0.2"
 rmcp = { version = "1.2.0", features = ["client", "transport-io"] }
 uuid = { version = "1", features = ["v4"] }
 schemars = "1.2"
