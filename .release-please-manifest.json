@@ -5,5 +5,5 @@
   "crates/agpod-case": "0.6.1",
   "crates/agpod-case-server": "0.3.2",
   "crates/agpod-vcs-path": "0.9.4",
-  "crates/agpod-mcp": "0.7.2"
+  "crates/agpod-mcp": "0.7.3"
 }
