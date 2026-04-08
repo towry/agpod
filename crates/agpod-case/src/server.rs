@@ -164,12 +164,14 @@ mod tests {
                 doc_about,
                 pitfalls_about,
                 known_patterns_for,
+                steps,
                 ..
             } => {
                 assert!(how_to.is_empty());
                 assert!(doc_about.is_empty());
                 assert!(pitfalls_about.is_empty());
                 assert!(known_patterns_for.is_empty());
+                assert!(steps.is_empty());
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -197,6 +199,7 @@ mod tests {
                 doc_about: vec![],
                 pitfalls_about: vec![],
                 known_patterns_for: vec![],
+                steps: vec![],
             },
         };
         let repo_b = CaseRequest {
@@ -214,6 +217,7 @@ mod tests {
                 doc_about: vec![],
                 pitfalls_about: vec![],
                 known_patterns_for: vec![],
+                steps: vec![],
             },
         };
 
@@ -247,6 +251,7 @@ mod tests {
                 doc_about: vec![],
                 pitfalls_about: vec![],
                 known_patterns_for: vec![],
+                steps: vec![],
             },
         };
         let repo_b = CaseRequest {
@@ -264,6 +269,7 @@ mod tests {
                 doc_about: vec![],
                 pitfalls_about: vec![],
                 known_patterns_for: vec![],
+                steps: vec![],
             },
         };
 

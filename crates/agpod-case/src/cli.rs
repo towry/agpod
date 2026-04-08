@@ -152,6 +152,10 @@ pub enum CaseCommand {
         #[serde(default)]
         #[arg(long = "known-patterns-for")]
         known_patterns_for: Vec<String>,
+
+        /// Initial step spec. Repeatable; each value may be plain text or JSON like {"title":"...","reason":"...","start":true}; at most one step may set start=true
+        #[arg(long = "step")]
+        steps: Vec<String>,
     },
 
     /// Show current case navigation panel
@@ -163,9 +167,9 @@ pub enum CaseCommand {
 
     /// Record a fact, finding, evidence, or blocker
     Record {
-        /// Case ID (e.g., C-550e8400-e29b-41d4-a716-446655440000)
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Summary of the record
         #[arg(long)]
@@ -190,9 +194,9 @@ pub enum CaseCommand {
 
     /// Record a decision
     Decide {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Decision summary
         #[arg(long)]
@@ -205,9 +209,9 @@ pub enum CaseCommand {
 
     /// Change direction
     Redirect {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// New direction summary
         #[arg(long)]
@@ -247,9 +251,9 @@ pub enum CaseCommand {
 
     /// Close a case successfully
     Close {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Close summary
         #[arg(long)]
@@ -262,9 +266,9 @@ pub enum CaseCommand {
 
     /// Abandon a case
     Abandon {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Abandon summary
         #[arg(long)]
@@ -338,21 +342,15 @@ pub enum CaseCommand {
         recent_days: Option<u32>,
     },
 
-    /// Resume brief for handoff
-    Resume {
-        /// Case ID (defaults to open case)
-        #[arg(long)]
-        id: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Subcommand)]
 pub enum StepCommand {
     /// Add a new step to the current direction
     Add {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Step title
         #[arg(long)]
@@ -369,9 +367,9 @@ pub enum StepCommand {
 
     /// Start (activate) a step
     Start {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Step ID (e.g., S-001)
         #[arg(long)]
@@ -380,9 +378,9 @@ pub enum StepCommand {
 
     /// Mark a step as done
     Done {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Step ID
         #[arg(long)]
@@ -391,9 +389,9 @@ pub enum StepCommand {
 
     /// Reorder a step
     Move {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Step ID to move
         #[arg(long)]
@@ -406,9 +404,9 @@ pub enum StepCommand {
 
     /// Mark a step as blocked
     Block {
-        /// Case ID
+        /// Case ID (defaults to the open case)
         #[arg(long)]
-        id: String,
+        id: Option<String>,
 
         /// Step ID
         #[arg(long)]

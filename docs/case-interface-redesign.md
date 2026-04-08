@@ -324,6 +324,52 @@
 
 调用者之真实意图，通常是“对当前这案做事”，非“再手填一遍 case id”。
 
+### 返回契约补则
+
+虽去诸变更口对 `case_id` 之**常态输入强依赖**，其返回仍须稳定给出当前操作所落之案。
+
+最小要求为：
+
+- `case.id`
+  或
+- 顶层 `case_id`
+
+至少居一。
+
+其义有二：
+
+1. 调用者若后续仍欲显式指名，不必先补一口读取
+2. 日志、审计、跨工具串接时，始终可见“此动作作用于何案”
+
+故：
+
+- 输入可省
+- 输出不可失
+
+### 适用范围
+
+本条同施于：
+
+- `case_record`
+- `case_decide`
+- `case_redirect`
+- `case_steps_add`
+- `case_step_move`
+- `case_step_advance`
+- `case_finish`
+
+---
+
+## 4.3.1 `case_open.steps`
+
+`case_open` 可于开案时一并立初始步骤队列。
+
+约束：
+
+- `steps` 仅用于 `mode=new`
+- 每项可为纯文本，或 `{ "title": "...", "reason": "...", "start": true }`
+- 至多一项可置 `start=true`
+
 ---
 
 ## 4.4 `case_finish`
@@ -358,6 +404,7 @@ tool 级二次确认，本为人类终端防误触之设，不宜上升为 agent
 
 - `case.status`
 - `summary`
+- `case.id` 或顶层 `case_id`
 - `next`
 
 ---
