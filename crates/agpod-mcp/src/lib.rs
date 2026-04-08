@@ -2,11 +2,15 @@
 //!
 //! Keywords: mcp, model context protocol, case tools, schema, stdio
 
+mod hive;
+mod hive_provider;
+
 use agpod_case::{
     CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg, RecordKind,
     StepCommand,
 };
 use anyhow::Result;
+use hive::{hive_tool_output_schema, HiveRequest, HiveToolEnvelope, HiveToolResponse};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -109,6 +113,54 @@ impl AgpodMcpServer {
             ErrorData::internal_error("agpod-case returned a non-object JSON payload", None)
         })?;
         Ok(result)
+    }
+
+    fn case_finish_command(
+        outcome: &CaseFinishOutcomeInput,
+        id: Option<String>,
+        summary: String,
+        confirm_token: Option<String>,
+    ) -> CaseCommand {
+        match outcome {
+            CaseFinishOutcomeInput::Completed => CaseCommand::Close {
+                id,
+                summary,
+                confirm_token,
+            },
+            CaseFinishOutcomeInput::Abandoned => CaseCommand::Abandon {
+                id,
+                summary,
+                confirm_token,
+            },
+        }
+    }
+
+    async fn run_case_finish_request(
+        &self,
+        req: CaseFinishRequest,
+    ) -> Result<CallToolResult, ErrorData> {
+        let first = self
+            .run_case_command_raw(Self::case_finish_command(
+                &req.outcome,
+                req.id.clone(),
+                req.summary.clone(),
+                None,
+            ))
+            .await?;
+
+        let Some(confirm_token) = extract_confirmation_token(&first) else {
+            return Self::case_tool_result("case_finish", req.id, first);
+        };
+
+        let second = self
+            .run_case_command_raw(Self::case_finish_command(
+                &req.outcome,
+                req.id.clone(),
+                req.summary,
+                Some(confirm_token),
+            ))
+            .await?;
+        Self::case_tool_result("case_finish", req.id, second)
     }
 
     async fn run_case_list_request(
@@ -237,6 +289,14 @@ impl AgpodMcpServer {
         }
     }
 
+    async fn run_hive_request(&self, req: HiveRequest) -> Result<CallToolResult, ErrorData> {
+        let result = hive::run_hive_request(req).await?;
+        HiveToolResponse {
+            result: HiveToolEnvelope::from_raw(result),
+        }
+        .into_call_tool_result()
+    }
+
     fn case_tool_result(
         kind: &'static str,
         case_id_hint: Option<String>,
@@ -308,9 +368,9 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.readonly {
-            "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, resume by id, or otherwise mutate case state."
+            "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. Prefer `case_recall` in `mode=context` before `mode=find`: repo context recall is independent and does not require an open case. Do not create or open a case just to call `case_recall`; only `context_scope=case` needs an explicit `context_id`. `hive` is not available in read-only mode. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, or otherwise mutate case state."
         } else {
-            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Once you decide the task should use case tracking, call `case_current` to inspect active state. If it reports an open case, call `case_resume` before mutating anything; use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. Use `case_steps_add`, `case_step_mark_as`, and `case_step_move` to manage execution steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case; first call it without `confirm_token`, then retry only with the returned token if closing is truly intended. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
+            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Use `case_recall` before creating a case whenever retrieval is enough: prefer `mode=context` first because repo context recall is independent, defaults to `context_scope=repo`, and does not require an open case. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call `case_recall`; only `mode=context` with `context_scope=case` needs an explicit `context_id`. Once you decide the task should use case tracking, call `case_current` to inspect active state (it also serves as the resume entry point, returning direction, steps, last decision, last evidence, health, and next action); use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input and `steps` is an optional initial step queue; they may be used together, `steps` may contain at most one item with `start=true`, and `startup_context` may return status `ok`, `empty`, or `degraded` while open still succeeds. Use `case_steps_add` to add more steps later, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case in a single call. `hive` manages process-backed Claude exec workers under a repo-scoped default session, or an explicit `session_id` when the caller provides one: `mode_info` lists all public modes and whether each is configured, `run_hive_agent` creates or reuses one worker and starts one Claude exec child process, `list_agents` reports worker state and may target one `agent_id`, `close_agent` terminates one worker, and `close_session` terminates the whole hive session. `run_hive_agent` blocks until the run finishes unless `async=true`; async callers should poll `list_agents` with `agent_id` to read the recorded response. Public `mode` names are fixed to `readonly` and `full`. The server never guesses a launch profile: if `[mcp.hive.claude.modes.readonly]` or `[mcp.hive.claude.modes.full]` is missing, the corresponding hive action fails fast and tells you to call `mode_info`. Each mode may configure `description`, `command`, `args`, `settings`, `mcp_config`, and `env`. Paths in mode config may begin with `~`, and the server expands them to the user home directory before launch. `run_hive_agent` also accepts `resume=true`; if set, hive requires a previously saved Claude session id for that agent and otherwise fails fast. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -330,8 +390,20 @@ impl ServerHandler for AgpodMcpServer {
 #[tool_router(router = full_tool_router)]
 impl AgpodMcpServer {
     #[tool(
+        name = "hive",
+        description = "Manage process-backed Claude exec workers under a repo-scoped default session, or an explicit `session_id` when provided. `mode_info` lists all public modes and whether each is configured, `run_hive_agent` creates or reuses one worker and records `prompt.txt`, `output.log`, and `result.json`, and `list_agents` reports worker state or one targeted agent. Use `mode_info`, `run_hive_agent`, `list_agents`, `close_agent`, or `close_session`. `run_hive_agent` blocks until the run finishes unless `async=true`; async callers should poll `list_agents` with `agent_id`. Public `mode` names are fixed to `readonly` and `full`; missing mode config is an error. `~` in configured paths is expanded to the home directory, and `run_hive_agent` may set `resume=true` to continue the agent's saved Claude conversation.",
+        output_schema = hive_tool_output_schema()
+    )]
+    async fn hive(
+        &self,
+        Parameters(req): Parameters<HiveRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_hive_request(req).await
+    }
+
+    #[tool(
         name = "case_current",
-        description = "Read active case state after you have decided the task should use case tracking, or when resuming known case-aware work.",
+        description = "Read active case state for the current open case in this repository. Also serves as the resume entry point: returns direction, steps, last fact, last decision, last evidence, health, and next action in a single call.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_current(
@@ -351,6 +423,19 @@ impl AgpodMcpServer {
         &self,
         Parameters(req): Parameters<CaseOpenRequest>,
     ) -> Result<CallToolResult, ErrorData> {
+        if matches!(req.mode, CaseOpenModeInput::Reopen) && req.needed_context_query.is_some() {
+            return Err(ErrorData::invalid_params(
+                "`needed_context_query` is only allowed when mode is `new`",
+                None,
+            ));
+        }
+        if matches!(req.mode, CaseOpenModeInput::Reopen) && !req.steps.is_empty() {
+            return Err(ErrorData::invalid_params(
+                "`steps` is only allowed when mode is `new`",
+                None,
+            ));
+        }
+
         self.run_case_tool(
             "case_open",
             CaseCommand::Open {
@@ -365,6 +450,27 @@ impl AgpodMcpServer {
                 constraints: encode_constraints(req.constraints),
                 success_condition: req.success_condition,
                 abort_condition: req.abort_condition,
+                how_to: req
+                    .needed_context_query
+                    .as_ref()
+                    .map(|query| query.how_to.clone())
+                    .unwrap_or_default(),
+                doc_about: req
+                    .needed_context_query
+                    .as_ref()
+                    .map(|query| query.doc_about.clone())
+                    .unwrap_or_default(),
+                pitfalls_about: req
+                    .needed_context_query
+                    .as_ref()
+                    .map(|query| query.pitfalls_about.clone())
+                    .unwrap_or_default(),
+                known_patterns_for: req
+                    .needed_context_query
+                    .as_ref()
+                    .map(|query| query.known_patterns_for.clone())
+                    .unwrap_or_default(),
+                steps: encode_step_inputs(req.steps),
             },
             None,
         )
@@ -393,7 +499,7 @@ impl AgpodMcpServer {
                 files: req.files.map(|files| files.join(",")),
                 context: req.context,
             },
-            Some(req.id),
+            req.id,
         )
         .await
     }
@@ -414,7 +520,7 @@ impl AgpodMcpServer {
                 summary: req.summary,
                 reason: req.reason,
             },
-            Some(req.id),
+            req.id,
         )
         .await
     }
@@ -443,7 +549,7 @@ impl AgpodMcpServer {
                 success_condition: req.success_condition,
                 abort_condition: req.abort_condition,
             },
-            Some(req.id),
+            req.id,
         )
         .await
     }
@@ -463,27 +569,14 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_finish",
-        description = "End an open case. Use outcome \"completed\" when the goal is met, or \"abandoned\" when no longer worth pursuing. First call without `confirm_token` to request confirmation; only retry with the returned token if ending the case is truly intended.",
+        description = "End an open case in a single call. Use outcome \"completed\" when the goal is met, or \"abandoned\" when no longer worth pursuing.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_finish(
         &self,
         Parameters(req): Parameters<CaseFinishRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let command = match req.outcome {
-            CaseFinishOutcomeInput::Completed => CaseCommand::Close {
-                id: req.id.clone(),
-                summary: req.summary,
-                confirm_token: req.confirm_token,
-            },
-            CaseFinishOutcomeInput::Abandoned => CaseCommand::Abandon {
-                id: req.id.clone(),
-                summary: req.summary,
-                confirm_token: req.confirm_token,
-            },
-        };
-        self.run_case_tool("case_finish", command, Some(req.id))
-            .await
+        self.run_case_finish_request(req).await
     }
 
     #[tool(
@@ -500,7 +593,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_recall",
-        description = "Unified case retrieval entrypoint. Use `mode=find` plus `query` to discover past cases. Use `mode=context` to build semantic context: provide `query` to state the retrieval focus, or omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required.",
+        description = "Unified case retrieval entrypoint. Prefer `mode=context` first: it defaults to repo scope, works without an open case, and supports `context_shortcut=recent_work`. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call this tool. When `context_scope=case`, `context_id` is required.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_recall(
@@ -508,19 +601,6 @@ impl AgpodMcpServer {
         Parameters(req): Parameters<CaseRecallRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run_case_recall_request(req).await
-    }
-
-    #[tool(
-        name = "case_resume",
-        description = "Get a handoff summary for an open case or a chosen case.",
-        output_schema = case_tool_output_schema()
-    )]
-    async fn case_resume(
-        &self,
-        Parameters(req): Parameters<CaseShowRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.run_case_tool("case_resume", CaseCommand::Resume { id: req.id }, None)
-            .await
     }
 
     #[tool(
@@ -539,7 +619,7 @@ impl AgpodMcpServer {
             ));
         }
 
-        let case_id = req.id.clone();
+        let case_id_input = req.id.clone();
         let mut created_steps = Vec::new();
         let mut last_success = None;
         let commands: Vec<CaseCommand> = req
@@ -547,7 +627,7 @@ impl AgpodMcpServer {
             .iter()
             .map(|step| CaseCommand::Step {
                 command: StepCommand::Add {
-                    id: case_id.clone(),
+                    id: case_id_input.clone(),
                     title: step.title().to_string(),
                     reason: step.reason().map(ToOwned::to_owned),
                     start: step.start(),
@@ -580,17 +660,17 @@ impl AgpodMcpServer {
 
             let partial =
                 build_case_steps_add_partial_error(index + 1, step, created_steps, result);
-            return Self::case_tool_result("case_steps_add", Some(case_id), partial);
+            return Self::case_tool_result("case_steps_add", case_id_input, partial);
         }
 
         let result =
             build_case_steps_add_success(created_steps, last_success.expect("checked non-empty"));
-        Self::case_tool_result("case_steps_add", Some(case_id), result)
+        Self::case_tool_result("case_steps_add", case_id_input, result)
     }
 
     #[tool(
         name = "case_step_mark_as",
-        description = "Transition a step's status: started, done, or blocked.",
+        description = "Start or block a step. To complete the active step, use `case_step_advance` instead.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_step_mark_as(
@@ -602,20 +682,62 @@ impl AgpodMcpServer {
                 id: req.id.clone(),
                 step_id: req.step_id,
             },
-            StepStatusInput::Done => StepCommand::Done {
-                id: req.id.clone(),
-                step_id: req.step_id,
-            },
             StepStatusInput::Blocked => StepCommand::Block {
                 id: req.id.clone(),
                 step_id: req.step_id,
                 reason: req.reason.unwrap_or_default(),
             },
         };
+        self.run_case_tool("case_step_mark_as", CaseCommand::Step { command }, req.id)
+            .await
+    }
+
+    #[tool(
+        name = "case_step_advance",
+        description = "Complete the current active step, optionally append one factual record, and optionally start the next step in one call.",
+        output_schema = case_tool_output_schema()
+    )]
+    async fn case_step_advance(
+        &self,
+        Parameters(req): Parameters<CaseStepAdvanceRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if req.next_step_id.is_some() && req.next_step_auto {
+            return Err(ErrorData::invalid_params(
+                "`next_step_id` and `next_step_auto` cannot be combined",
+                None,
+            ));
+        }
+        if let Some(record) = req.record.as_ref() {
+            if matches!(record.kind, Some(RecordKind::GoalConstraintUpdate)) {
+                return Err(ErrorData::invalid_params(
+                    "`record.kind` must be one of `note`, `finding`, `evidence`, `blocker`",
+                    None,
+                ));
+            }
+        }
+
         self.run_case_tool(
-            "case_step_mark_as",
-            CaseCommand::Step { command },
-            Some(req.id),
+            "case_step_advance",
+            CaseCommand::Step {
+                command: StepCommand::Advance {
+                    id: req.id.clone(),
+                    step_id: req.step_id,
+                    record_summary: req.record.as_ref().map(|record| record.summary.clone()),
+                    record_kind: req
+                        .record
+                        .as_ref()
+                        .and_then(|record| record.kind.map(|kind| kind.as_str().to_string())),
+                    record_files: req
+                        .record
+                        .as_ref()
+                        .map(|record| record.files.clone())
+                        .unwrap_or_default(),
+                    record_context: req.record.and_then(|record| record.context),
+                    next_step_id: req.next_step_id,
+                    next_step_auto: req.next_step_auto,
+                },
+            },
+            req.id,
         )
         .await
     }
@@ -638,7 +760,7 @@ impl AgpodMcpServer {
                     before: req.before,
                 },
             },
-            Some(req.id),
+            req.id,
         )
         .await
     }
@@ -686,7 +808,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_recall",
-        description = "Unified case retrieval entrypoint. Use `mode=find` plus `query` to discover past cases. Use `mode=context` to build semantic context: provide `query` to state the retrieval focus, or omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required.",
+        description = "Unified case retrieval entrypoint. Prefer `mode=context` first: it defaults to repo scope, works without an open case, and supports `context_shortcut=recent_work`. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call this tool. When `context_scope=case`, `context_id` is required.",
         output_schema = case_tool_output_schema()
     )]
     async fn readonly_case_recall(
@@ -703,6 +825,19 @@ fn encode_constraints(constraints: Vec<ConstraintInput>) -> Vec<String> {
         .map(|constraint| {
             serde_json::to_string(&constraint.into_constraint())
                 .expect("constraint should serialize")
+        })
+        .collect()
+}
+
+/// Encode MCP `StepInput` values into CLI-compatible JSON strings.
+fn encode_step_inputs(steps: Vec<StepInput>) -> Vec<String> {
+    steps
+        .into_iter()
+        .map(|step| match step {
+            StepInput::Text(title) => title,
+            StepInput::Detailed(obj) => {
+                serde_json::to_string(&obj).expect("step object should serialize")
+            }
         })
         .collect()
 }
@@ -807,17 +942,18 @@ fn extract_case_id(raw: &Map<String, Value>) -> Option<String> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .or_else(|| {
-            raw.get("resume")
-                .and_then(|value| value.get("case_id"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| {
             raw.get("context")
                 .and_then(|value| value.get("active_case_id"))
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
         })
+}
+
+fn extract_confirmation_token(raw: &Map<String, Value>) -> Option<String> {
+    raw.get("confirmation")
+        .and_then(|value| value.get("confirm_token"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
 }
 
 fn extract_state(raw: &Map<String, Value>, ok: bool) -> Option<String> {
@@ -845,9 +981,7 @@ fn extract_state(raw: &Map<String, Value>, ok: bool) -> Option<String> {
                 .map(ToOwned::to_owned)
         })
         .or_else(|| {
-            if raw.get("resume").is_some() {
-                Some("resume".to_string())
-            } else if raw.get("cases").is_some() {
+            if raw.get("cases").is_some() {
                 Some("list".to_string())
             } else if raw.get("step").is_some() || raw.get("steps").is_some() {
                 Some("step".to_string())
@@ -908,7 +1042,7 @@ fn copy_case_steps_add_passthrough_fields(
     target: &mut Map<String, Value>,
     source: &Map<String, Value>,
 ) {
-    for key in ["steps", "context", "next"] {
+    for key in ["case", "steps", "context", "next"] {
         if let Some(value) = source.get(key).cloned() {
             target.insert(key.to_string(), value);
         }
@@ -929,6 +1063,8 @@ fn describe_case_open_request_schema(_schema: &mut schemars::Schema) {
     // Conditional validation (mode=new requires goal+direction, mode=reopen
     // requires case_id) is enforced server-side. Schema-level allOf/if-then
     // removed for compatibility with providers that reject top-level allOf.
+    // `needed_context_query` is optional startup memory input and can be
+    // combined with normal open fields in mode=new.
 }
 
 fn describe_case_record_request_schema(_schema: &mut schemars::Schema) {
@@ -987,6 +1123,27 @@ pub struct CaseOpenRequest {
     pub success_condition: Option<String>,
     /// Condition for aborting this direction.
     pub abort_condition: Option<String>,
+    /// Startup memory query requested by the opening agent.
+    pub needed_context_query: Option<NeededContextQueryInput>,
+    /// Optional initial step queue created during `mode=new`. Accepts either plain strings or objects like `{"title":"审阅报表","reason":"补证","start":true}`; at most one item may set `start=true`.
+    #[serde(default)]
+    pub steps: Vec<StepInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct NeededContextQueryInput {
+    /// How-to topics the new case should know at startup.
+    #[serde(default)]
+    pub how_to: Vec<String>,
+    /// Document topics worth reading first.
+    #[serde(default)]
+    pub doc_about: Vec<String>,
+    /// Pitfall topics to avoid early.
+    #[serde(default)]
+    pub pitfalls_about: Vec<String>,
+    /// Known working pattern topics to inherit.
+    #[serde(default)]
+    pub known_patterns_for: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -1000,8 +1157,8 @@ pub enum CaseOpenModeInput {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(transform = describe_case_record_request_schema)]
 pub struct CaseRecordRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// Fact summary.
     pub summary: String,
     /// Kind of record to append.
@@ -1019,8 +1176,8 @@ pub struct CaseRecordRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseDecideRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// Decision summary.
     pub summary: String,
     /// Why this decision was made.
@@ -1029,8 +1186,8 @@ pub struct CaseDecideRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseRedirectRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// New direction summary.
     pub direction: String,
     /// Why direction changed.
@@ -1070,14 +1227,12 @@ pub enum CaseFinishOutcomeInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseFinishRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// Outcome for closing the case.
     pub outcome: CaseFinishOutcomeInput,
     /// Closing or abandonment summary.
     pub summary: String,
-    /// Confirmation token returned by a previous `case_finish` attempt. Omit on the first call to request confirmation.
-    pub confirm_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1237,8 +1392,8 @@ impl From<CaseContextScopeInput> for ContextScopeArg {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseStepsAddRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// Steps to add. Must be non-empty. Accepts either plain strings like `"审阅报表"` or objects like `{"title":"审阅报表","reason":"补证","start":true}`.
     #[schemars(length(min = 1))]
     pub steps: Vec<StepInput>,
@@ -1290,18 +1445,17 @@ pub struct StepObjectInput {
 #[serde(rename_all = "lowercase")]
 pub enum StepStatusInput {
     Started,
-    Done,
     Blocked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(transform = describe_case_step_mark_as_request_schema)]
 pub struct CaseStepMarkAsRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// Step ID from the case step list, such as `steps.current.id` or one entry in `steps.ordered`.
     pub step_id: String,
-    /// Target status for the step.
+    /// Target status for the step. Use `case_step_advance` instead of `done`.
     pub status: StepStatusInput,
     /// Required and non-empty when `status` is `blocked`. Explains why the step cannot proceed.
     #[schemars(length(min = 1))]
@@ -1310,12 +1464,42 @@ pub struct CaseStepMarkAsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaseStepMoveRequest {
-    /// Case ID, usually from `case_current`, `case_open`, or a previous tool result's `result.case_id`.
-    pub id: String,
+    /// Case ID. Omit to use the current open case.
+    pub id: Option<String>,
     /// Step ID to move.
     pub step_id: String,
     /// Insert the moved step immediately before this step ID.
     pub before: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CaseStepAdvanceRecordInput {
+    /// Fact summary recorded while advancing.
+    pub summary: String,
+    /// Record kind. Allowed: `note`, `finding`, `evidence`, `blocker`.
+    #[serde(default, deserialize_with = "deserialize_optional_record_kind")]
+    #[schemars(transform = describe_case_record_kind_schema)]
+    pub kind: Option<RecordKind>,
+    /// Related file paths.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Extra context.
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CaseStepAdvanceRequest {
+    /// Case ID. Omit to use the open case in this repository.
+    pub id: Option<String>,
+    /// Step ID. Omit to use the current active step.
+    pub step_id: Option<String>,
+    /// Optional record appended while advancing.
+    pub record: Option<CaseStepAdvanceRecordInput>,
+    /// Explicit next step to start after completion.
+    pub next_step_id: Option<String>,
+    /// Start the next pending step automatically by order.
+    #[serde(default)]
+    pub next_step_auto: bool,
 }
 
 fn structured_tool_result<T>(
@@ -1365,7 +1549,9 @@ mod tests {
         let tool_names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
 
         assert!(tool_names.contains(&"case_current"));
+        assert!(tool_names.contains(&"hive"));
         assert!(tool_names.contains(&"case_open"));
+        assert!(tool_names.contains(&"case_step_advance"));
         assert!(tool_names.contains(&"case_steps_add"));
         let current_tool = tools
             .iter()
@@ -1381,13 +1567,23 @@ mod tests {
         assert!(info.instructions.is_some());
         let instructions = info.instructions.expect("instructions should exist");
         assert!(instructions.contains("case_current"));
-        assert!(instructions.contains("case_resume"));
+        assert!(!instructions.contains("case_resume"));
         assert!(instructions.contains("mode=context"));
+        assert!(instructions
+            .contains("Use `case_recall` before creating a case whenever retrieval is enough"));
+        assert!(instructions.contains("prefer `mode=context` first"));
+        assert!(instructions.contains("Do not create or open a case just to call `case_recall`"));
         assert!(instructions.contains("find_status"));
         assert!(instructions.contains("context_scope"));
         assert!(instructions.contains("context_shortcut"));
+        assert!(instructions.contains("needed_context_query"));
+        assert!(instructions.contains("`steps` is an optional initial step queue"));
+        assert!(instructions.contains("startup_context"));
         assert!(instructions.contains("omit `query` only when `context_shortcut=recent_work`"));
         assert!(instructions.contains("When `context_scope=case`, `context_id` is required"));
+        assert!(instructions
+            .contains("`mode_info` lists all public modes and whether each is configured"));
+        assert!(instructions.contains("Public `mode` names are fixed to `readonly` and `full`"));
     }
 
     #[test]
@@ -1409,11 +1605,14 @@ mod tests {
         assert!(!tool_names.contains(&"case_resume"));
         assert!(!tool_names.contains(&"case_steps_add"));
         assert!(!tool_names.contains(&"case_step_mark_as"));
+        assert!(!tool_names.contains(&"hive"));
 
         let info = server.get_info();
         let instructions = info.instructions.expect("instructions should exist");
         assert!(instructions
             .contains("`case_current`, `case_show`, `case_list`, and `case_recall` are available"));
+        assert!(instructions.contains("Prefer `case_recall` in `mode=context` before `mode=find`"));
+        assert!(instructions.contains("Do not create or open a case just to call `case_recall`"));
         assert!(instructions.contains("No tool in this server can open a case"));
     }
 
@@ -1432,6 +1631,12 @@ mod tests {
 
         let current_schema =
             serde_json::to_value(&current_tool.input_schema).expect("schema should serialize");
+        let hive_tool = tools
+            .iter()
+            .find(|tool| tool.name == "hive")
+            .expect("hive tool should exist");
+        let hive_schema =
+            serde_json::to_value(&hive_tool.input_schema).expect("schema should serialize");
         let open_schema =
             serde_json::to_value(&open_tool.input_schema).expect("schema should serialize");
         let redirect_tool = tools
@@ -1472,6 +1677,14 @@ mod tests {
             serde_json::to_value(&steps_add_tool.input_schema).expect("schema should serialize");
 
         assert!(!current_schema.to_string().contains("data_dir"));
+        assert!(hive_schema.to_string().contains("\"mode_info\""));
+        assert!(hive_schema.to_string().contains("\"run_hive_agent\""));
+        assert!(hive_schema.to_string().contains("\"close_agent\""));
+        assert!(hive_schema.to_string().contains("\"close_session\""));
+        assert!(hive_schema.to_string().contains("\"async\""));
+        assert!(hive_schema.to_string().contains("\"mode\""));
+        assert!(!hive_schema.to_string().contains("\"reset_agent\""));
+        assert!(!hive_schema.to_string().contains("\"codex\""));
         assert!(!open_schema.to_string().contains("data_dir"));
         assert!(open_schema.to_string().contains("\"reopen\""));
         assert!(open_schema.to_string().contains("\"case_id\""));
@@ -1480,6 +1693,12 @@ mod tests {
         assert!(open_schema.to_string().contains("\"direction\""));
         assert!(open_schema.to_string().contains("\"success_condition\""));
         assert!(open_schema.to_string().contains("\"abort_condition\""));
+        assert!(open_schema.to_string().contains("needed_context_query"));
+        assert!(open_schema.to_string().contains("\"steps\""));
+        assert!(open_schema.to_string().contains("how_to"));
+        assert!(open_schema.to_string().contains("doc_about"));
+        assert!(open_schema.to_string().contains("pitfalls_about"));
+        assert!(open_schema.to_string().contains("known_patterns_for"));
         assert!(redirect_schema.to_string().contains("is_drift_from_goal"));
         assert!(recall_schema.to_string().contains("find_recent_days"));
         assert!(recall_schema.to_string().contains("find_status"));
@@ -1498,7 +1717,7 @@ mod tests {
         assert!(finish_schema.to_string().contains("\"completed\""));
         assert!(finish_schema.to_string().contains("\"abandoned\""));
         assert!(step_mark_schema.to_string().contains("\"started\""));
-        assert!(step_mark_schema.to_string().contains("\"done\""));
+        assert!(!step_mark_schema.to_string().contains("\"done\""));
         assert!(step_mark_schema.to_string().contains("\"blocked\""));
         // Conditional allOf removed; verify reason field still present
         assert!(step_mark_schema.to_string().contains("\"reason\""));
@@ -1850,13 +2069,12 @@ mod tests {
         let request: CaseFinishRequest = serde_json::from_value(serde_json::json!({
             "id": "case",
             "outcome": "completed",
-            "summary": "done",
-            "confirm_token": "token-1"
+            "summary": "done"
         }))
         .expect("known finish outcome should deserialize");
 
         assert!(matches!(request.outcome, CaseFinishOutcomeInput::Completed));
-        assert_eq!(request.confirm_token.as_deref(), Some("token-1"));
+        assert_eq!(request.id.as_deref(), Some("case"));
     }
 
     #[test]
@@ -1873,6 +2091,92 @@ mod tests {
     }
 
     #[test]
+    fn case_open_request_accepts_needed_context_query() {
+        let request: CaseOpenRequest = serde_json::from_value(serde_json::json!({
+            "goal": "improve case open startup memory",
+            "direction": "wire startup context into case_open",
+            "needed_context_query": {
+                "how_to": ["run hosted smoke"],
+                "doc_about": ["honcho integration"],
+                "pitfalls_about": ["empty recall result"],
+                "known_patterns_for": ["smoke testing"]
+            }
+        }))
+        .expect("needed_context_query should deserialize");
+
+        let query = request
+            .needed_context_query
+            .expect("needed_context_query should exist");
+        assert_eq!(query.how_to, vec!["run hosted smoke"]);
+        assert_eq!(query.doc_about, vec!["honcho integration"]);
+        assert_eq!(query.pitfalls_about, vec!["empty recall result"]);
+        assert_eq!(query.known_patterns_for, vec!["smoke testing"]);
+    }
+
+    #[tokio::test]
+    async fn case_open_reopen_rejects_needed_context_query() {
+        let server = AgpodMcpServer::new();
+        let err = server
+            .case_open(Parameters(CaseOpenRequest {
+                mode: CaseOpenModeInput::Reopen,
+                case_id: Some("C-1".to_string()),
+                goal: None,
+                direction: None,
+                goal_constraints: Vec::new(),
+                constraints: Vec::new(),
+                success_condition: None,
+                abort_condition: None,
+                needed_context_query: Some(NeededContextQueryInput::default()),
+                steps: Vec::new(),
+            }))
+            .await
+            .expect_err("reopen should reject startup context query");
+
+        assert!(err.message.contains("needed_context_query"));
+    }
+
+    #[test]
+    fn case_open_request_accepts_initial_steps() {
+        let request: CaseOpenRequest = serde_json::from_value(serde_json::json!({
+            "goal": "improve startup flow",
+            "direction": "seed steps at open time",
+            "steps": [
+                "first step",
+                {"title":"second step","reason":"because","start":true}
+            ]
+        }))
+        .expect("steps should deserialize");
+
+        assert_eq!(request.steps.len(), 2);
+        assert_eq!(request.steps[0].title(), "first step");
+        assert_eq!(request.steps[1].title(), "second step");
+        assert_eq!(request.steps[1].reason(), Some("because"));
+        assert!(request.steps[1].start());
+    }
+
+    #[tokio::test]
+    async fn case_open_reopen_rejects_steps() {
+        let server = AgpodMcpServer::new();
+        let err = server
+            .case_open(Parameters(CaseOpenRequest {
+                mode: CaseOpenModeInput::Reopen,
+                case_id: Some("C-1".to_string()),
+                goal: None,
+                direction: None,
+                goal_constraints: Vec::new(),
+                constraints: Vec::new(),
+                success_condition: None,
+                abort_condition: None,
+                needed_context_query: None,
+                steps: vec![StepInput::Text("first step".to_string())],
+            }))
+            .await
+            .expect_err("reopen should reject steps");
+
+        assert!(err.message.contains("`steps`"));
+    }
+
+    #[test]
     fn case_step_mark_as_request_accepts_known_statuses() {
         let request: CaseStepMarkAsRequest = serde_json::from_value(serde_json::json!({
             "id": "case",
@@ -1886,12 +2190,52 @@ mod tests {
         assert_eq!(request.reason.as_deref(), Some("waiting"));
     }
 
+    #[test]
+    fn case_step_advance_request_accepts_record_payload() {
+        let request: CaseStepAdvanceRequest = serde_json::from_value(serde_json::json!({
+            "id": "case",
+            "step_id": "case/S-001",
+            "record": {
+                "summary": "captured evidence",
+                "kind": "evidence",
+                "files": ["docs/runbook.md"],
+                "context": "from smoke"
+            },
+            "next_step_auto": true
+        }))
+        .expect("advance request should deserialize");
+
+        let record = request.record.expect("record should exist");
+        assert_eq!(record.summary, "captured evidence");
+        assert!(matches!(record.kind, Some(RecordKind::Evidence)));
+        assert_eq!(record.files, vec!["docs/runbook.md"]);
+        assert_eq!(record.context.as_deref(), Some("from smoke"));
+        assert!(request.next_step_auto);
+    }
+
+    #[tokio::test]
+    async fn case_step_advance_rejects_conflicting_next_step_inputs() {
+        let server = AgpodMcpServer::new();
+        let err = server
+            .case_step_advance(Parameters(CaseStepAdvanceRequest {
+                id: Some("case".to_string()),
+                step_id: None,
+                record: None,
+                next_step_id: Some("case/S-002".to_string()),
+                next_step_auto: true,
+            }))
+            .await
+            .expect_err("conflicting next step inputs should be invalid");
+
+        assert!(err.message.contains("next_step_id"));
+    }
+
     #[tokio::test]
     async fn case_steps_add_rejects_empty_array() {
         let server = AgpodMcpServer::new();
         let err = server
             .case_steps_add(Parameters(CaseStepsAddRequest {
-                id: "case".to_string(),
+                id: Some("case".to_string()),
                 steps: Vec::new(),
             }))
             .await
@@ -1931,5 +2275,28 @@ mod tests {
                 }
             }))
         );
+    }
+
+    #[test]
+    fn hive_tool_response_sets_mcp_is_error() {
+        let result = HiveToolResponse {
+            result: HiveToolEnvelope::from_raw(
+                serde_json::json!({
+                    "ok": false,
+                    "state": "limit_reached",
+                    "message": "limit reached",
+                    "session": { "id": "hive-q9" },
+                    "agent": { "agent_id": "agent-01" }
+                })
+                .as_object()
+                .cloned()
+                .expect("raw payload should be object"),
+            ),
+        }
+        .into_call_tool_result()
+        .expect("tool response should serialize");
+
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.content, vec![Content::text("limit reached")]);
     }
 }

@@ -112,6 +112,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "libc",
  "rmcp",
  "serde",
  "serde_json",

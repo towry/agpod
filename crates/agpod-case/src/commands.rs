@@ -2,7 +2,10 @@
 //!
 //! Keywords: commands, execute, dispatch, open, record, decide, redirect, close, step
 
-use crate::cli::{CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, OpenModeArg, StepCommand};
+use crate::cli::{
+    CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, NeededContextQueryArg, OpenModeArg,
+    StepCommand,
+};
 use crate::client::CaseClient;
 use crate::config::{CaseConfig, CaseOverrides};
 use crate::context::{CaseContextProvider, LocalCaseContextProvider};
@@ -18,6 +21,7 @@ use crate::types::*;
 use crate::GoalDriftFlag;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
+use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -270,7 +274,26 @@ pub(crate) async fn execute_command_json(
             constraints,
             success_condition,
             abort_condition,
+            how_to,
+            doc_about,
+            pitfalls_about,
+            known_patterns_for,
+            steps,
         } => {
+            let needed_context_query = if how_to.is_empty()
+                && doc_about.is_empty()
+                && pitfalls_about.is_empty()
+                && known_patterns_for.is_empty()
+            {
+                None
+            } else {
+                Some(NeededContextQueryArg {
+                    how_to: how_to.clone(),
+                    doc_about: doc_about.clone(),
+                    pitfalls_about: pitfalls_about.clone(),
+                    known_patterns_for: known_patterns_for.clone(),
+                })
+            };
             cmd_open(
                 client,
                 OpenRequest {
@@ -282,6 +305,8 @@ pub(crate) async fn execute_command_json(
                     constraint_strs: constraints,
                     success_condition: success_condition.as_deref(),
                     abort_condition: abort_condition.as_deref(),
+                    needed_context_query: needed_context_query.as_ref(),
+                    step_specs: steps,
                 },
             )
             .await
@@ -301,7 +326,7 @@ pub(crate) async fn execute_command_json(
                 .unwrap_or_default();
             cmd_record(
                 client,
-                id,
+                id.as_deref(),
                 summary,
                 kind,
                 goal_constraints,
@@ -314,7 +339,7 @@ pub(crate) async fn execute_command_json(
             id,
             summary,
             reason,
-        } => cmd_decide(client, id, summary, reason).await,
+        } => cmd_decide(client, id.as_deref(), summary, reason).await,
         CaseCommand::Redirect {
             id,
             direction,
@@ -327,7 +352,7 @@ pub(crate) async fn execute_command_json(
         } => {
             cmd_redirect(
                 client,
-                id,
+                id.as_deref(),
                 direction,
                 reason,
                 context,
@@ -343,12 +368,12 @@ pub(crate) async fn execute_command_json(
             id,
             summary,
             confirm_token,
-        } => cmd_close(client, id, summary, confirm_token.as_deref()).await,
+        } => cmd_close(client, id.as_deref(), summary, confirm_token.as_deref()).await,
         CaseCommand::Abandon {
             id,
             summary,
             confirm_token,
-        } => cmd_abandon(client, id, summary, confirm_token.as_deref()).await,
+        } => cmd_abandon(client, id.as_deref(), summary, confirm_token.as_deref()).await,
         CaseCommand::Step { command } => cmd_step(client, command).await,
         CaseCommand::Recall {
             query,
@@ -385,8 +410,14 @@ pub(crate) async fn execute_command_json(
             limit,
             recent_days,
         } => cmd_list(client, CaseListOptions::new(*status, *limit, *recent_days)).await,
-        CaseCommand::Resume { id } => cmd_resume(client, id.as_deref()).await,
     }
+}
+
+struct StepAdvanceRecord<'a> {
+    kind: RecordKind,
+    summary: &'a str,
+    files: &'a [String],
+    context: Option<&'a str>,
 }
 
 async fn build_error_value(
@@ -545,10 +576,7 @@ async fn load_context_case(
     if matches!(error, CaseError::RepoHasOpenCase(_) | CaseError::NoOpenCase)
         || matches!(
             command,
-            CaseCommand::Open { .. }
-                | CaseCommand::Current { .. }
-                | CaseCommand::Show { id: None }
-                | CaseCommand::Resume { id: None }
+            CaseCommand::Open { .. } | CaseCommand::Current { .. } | CaseCommand::Show { id: None }
         )
     {
         return client.find_open_case().await.ok().flatten();
@@ -563,14 +591,15 @@ fn command_case_id(command: &CaseCommand) -> Option<&str> {
         | CaseCommand::Decide { id, .. }
         | CaseCommand::Redirect { id, .. }
         | CaseCommand::Close { id, .. }
-        | CaseCommand::Abandon { id, .. } => Some(id.as_str()),
-        CaseCommand::Show { id } | CaseCommand::Resume { id } => id.as_deref(),
+        | CaseCommand::Abandon { id, .. }
+        | CaseCommand::Show { id } => id.as_deref(),
         CaseCommand::Step { command } => match command {
             StepCommand::Add { id, .. }
             | StepCommand::Start { id, .. }
             | StepCommand::Done { id, .. }
             | StepCommand::Move { id, .. }
-            | StepCommand::Block { id, .. } => Some(id.as_str()),
+            | StepCommand::Block { id, .. }
+            | StepCommand::Advance { id, .. } => id.as_deref(),
         },
         CaseCommand::Context { id, .. } => id.as_deref(),
         CaseCommand::Open { .. }
@@ -587,6 +616,7 @@ fn command_step_id(command: &CaseCommand) -> Option<&str> {
             | StepCommand::Done { step_id, .. }
             | StepCommand::Move { step_id, .. }
             | StepCommand::Block { step_id, .. } => Some(step_id.as_str()),
+            StepCommand::Advance { step_id, .. } => step_id.as_deref(),
             StepCommand::Add { .. } => None,
         },
         _ => None,
@@ -750,6 +780,7 @@ async fn append_rotation_note(
             entry_seq,
             EntryType::Record,
             Some("note"),
+            None,
             &format!(
                 "rotated from case {from_case_id} into {to_case_id} after redirect limit {redirect_limit} was exceeded"
             ),
@@ -1015,6 +1046,247 @@ struct OpenRequest<'a> {
     constraint_strs: &'a [String],
     success_condition: Option<&'a str>,
     abort_condition: Option<&'a str>,
+    needed_context_query: Option<&'a NeededContextQueryArg>,
+    step_specs: &'a [String],
+}
+
+#[derive(Debug, Clone)]
+struct StartupContextSummary {
+    status: &'static str,
+    context: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenStepSpec {
+    title: String,
+    reason: Option<String>,
+    #[serde(default)]
+    start: bool,
+}
+
+fn parse_open_step_specs(step_specs: &[String]) -> CaseResult<Vec<OpenStepSpec>> {
+    let mut parsed = Vec::with_capacity(step_specs.len());
+    let mut started_step_count = 0;
+    for raw in step_specs {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(CaseError::Other(
+                "open step spec must not be empty".to_string(),
+            ));
+        }
+        if trimmed.starts_with('{') {
+            let spec: OpenStepSpec = serde_json::from_str(trimmed).map_err(|error| {
+                CaseError::Other(format!("invalid open step JSON `{trimmed}`: {error}"))
+            })?;
+            if spec.title.trim().is_empty() {
+                return Err(CaseError::Other(
+                    "open step title must not be empty".to_string(),
+                ));
+            }
+            if spec.start {
+                started_step_count += 1;
+                if started_step_count > 1 {
+                    return Err(CaseError::Other(
+                        "open steps may contain at most one start=true item".to_string(),
+                    ));
+                }
+            }
+            parsed.push(spec);
+        } else {
+            parsed.push(OpenStepSpec {
+                title: trimmed.to_string(),
+                reason: None,
+                start: false,
+            });
+        }
+    }
+    Ok(parsed)
+}
+
+fn build_needed_context_prompt(
+    goal: Option<&str>,
+    direction: Option<&str>,
+    needed_context_query: &NeededContextQueryArg,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(goal) = goal.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("Goal: {goal}"));
+    }
+    if let Some(direction) = direction.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("Direction: {direction}"));
+    }
+    if !needed_context_query.how_to.is_empty() {
+        lines.push(format!(
+            "How-to topics: {}",
+            needed_context_query.how_to.join("; ")
+        ));
+    }
+    if !needed_context_query.doc_about.is_empty() {
+        lines.push(format!(
+            "Document topics: {}",
+            needed_context_query.doc_about.join("; ")
+        ));
+    }
+    if !needed_context_query.pitfalls_about.is_empty() {
+        lines.push(format!(
+            "Pitfalls to avoid: {}",
+            needed_context_query.pitfalls_about.join("; ")
+        ));
+    }
+    if !needed_context_query.known_patterns_for.is_empty() {
+        lines.push(format!(
+            "Known working patterns for: {}",
+            needed_context_query.known_patterns_for.join("; ")
+        ));
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Summarize startup context for a newly opened case. Prioritize stable usage patterns, pitfalls, key documents, and relevant prior cases.\n{}",
+            lines.join("\n")
+        ))
+    }
+}
+
+fn needed_context_topic_queries(
+    goal: Option<&str>,
+    direction: Option<&str>,
+    needed_context_query: &NeededContextQueryArg,
+) -> Vec<String> {
+    let mut queries = Vec::new();
+    for topic in &needed_context_query.how_to {
+        queries.push(topic.clone());
+    }
+    for topic in &needed_context_query.doc_about {
+        queries.push(topic.clone());
+    }
+    for topic in &needed_context_query.pitfalls_about {
+        queries.push(topic.clone());
+    }
+    for topic in &needed_context_query.known_patterns_for {
+        queries.push(topic.clone());
+    }
+    if queries.is_empty() {
+        if let Some(direction) = direction.filter(|value| !value.trim().is_empty()) {
+            queries.push(direction.to_string());
+        }
+        if let Some(goal) = goal.filter(|value| !value.trim().is_empty()) {
+            queries.push(goal.to_string());
+        }
+    }
+    queries.retain(|query| !query.trim().is_empty());
+    queries.dedup();
+    queries.truncate(4);
+    queries
+}
+
+async fn build_startup_context(
+    client: &CaseClient,
+    goal: Option<&str>,
+    direction: Option<&str>,
+    needed_context_query: Option<&NeededContextQueryArg>,
+) -> Option<StartupContextSummary> {
+    let needed_context_query = needed_context_query?;
+    let query = build_needed_context_prompt(goal, direction, needed_context_query)?;
+    let topic_queries = needed_context_topic_queries(goal, direction, needed_context_query);
+    let provider = match context_provider_for_client(client) {
+        Ok(provider) => provider,
+        Err(_) => {
+            return Some(StartupContextSummary {
+                status: "degraded",
+                context: json!({
+                    "query": query,
+                    "recommended_docs": [],
+                    "recommended_external_refs": [],
+                    "known_working_patterns": [],
+                    "known_pitfalls": [],
+                    "relevant_past_cases": [],
+                    "why_these_are_relevant": [],
+                }),
+            });
+        }
+    };
+
+    let mut known_working_patterns = Vec::new();
+    let mut known_pitfalls = Vec::new();
+    let mut relevant_past_cases = Vec::new();
+    let mut why_these_are_relevant = Vec::new();
+    let mut saw_hits = false;
+
+    for topic_query in topic_queries {
+        let result = match provider
+            .get_context(ContextScope::Repo, Some(&topic_query), 4, Some(600))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                return Some(StartupContextSummary {
+                    status: "degraded",
+                    context: json!({
+                        "query": query,
+                        "recommended_docs": [],
+                        "recommended_external_refs": [],
+                        "known_working_patterns": [],
+                        "known_pitfalls": [],
+                        "relevant_past_cases": [],
+                        "why_these_are_relevant": [],
+                    }),
+                });
+            }
+        };
+        saw_hits |= !result.hits.is_empty();
+
+        for hit in &result.hits {
+            if let Some(case_id) = hit.case_id.as_ref() {
+                if !relevant_past_cases.contains(case_id) {
+                    relevant_past_cases.push(case_id.clone());
+                }
+            }
+            match hit.kind.as_deref() {
+                Some("blocker") => {
+                    if !known_pitfalls.contains(&hit.excerpt) {
+                        known_pitfalls.push(hit.excerpt.clone());
+                    }
+                }
+                Some("finding") | Some("evidence") | Some("note") | None => {
+                    if !known_working_patterns.contains(&hit.excerpt) {
+                        known_working_patterns.push(hit.excerpt.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for topic in &needed_context_query.how_to {
+        why_these_are_relevant.push(format!("requested how-to topic: {topic}"));
+    }
+    for topic in &needed_context_query.doc_about {
+        why_these_are_relevant.push(format!("requested doc topic: {topic}"));
+    }
+    for topic in &needed_context_query.pitfalls_about {
+        why_these_are_relevant.push(format!("requested pitfall topic: {topic}"));
+    }
+
+    known_working_patterns.truncate(5);
+    known_pitfalls.truncate(5);
+    relevant_past_cases.truncate(5);
+    why_these_are_relevant.truncate(8);
+
+    let status = if saw_hits { "ok" } else { "empty" };
+    Some(StartupContextSummary {
+        status,
+        context: json!({
+            "query": query,
+            "recommended_docs": [],
+            "recommended_external_refs": [],
+            "known_working_patterns": known_working_patterns,
+            "known_pitfalls": known_pitfalls,
+            "relevant_past_cases": relevant_past_cases,
+            "why_these_are_relevant": why_these_are_relevant,
+        }),
+    })
 }
 
 async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<serde_json::Value> {
@@ -1031,6 +1303,7 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
             let direction = request.direction.ok_or_else(|| {
                 CaseError::InvalidOpenMode("`direction` is required when mode is `new`".to_string())
             })?;
+            let initial_steps = parse_open_step_specs(request.step_specs)?;
             let goal_constraints = parse_constraints(request.goal_constraint_strs)?;
             let direction_constraints = parse_constraints(request.constraint_strs)?;
 
@@ -1060,19 +1333,53 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
             )
             .await;
 
-            let next = NextAction {
-                suggested_command: "step add".to_string(),
-                why: "the case is open but the execution queue is still empty".to_string(),
-            };
+            for (index, step_spec) in initial_steps.iter().enumerate() {
+                let step_id = generate_step_id(client, &case_id).await?;
+                client
+                    .create_step(
+                        &step_id,
+                        &case_id,
+                        1,
+                        (index + 1) as u32,
+                        &step_spec.title,
+                        step_spec.reason.as_deref(),
+                    )
+                    .await?;
+                if step_spec.start {
+                    let open_case = client.get_case(&case_id).await?;
+                    activate_step(client, &open_case, &step_id).await?;
+                }
+            }
+
+            let opened_case = client.get_case(&case_id).await?;
+            let steps = client.get_steps(&case_id, 1).await?;
+            let (current_step, pending_steps) = split_steps(&steps);
+            let next = suggest_next(
+                &opened_case,
+                current_step.as_ref(),
+                &pending_steps,
+                &Health::OnTrack,
+            );
+            let startup_context = build_startup_context(
+                client,
+                request.goal,
+                request.direction,
+                request.needed_context_query,
+            )
+            .await;
 
             let mut value = json!({
                 "ok": true,
-                "case": output::case_json(&case),
+                "case": output::case_json(&opened_case),
                 "direction": output::direction_json(&dir),
-                "steps": output::steps_json(&[]),
+                "steps": output::steps_json(&steps),
                 "context": output::context_json(&case_id, 1),
                 "next": output::next_json(&next)
             });
+            if let Some(startup_context) = startup_context {
+                value["startup_context"] = startup_context.context;
+                value["startup_context_status"] = json!(startup_context.status);
+            }
             append_dispatch_report(&mut value, &dispatch);
             Ok(value)
         }
@@ -1088,9 +1395,11 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                 || !request.constraint_strs.is_empty()
                 || request.success_condition.is_some()
                 || request.abort_condition.is_some()
+                || request.needed_context_query.is_some()
+                || !request.step_specs.is_empty()
             {
                 return Err(CaseError::InvalidOpenMode(
-                    "`goal`, `direction`, constraints, and exit conditions are only allowed when mode is `new`"
+                    "`goal`, `direction`, constraints, exit conditions, startup context query, and steps are only allowed when mode is `new`"
                         .to_string(),
                 ));
             }
@@ -1134,6 +1443,7 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                     next_entry_seq,
                     EntryType::Record,
                     Some("note"),
+                    None,
                     "reopened case",
                     None,
                     Some("case reopened via case_open mode=reopen"),
@@ -1187,6 +1497,8 @@ async fn cmd_open_new(
             constraint_strs,
             success_condition,
             abort_condition,
+            needed_context_query: None,
+            step_specs: &[],
         },
     )
     .await
@@ -1232,6 +1544,19 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
     // Health detection
     let health = detect_health(&steps, &last_entry);
 
+    // Resume fields (absorbed from cmd_resume)
+    let entries = client.get_entries(&case.id).await?;
+    let last_decision = entries
+        .iter()
+        .rev()
+        .find(|e| e.entry_type == EntryType::Decision)
+        .map(|e| e.summary.as_str());
+    let last_evidence = entries
+        .iter()
+        .rev()
+        .find(|e| e.entry_type == EntryType::Record && e.kind.as_deref() == Some("evidence"))
+        .map(|e| e.summary.as_str());
+
     let mut result = json!({
         "ok": true,
         "case": output::case_json(&case),
@@ -1245,6 +1570,31 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
     if let Some(fact) = last_fact {
         result["last_fact"] = json!(fact);
     }
+    if let Some(d) = last_decision {
+        result["last_decision"] = json!(d);
+    }
+    if let Some(e) = last_evidence {
+        result["last_evidence"] = json!(e);
+    }
+    result["resume"] = json!({
+        "case_id": case.id.clone(),
+        "goal": case.goal.clone(),
+        "goal_constraints": case.goal_constraints.clone(),
+        "current_direction": dir.summary.clone(),
+        "direction_constraints": dir.constraints.clone(),
+        "current_step": current_step.as_ref().map(|step| json!({
+            "id": step.id,
+            "title": step.title
+        })),
+        "next_pending_steps": pending_steps.iter().map(|step| json!({
+            "id": step.id,
+            "title": step.title
+        })).collect::<Vec<_>>(),
+        "success_condition": dir.success_condition.clone(),
+        "abort_condition": dir.abort_condition.clone(),
+        "last_decision": last_decision,
+        "last_evidence": last_evidence
+    });
     result["health"] = json!(health.0.as_str());
     if let Some(warning) = health.1 {
         result["warning"] = json!(warning);
@@ -1259,15 +1609,16 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
 
 async fn cmd_record(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     summary: &str,
     kind: &str,
     goal_constraint_strs: &[String],
     files: &[String],
     context: Option<&str>,
 ) -> CaseResult<serde_json::Value> {
-    let mut case = client.get_case(case_id).await?;
+    let mut case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
 
     if summary.trim().is_empty() {
         return Err(CaseError::Other("summary must not be empty".to_string()));
@@ -1314,6 +1665,7 @@ async fn cmd_record(
             seq,
             EntryType::Record,
             Some(kind),
+            None,
             summary,
             None,
             context,
@@ -1342,6 +1694,7 @@ async fn cmd_record(
 
     let mut result = json!({
         "ok": true,
+        "case": output::case_json(&case),
         "event": {
             "seq": entry.seq,
             "entry_type": "record",
@@ -1366,12 +1719,13 @@ async fn cmd_record(
 
 async fn cmd_decide(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     summary: &str,
     reason: &str,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
 
     if summary.trim().is_empty() {
         return Err(CaseError::Other("summary must not be empty".to_string()));
@@ -1383,6 +1737,7 @@ async fn cmd_decide(
             case_id,
             seq,
             EntryType::Decision,
+            None,
             None,
             summary,
             Some(reason),
@@ -1408,6 +1763,7 @@ async fn cmd_decide(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&case),
         "event": {
             "seq": entry.seq,
             "entry_type": "decision",
@@ -1423,7 +1779,7 @@ async fn cmd_decide(
 #[allow(clippy::too_many_arguments)]
 async fn cmd_redirect(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     direction: &str,
     reason: &str,
     context: &str,
@@ -1432,8 +1788,9 @@ async fn cmd_redirect(
     success_condition: &str,
     abort_condition: &str,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
 
     if is_drift_from_goal == GoalDriftFlag::Yes {
         return Err(CaseError::GoalDriftRequiresNewCase);
@@ -1468,7 +1825,7 @@ async fn cmd_redirect(
             let dispatch = dispatch_event(
                 client,
                 CaseDomainEvent::RedirectRecovered {
-                    case: updated_case,
+                    case: updated_case.clone(),
                     from_direction: prev_dir.clone(),
                     to_direction: existing_dir.clone(),
                 },
@@ -1482,6 +1839,7 @@ async fn cmd_redirect(
 
             let mut value = json!({
                 "ok": true,
+                "case": output::case_json(&updated_case),
                 "event": {
                     "seq": serde_json::Value::Null,
                     "entry_type": "redirect_recovered",
@@ -1519,6 +1877,7 @@ async fn cmd_redirect(
             entry_seq,
             EntryType::Redirect,
             None,
+            None,
             direction,
             Some(reason),
             Some(context),
@@ -1547,7 +1906,7 @@ async fn cmd_redirect(
     let dispatch = dispatch_event(
         client,
         CaseDomainEvent::RedirectCommitted {
-            case: updated_case,
+            case: updated_case.clone(),
             from_direction: prev_dir.clone(),
             to_direction: new_dir.clone(),
             entry: entry.clone(),
@@ -1562,6 +1921,7 @@ async fn cmd_redirect(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&updated_case),
         "event": {
             "seq": entry_seq,
             "entry_type": "redirect",
@@ -1636,12 +1996,13 @@ fn case_show_spill_path(case_id: &str) -> PathBuf {
 
 async fn cmd_close(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     summary: &str,
     confirm_token: Option<&str>,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
     ensure_no_unfinished_steps(client, &case).await?;
     ensure_close_confirmation(client, &case, "close", summary, confirm_token).await?;
 
@@ -1679,12 +2040,13 @@ async fn cmd_close(
 
 async fn cmd_abandon(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     summary: &str,
     confirm_token: Option<&str>,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
     ensure_no_unfinished_steps(client, &case).await?;
     ensure_close_confirmation(client, &case, "abandon", summary, confirm_token).await?;
 
@@ -1766,13 +2128,13 @@ async fn confirm_and_close(
     case_id: &str,
     summary: &str,
 ) -> CaseResult<serde_json::Value> {
-    let confirm_token = match cmd_close(client, case_id, summary, None).await {
+    let confirm_token = match cmd_close(client, Some(case_id), summary, None).await {
         Err(CaseError::CloseConfirmationRequired { confirm_token, .. }) => confirm_token,
         Err(other) => return Err(other),
         Ok(value) => return Ok(value),
     };
 
-    cmd_close(client, case_id, summary, Some(&confirm_token)).await
+    cmd_close(client, Some(case_id), summary, Some(&confirm_token)).await
 }
 
 async fn cmd_step(client: &CaseClient, command: &StepCommand) -> CaseResult<serde_json::Value> {
@@ -1782,31 +2144,58 @@ async fn cmd_step(client: &CaseClient, command: &StepCommand) -> CaseResult<serd
             title,
             reason,
             start,
-        } => cmd_step_add(client, id, title, reason.as_deref(), *start).await,
-        StepCommand::Start { id, step_id } => cmd_step_start(client, id, step_id).await,
-        StepCommand::Done { id, step_id } => cmd_step_done(client, id, step_id).await,
+        } => cmd_step_add(client, id.as_deref(), title, reason.as_deref(), *start).await,
+        StepCommand::Start { id, step_id } => cmd_step_start(client, id.as_deref(), step_id).await,
+        StepCommand::Done { id, step_id } => cmd_step_done(client, id.as_deref(), step_id).await,
         StepCommand::Move {
             id,
             step_id,
             before,
-        } => cmd_step_move(client, id, step_id, before).await,
+        } => cmd_step_move(client, id.as_deref(), step_id, before).await,
         StepCommand::Block {
             id,
             step_id,
             reason,
-        } => cmd_step_block(client, id, step_id, reason).await,
+        } => cmd_step_block(client, id.as_deref(), step_id, reason).await,
+        StepCommand::Advance {
+            id,
+            step_id,
+            record_summary,
+            record_kind,
+            record_files,
+            record_context,
+            next_step_id,
+            next_step_auto,
+        } => {
+            let record = build_step_advance_record(
+                record_summary.as_deref(),
+                record_kind.as_deref(),
+                record_files,
+                record_context.as_deref(),
+            )?;
+            cmd_step_advance(
+                client,
+                id.as_deref(),
+                step_id.as_deref(),
+                record,
+                next_step_id.as_deref(),
+                *next_step_auto,
+            )
+            .await
+        }
     }
 }
 
 async fn cmd_step_add(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     title: &str,
     reason: Option<&str>,
     start: bool,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
 
     let steps = client
         .get_steps(case_id, case.current_direction_seq)
@@ -1861,6 +2250,7 @@ async fn cmd_step_add(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&refreshed_case),
         "step": {
             "id": step.id,
             "order": step.order_index,
@@ -1877,11 +2267,12 @@ async fn cmd_step_add(
 
 async fn cmd_step_start(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     step_id: &str,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
     let step = client.get_step(step_id).await?;
     ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
 
@@ -1912,6 +2303,7 @@ async fn cmd_step_start(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&refreshed_case),
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, refreshed_case.current_direction_seq),
@@ -1943,11 +2335,12 @@ async fn activate_step(client: &CaseClient, case: &Case, step_id: &str) -> CaseR
 
 async fn cmd_step_done(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     step_id: &str,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
     let step = client.get_step(step_id).await?;
     ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
 
@@ -1991,6 +2384,7 @@ async fn cmd_step_done(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&refreshed_case),
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, refreshed_case.current_direction_seq),
@@ -2002,12 +2396,13 @@ async fn cmd_step_done(
 
 async fn cmd_step_move(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     step_id: &str,
     before_id: &str,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
 
     let mut steps = client
         .get_steps(case_id, case.current_direction_seq)
@@ -2065,6 +2460,7 @@ async fn cmd_step_move(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&refreshed_case),
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, refreshed_case.current_direction_seq),
@@ -2076,12 +2472,13 @@ async fn cmd_step_move(
 
 async fn cmd_step_block(
     client: &CaseClient,
-    case_id: &str,
+    case_id: Option<&str>,
     step_id: &str,
     reason: &str,
 ) -> CaseResult<serde_json::Value> {
-    let case = client.get_case(case_id).await?;
+    let case = resolve_case(client, case_id).await?;
     ensure_open(&case)?;
+    let case_id = case.id.as_str();
     let step = client.get_step(step_id).await?;
     ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
 
@@ -2114,11 +2511,316 @@ async fn cmd_step_block(
 
     let mut value = json!({
         "ok": true,
+        "case": output::case_json(&refreshed_case),
         "steps": output::steps_json(&steps),
         "reminder": step_status_reminder(&steps),
         "context": output::context_json(case_id, refreshed_case.current_direction_seq),
         "next": output::next_json(&next)
     });
+    append_dispatch_report(&mut value, &dispatch);
+    Ok(value)
+}
+
+fn build_step_advance_record<'a>(
+    summary: Option<&'a str>,
+    kind: Option<&str>,
+    files: &'a [String],
+    context: Option<&'a str>,
+) -> CaseResult<Option<StepAdvanceRecord<'a>>> {
+    let has_record_fields =
+        summary.is_some() || kind.is_some() || !files.is_empty() || context.is_some();
+    if !has_record_fields {
+        return Ok(None);
+    }
+
+    let summary = summary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            CaseError::Other(
+                "record_summary is required when any record field is provided".to_string(),
+            )
+        })?;
+    let kind = kind.unwrap_or("note");
+    let record_kind = kind
+        .parse::<RecordKind>()
+        .map_err(|_| CaseError::invalid_record_kind(kind))?;
+    if matches!(record_kind, RecordKind::GoalConstraintUpdate) {
+        return Err(CaseError::Other(
+            "advance record kind must be one of `note`, `finding`, `evidence`, `blocker`"
+                .to_string(),
+        ));
+    }
+
+    Ok(Some(StepAdvanceRecord {
+        kind: record_kind,
+        summary,
+        files,
+        context,
+    }))
+}
+
+fn step_json_min(step: &Step) -> serde_json::Value {
+    json!({
+        "id": step.id,
+        "order": step.order_index,
+        "title": step.title,
+        "status": step.status.as_str()
+    })
+}
+
+fn select_next_pending_step(
+    steps: &[Step],
+    completed_step: &Step,
+    explicit_next_step_id: Option<&str>,
+    next_step_auto: bool,
+) -> CaseResult<Option<Step>> {
+    if explicit_next_step_id.is_some() && next_step_auto {
+        return Err(CaseError::Other(
+            "`next_step_id` and `next_step_auto` cannot be combined".to_string(),
+        ));
+    }
+
+    if let Some(next_step_id) = explicit_next_step_id {
+        let next_step = steps
+            .iter()
+            .find(|step| step.id == next_step_id)
+            .cloned()
+            .ok_or_else(|| CaseError::StepNotFound(next_step_id.to_string()))?;
+        if next_step.direction_seq != completed_step.direction_seq {
+            return Err(CaseError::Other(format!(
+                "next step {next_step_id} does not belong to the current direction"
+            )));
+        }
+        if next_step.status != StepStatus::Pending {
+            return Err(CaseError::Other(format!(
+                "next step {next_step_id} must be pending; found {}",
+                next_step.status.as_str()
+            )));
+        }
+        return Ok(Some(next_step));
+    }
+
+    if next_step_auto {
+        return Ok(steps
+            .iter()
+            .filter(|step| {
+                step.direction_seq == completed_step.direction_seq
+                    && step.status == StepStatus::Pending
+                    && step.order_index > completed_step.order_index
+            })
+            .min_by_key(|step| step.order_index)
+            .cloned());
+    }
+
+    Ok(None)
+}
+
+fn step_advance_next(
+    entries_before: &[Entry],
+    pending_steps_after: &[Step],
+    started_step: Option<&Step>,
+) -> NextAction {
+    if started_step.is_some() {
+        return NextAction {
+            suggested_command: "record".to_string(),
+            why: "active step is now collecting evidence".to_string(),
+        };
+    }
+    if !pending_steps_after.is_empty() {
+        return NextAction {
+            suggested_command: "step start".to_string(),
+            why: "there are pending steps waiting to be started".to_string(),
+        };
+    }
+    if entries_before
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.entry_type != EntryType::Record
+                || entry.step_id.is_none()
+                || entry.kind.as_deref() != Some("note")
+                || !entry.summary.is_empty()
+        })
+        .is_some_and(|entry| entry.entry_type == EntryType::Decision)
+    {
+        return NextAction {
+            suggested_command: "case_finish".to_string(),
+            why: "all execution steps and decisions are in place".to_string(),
+        };
+    }
+    NextAction {
+        suggested_command: "case_show".to_string(),
+        why: "inspect the case history before deciding the next action".to_string(),
+    }
+}
+
+async fn cmd_step_advance(
+    client: &CaseClient,
+    case_id: Option<&str>,
+    step_id: Option<&str>,
+    record: Option<StepAdvanceRecord<'_>>,
+    next_step_id: Option<&str>,
+    next_step_auto: bool,
+) -> CaseResult<serde_json::Value> {
+    let case = resolve_case(client, case_id).await?;
+    ensure_open(&case)?;
+    let steps_before = client
+        .get_steps(&case.id, case.current_direction_seq)
+        .await?;
+    let completed_step = if let Some(step_id) = step_id {
+        let step = client.get_step(step_id).await?;
+        ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
+        step
+    } else {
+        steps_before
+            .iter()
+            .find(|step| step.status == StepStatus::Active)
+            .cloned()
+            .ok_or_else(|| {
+                CaseError::Other(
+                    "no active step in current direction; pass --step-id explicitly or start a step first".to_string(),
+                )
+            })?
+    };
+
+    match completed_step.status {
+        StepStatus::Active => {}
+        StepStatus::Pending => {
+            return Err(CaseError::Other(format!(
+                "step {} is not active; found pending",
+                completed_step.id
+            )));
+        }
+        StepStatus::Done => {
+            return Err(CaseError::Other(format!(
+                "step {} is already done",
+                completed_step.id
+            )));
+        }
+        StepStatus::Blocked => {
+            return Err(CaseError::Other(format!(
+                "step {} is blocked; resume it before advancing",
+                completed_step.id
+            )));
+        }
+        StepStatus::Skipped => {
+            return Err(CaseError::Other(format!(
+                "step {} is skipped",
+                completed_step.id
+            )));
+        }
+    }
+
+    let started_step =
+        select_next_pending_step(&steps_before, &completed_step, next_step_id, next_step_auto)?;
+    let entries_before = client.get_entries(&case.id).await?;
+    let record_seq = if record.is_some() {
+        Some(next_entry_seq(client, &case.id).await?)
+    } else {
+        None
+    };
+
+    client
+        .advance_step(
+            &case.id,
+            case.current_direction_seq,
+            &completed_step.id,
+            record_seq,
+            record.as_ref().map(|record| record.kind.as_str()),
+            record.as_ref().map(|record| record.summary),
+            record.as_ref().and_then(|record| record.context),
+            record.as_ref().map(|record| record.files).unwrap_or(&[]),
+            started_step.as_ref().map(|step| step.id.as_str()),
+        )
+        .await?;
+
+    let refreshed_case = client.get_case(&case.id).await?;
+    let steps_after = client
+        .get_steps(&case.id, refreshed_case.current_direction_seq)
+        .await?;
+    let completed_step_after = steps_after
+        .iter()
+        .find(|step| step.id == completed_step.id)
+        .cloned()
+        .ok_or_else(|| CaseError::StepNotFound(completed_step.id.clone()))?;
+    let started_step_after = started_step
+        .as_ref()
+        .and_then(|started| steps_after.iter().find(|step| step.id == started.id))
+        .cloned();
+    let record_entry = if let Some(record_seq) = record_seq {
+        client
+            .get_entries(&case.id)
+            .await?
+            .into_iter()
+            .find(|entry| entry.seq == record_seq)
+    } else {
+        None
+    };
+
+    let (_, pending_steps_after) = split_steps(&steps_after);
+    let next = step_advance_next(
+        &entries_before,
+        &pending_steps_after,
+        started_step_after.as_ref(),
+    );
+    let mut dispatches = Vec::new();
+    if let Some(entry) = record_entry.as_ref() {
+        dispatches.push(
+            dispatch_event(
+                client,
+                CaseDomainEvent::RecordAppended {
+                    case: refreshed_case.clone(),
+                    entry: entry.clone(),
+                },
+            )
+            .await,
+        );
+    }
+    dispatches.push(
+        dispatch_event(
+            client,
+            CaseDomainEvent::StepDone {
+                case: refreshed_case.clone(),
+                step: completed_step_after.clone(),
+            },
+        )
+        .await,
+    );
+    if let Some(started_step_after) = started_step_after.as_ref() {
+        dispatches.push(
+            dispatch_event(
+                client,
+                CaseDomainEvent::StepStarted {
+                    case: refreshed_case.clone(),
+                    step: started_step_after.clone(),
+                },
+            )
+            .await,
+        );
+    }
+    let dispatch = merge_dispatch_reports(dispatches);
+    let mut value = json!({
+        "ok": true,
+        "case": output::case_json(&refreshed_case),
+        "completed_step": step_json_min(&completed_step_after),
+        "steps": output::steps_json(&steps_after),
+        "context": output::context_json(&case.id, refreshed_case.current_direction_seq),
+        "next": output::next_json(&next)
+    });
+    if let Some(entry) = record_entry {
+        value["record_entry"] = json!({
+            "seq": entry.seq,
+            "entry_type": entry.entry_type.as_str(),
+            "kind": entry.kind,
+            "step_id": entry.step_id,
+            "summary": entry.summary,
+            "files": entry.files
+        });
+    }
+    if let Some(started_step_after) = started_step_after.as_ref() {
+        value["started_step"] = step_json_min(started_step_after);
+    }
     append_dispatch_report(&mut value, &dispatch);
     Ok(value)
 }
@@ -2293,69 +2995,6 @@ async fn cmd_list(client: &CaseClient, options: CaseListOptions) -> CaseResult<s
         "ok": true,
         "cases": case_list,
         "_meta": list_meta_json(options)
-    }))
-}
-
-async fn cmd_resume(client: &CaseClient, id: Option<&str>) -> CaseResult<serde_json::Value> {
-    let case = resolve_case(client, id).await?;
-
-    let dir = client
-        .get_current_direction(&case.id, case.current_direction_seq)
-        .await?;
-
-    let steps = client
-        .get_steps(&case.id, case.current_direction_seq)
-        .await?;
-    let (current_step, pending_steps) = split_steps(&steps);
-
-    let entries = client.get_entries(&case.id).await?;
-    let last_decision = entries
-        .iter()
-        .rev()
-        .find(|e| e.entry_type == EntryType::Decision)
-        .map(|e| e.summary.as_str());
-    let last_evidence = entries
-        .iter()
-        .rev()
-        .find(|e| e.entry_type == EntryType::Record && e.kind.as_deref() == Some("evidence"))
-        .map(|e| e.summary.as_str());
-
-    let next = suggest_next(
-        &case,
-        current_step.as_ref(),
-        &pending_steps,
-        &Health::OnTrack,
-    );
-
-    let mut resume = json!({
-        "case_id": case.id,
-        "goal": case.goal,
-        "goal_constraints": case.goal_constraints,
-        "current_direction": dir.summary,
-        "direction_constraints": dir.constraints,
-        "current_step": current_step.as_ref().map(|s| json!({
-            "id": s.id,
-            "title": s.title
-        })),
-        "next_pending_steps": pending_steps.iter().map(|s| json!({
-            "id": s.id,
-            "title": s.title
-        })).collect::<Vec<_>>(),
-        "success_condition": dir.success_condition,
-        "abort_condition": dir.abort_condition
-    });
-
-    if let Some(d) = last_decision {
-        resume["last_decision"] = json!(d);
-    }
-    if let Some(e) = last_evidence {
-        resume["last_evidence"] = json!(e);
-    }
-
-    Ok(json!({
-        "ok": true,
-        "resume": resume,
-        "next": output::next_json(&next)
     }))
 }
 
@@ -2780,7 +3419,7 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let result = cmd_step_add(&client, &case_id, "run verification", None, true)
+        let result = cmd_step_add(&client, Some(&case_id), "run verification", None, true)
             .await
             .expect("step add with start should succeed");
 
@@ -2790,6 +3429,141 @@ mod tests {
             result["steps"]["current"]["title"].as_str(),
             Some("run verification")
         );
+    }
+
+    #[tokio::test]
+    async fn step_advance_can_record_and_auto_start_next_step() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        let first = cmd_step_add(&client, Some(&case_id), "scan beta", None, true)
+            .await
+            .expect("first step should start");
+        let second = cmd_step_add(&client, Some(&case_id), "summarize decision", None, false)
+            .await
+            .expect("second step should add");
+        let first_step_id = first["step"]["id"]
+            .as_str()
+            .expect("first step id should exist")
+            .to_string();
+        let second_step_id = second["step"]["id"]
+            .as_str()
+            .expect("second step id should exist")
+            .to_string();
+
+        let advanced = cmd_step_advance(
+            &client,
+            Some(&case_id),
+            Some(&first_step_id),
+            Some(StepAdvanceRecord {
+                kind: RecordKind::Finding,
+                summary: "beta 0.04 clears all guardrails",
+                files: &["docs/runbook.md".to_string()],
+                context: Some("formal smoke rerun"),
+            }),
+            None,
+            true,
+        )
+        .await
+        .expect("advance should succeed");
+
+        assert_eq!(
+            advanced["completed_step"]["id"].as_str(),
+            Some(first_step_id.as_str())
+        );
+        assert_eq!(advanced["completed_step"]["status"].as_str(), Some("done"));
+        assert_eq!(
+            advanced["started_step"]["id"].as_str(),
+            Some(second_step_id.as_str())
+        );
+        assert_eq!(advanced["started_step"]["status"].as_str(), Some("active"));
+        assert_eq!(advanced["record_entry"]["kind"].as_str(), Some("finding"));
+        assert_eq!(
+            advanced["record_entry"]["step_id"].as_str(),
+            Some(first_step_id.as_str())
+        );
+        assert_eq!(
+            advanced["next"]["suggested_command"].as_str(),
+            Some("record")
+        );
+        if let Some(statuses) = advanced["hooks"]["statuses"].as_array() {
+            assert!(statuses.len() >= 2);
+        }
+
+        let entries = client
+            .get_entries(&case_id)
+            .await
+            .expect("entries should load");
+        assert!(entries.iter().any(|entry| {
+            entry.step_id.as_deref() == Some(first_step_id.as_str())
+                && entry.summary == "beta 0.04 clears all guardrails"
+        }));
+
+        let shown = cmd_show(&client, Some(&case_id))
+            .await
+            .expect("show should succeed");
+        let shown_entries = show_entries_or_spilled(&shown);
+        assert!(shown_entries.iter().any(|entry| {
+            entry["step_id"].as_str() == Some(first_step_id.as_str())
+                && entry["summary"].as_str() == Some("beta 0.04 clears all guardrails")
+        }));
+    }
+
+    #[tokio::test]
+    async fn step_advance_rejects_pending_step() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+        let added = cmd_step_add(&client, Some(&case_id), "pending step", None, false)
+            .await
+            .expect("step should add");
+        let step_id = added["step"]["id"]
+            .as_str()
+            .expect("step id should exist")
+            .to_string();
+
+        let error = cmd_step_advance(&client, Some(&case_id), Some(&step_id), None, None, false)
+            .await
+            .expect_err("pending step should be rejected");
+
+        assert!(matches!(error, CaseError::Other(message) if message.contains("not active")));
     }
 
     #[tokio::test]
@@ -2827,7 +3601,7 @@ mod tests {
         .into_iter()
         .map(|(title, reason, start)| CaseCommand::Step {
             command: StepCommand::Add {
-                id: case_id.clone(),
+                id: Some(case_id.clone()),
                 title: title.to_string(),
                 reason,
                 start,
@@ -2883,7 +3657,7 @@ mod tests {
 
         cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "sample report shows one toxic audit outlier",
             "finding",
             &[],
@@ -3026,7 +3800,7 @@ mod tests {
             .to_string();
         cmd_record(
             &client,
-            &indirect_id,
+            Some(&indirect_id),
             "captured a mention of financial coverage in notes",
             "finding",
             &[],
@@ -3156,7 +3930,7 @@ mod tests {
 
         cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "record summary",
             "finding",
             &[],
@@ -3201,11 +3975,11 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        cmd_step_add(&client, &case_id, "unfinished step", None, false)
+        cmd_step_add(&client, Some(&case_id), "unfinished step", None, false)
             .await
             .expect("step add should succeed");
 
-        let error = cmd_close(&client, &case_id, "done", None)
+        let error = cmd_close(&client, Some(&case_id), "done", None)
             .await
             .expect_err("close should reject unfinished steps");
 
@@ -3214,7 +3988,7 @@ mod tests {
         let error_value = build_error_value(
             &client,
             &CaseCommand::Close {
-                id: case_id.clone(),
+                id: Some(case_id.clone()),
                 summary: "done".to_string(),
                 confirm_token: None,
             },
@@ -3253,7 +4027,7 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let error = cmd_close(&client, &case_id, "done", None)
+        let error = cmd_close(&client, Some(&case_id), "done", None)
             .await
             .expect_err("first close should require confirmation");
 
@@ -3265,7 +4039,7 @@ mod tests {
         let error_value = build_error_value(
             &client,
             &CaseCommand::Close {
-                id: case_id.clone(),
+                id: Some(case_id.clone()),
                 summary: "done".to_string(),
                 confirm_token: None,
             },
@@ -3279,7 +4053,7 @@ mod tests {
             Some(confirm_token.as_str())
         );
 
-        let closed = cmd_close(&client, &case_id, "done", Some(&confirm_token))
+        let closed = cmd_close(&client, Some(&case_id), "done", Some(&confirm_token))
             .await
             .expect("second close with matching token should succeed");
         assert_eq!(closed["case"]["status"].as_str(), Some("closed"));
@@ -3309,11 +4083,11 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let _ = cmd_close(&client, &case_id, "done", None)
+        let _ = cmd_close(&client, Some(&case_id), "done", None)
             .await
             .expect_err("first close should require confirmation");
 
-        let error = cmd_close(&client, &case_id, "done", Some("stale-token"))
+        let error = cmd_close(&client, Some(&case_id), "done", Some("stale-token"))
             .await
             .expect_err("stale token should be rejected");
 
@@ -3362,6 +4136,8 @@ mod tests {
                 constraint_strs: &[],
                 success_condition: None,
                 abort_condition: None,
+                needed_context_query: None,
+                step_specs: &[],
             },
         )
         .await
@@ -3396,7 +4172,7 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let added = cmd_step_add(&client, &case_id, "only step", None, true)
+        let added = cmd_step_add(&client, Some(&case_id), "only step", None, true)
             .await
             .expect("step add should succeed");
         let step_id = added["step"]["id"]
@@ -3404,7 +4180,7 @@ mod tests {
             .expect("step id should exist")
             .to_string();
 
-        let done = cmd_step_done(&client, &case_id, &step_id)
+        let done = cmd_step_done(&client, Some(&case_id), &step_id)
             .await
             .expect("step done should succeed");
 
@@ -3441,7 +4217,7 @@ mod tests {
 
         let error = cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "decision summary",
             "decision",
             &[],
@@ -3501,7 +4277,7 @@ mod tests {
 
         let recorded = cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "补充全局约束",
             "goal_constraint_update",
             &added_constraints,
@@ -3560,7 +4336,7 @@ mod tests {
 
         let error = cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "补充全局约束",
             "goal_constraint_update",
             &[],
@@ -3602,7 +4378,7 @@ mod tests {
 
         let error = cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "普通记录",
             "finding",
             &[r#"{"rule":"保持最小改动"}"#.to_string()],
@@ -3644,7 +4420,7 @@ mod tests {
 
         let error = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "new direction",
             "topic changed",
             "work drifted",
@@ -3699,7 +4475,7 @@ mod tests {
 
         let redirected = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "new direction",
             "topic changed",
             "work drifted",
@@ -3766,7 +4542,7 @@ mod tests {
 
         let error = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "new direction",
             "topic changed",
             "work drifted",
@@ -3822,7 +4598,7 @@ mod tests {
 
         let error = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "new direction",
             "topic changed",
             "work drifted",
@@ -3865,7 +4641,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction b",
             "reason b",
             "context b",
@@ -3893,7 +4669,7 @@ mod tests {
 
         let redirected = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction c",
             "reason c",
             "context c",
@@ -3953,7 +4729,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction b",
             "reason b",
             "context b",
@@ -3967,7 +4743,7 @@ mod tests {
 
         let rotated = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction c",
             "reason c",
             "context c",
@@ -4051,7 +4827,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction b",
             "reason b",
             "context b",
@@ -4065,7 +4841,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction c",
             "reason c",
             "context c",
@@ -4079,7 +4855,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction d",
             "reason d",
             "context d",
@@ -4093,7 +4869,7 @@ mod tests {
 
         let rotated = cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction e",
             "reason e",
             "context e",
@@ -4210,7 +4986,7 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let added = cmd_step_add(&client, &case_id, "old step", None, false)
+        let added = cmd_step_add(&client, Some(&case_id), "old step", None, false)
             .await
             .expect("step add should succeed");
         let step_id = added["step"]["id"]
@@ -4220,7 +4996,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction b",
             "need new direction",
             "shift scope",
@@ -4232,7 +5008,7 @@ mod tests {
         .await
         .expect("redirect should succeed");
 
-        let error = cmd_step_start(&client, &case_id, &step_id)
+        let error = cmd_step_start(&client, Some(&case_id), &step_id)
             .await
             .expect_err("old direction step should be rejected");
         assert!(matches!(error, CaseError::StepNotFound(ref id) if id == &step_id));
@@ -4272,7 +5048,7 @@ mod tests {
             .expect("case id should exist")
             .to_string();
 
-        let added = cmd_step_add(&client, &case_id, "old step", None, false)
+        let added = cmd_step_add(&client, Some(&case_id), "old step", None, false)
             .await
             .expect("step add should succeed");
         let step_id = added["step"]["id"]
@@ -4282,7 +5058,7 @@ mod tests {
 
         cmd_redirect(
             &client,
-            &case_id,
+            Some(&case_id),
             "direction b",
             "need new direction",
             "shift scope",
@@ -4294,12 +5070,12 @@ mod tests {
         .await
         .expect("redirect should succeed");
 
-        let done_error = cmd_step_done(&client, &case_id, &step_id)
+        let done_error = cmd_step_done(&client, Some(&case_id), &step_id)
             .await
             .expect_err("old direction step done should be rejected");
         assert!(matches!(done_error, CaseError::StepNotFound(ref id) if id == &step_id));
 
-        let blocked_error = cmd_step_block(&client, &case_id, &step_id, "blocked")
+        let blocked_error = cmd_step_block(&client, Some(&case_id), &step_id, "blocked")
             .await
             .expect_err("old direction step block should be rejected");
         assert!(matches!(blocked_error, CaseError::StepNotFound(ref id) if id == &step_id));
@@ -4346,7 +5122,7 @@ mod tests {
 
         cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "Honcho session context supports token limit",
             "evidence",
             &[],
@@ -4416,7 +5192,7 @@ mod tests {
 
         cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             "workspace search is future work",
             "finding",
             &[],
@@ -4521,6 +5297,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_can_return_startup_context_from_needed_context_query() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let prior = cmd_open_new(
+            &client,
+            "document honcho integration",
+            "capture startup memory",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("prior case should open");
+        let prior_case_id = prior["case"]["id"]
+            .as_str()
+            .expect("prior case id should exist")
+            .to_string();
+        cmd_record(
+            &client,
+            Some(&prior_case_id),
+            "honcho integration startup memory works through focused context query",
+            "finding",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("record should succeed");
+        confirm_and_close(&client, &prior_case_id, "done")
+            .await
+            .expect("prior case should close");
+
+        let opened = cmd_open(
+            &client,
+            OpenRequest {
+                mode: OpenModeArg::New,
+                reopen_case_id: None,
+                goal: Some("investigate honcho integration"),
+                direction: Some("inspect startup memory"),
+                goal_constraint_strs: &[],
+                constraint_strs: &[],
+                success_condition: None,
+                abort_condition: None,
+                needed_context_query: Some(&NeededContextQueryArg {
+                    how_to: vec!["honcho integration".to_string()],
+                    doc_about: vec!["startup memory".to_string()],
+                    pitfalls_about: vec![],
+                    known_patterns_for: vec![],
+                }),
+                step_specs: &[],
+            },
+        )
+        .await
+        .expect("case should open");
+
+        assert_eq!(opened["startup_context_status"].as_str(), Some("ok"));
+        assert!(opened["startup_context"]["known_working_patterns"]
+            .as_array()
+            .expect("known working patterns should be an array")
+            .iter()
+            .any(|pattern| pattern
+                .as_str()
+                .is_some_and(|text| text.contains("focused context query"))));
+    }
+
+    #[tokio::test]
     async fn context_rejects_zero_limit() {
         let temp_dir = TempDir::new().expect("temporary directory should be created");
         let config = temp_db_config(&temp_dir);
@@ -4598,7 +5453,7 @@ mod tests {
             .to_string();
         cmd_record(
             &client,
-            &case_a,
+            Some(&case_a),
             "shared repo memory about vector digest",
             "note",
             &[],
@@ -4607,11 +5462,11 @@ mod tests {
         )
         .await
         .expect("record on first case should succeed");
-        let close_token_a = match cmd_close(&client, &case_a, "done", None).await {
+        let close_token_a = match cmd_close(&client, Some(&case_a), "done", None).await {
             Err(CaseError::CloseConfirmationRequired { confirm_token, .. }) => confirm_token,
             other => panic!("unexpected close response: {other:?}"),
         };
-        cmd_close(&client, &case_a, "done", Some(&close_token_a))
+        cmd_close(&client, Some(&case_a), "done", Some(&close_token_a))
             .await
             .expect("first case should close");
 
@@ -4632,7 +5487,7 @@ mod tests {
             .to_string();
         cmd_record(
             &client,
-            &case_b,
+            Some(&case_b),
             "current session also mentions vector digest",
             "finding",
             &[],
@@ -4695,7 +5550,7 @@ mod tests {
             .to_string();
         cmd_record(
             &client,
-            &case_a,
+            Some(&case_a),
             "alpha vector digest",
             "note",
             &[],
@@ -4704,11 +5559,11 @@ mod tests {
         )
         .await
         .expect("record should succeed");
-        let close_token_a = match cmd_close(&client, &case_a, "done", None).await {
+        let close_token_a = match cmd_close(&client, Some(&case_a), "done", None).await {
             Err(CaseError::CloseConfirmationRequired { confirm_token, .. }) => confirm_token,
             other => panic!("unexpected close response: {other:?}"),
         };
-        cmd_close(&client, &case_a, "done", Some(&close_token_a))
+        cmd_close(&client, Some(&case_a), "done", Some(&close_token_a))
             .await
             .expect("first case should close");
 
@@ -4721,7 +5576,7 @@ mod tests {
             .to_string();
         cmd_record(
             &client,
-            &case_b,
+            Some(&case_b),
             "beta vector digest",
             "finding",
             &[],
@@ -4779,7 +5634,7 @@ mod tests {
 
         cmd_record(
             &client,
-            &case_id,
+            Some(&case_id),
             &"x".repeat(2_000),
             "finding",
             &[],

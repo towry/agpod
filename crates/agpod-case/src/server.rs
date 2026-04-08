@@ -114,6 +114,7 @@ mod tests {
     use crate::cli::CaseCommand;
     use crate::config::CaseOverrides;
     use crate::rpc::RepoIdentityPayload;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn temp_config(temp_dir: &TempDir) -> CaseConfig {
@@ -138,6 +139,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn case_request_accepts_legacy_open_payload_without_startup_context_fields() {
+        let request: CaseRequest = serde_json::from_value(json!({
+            "repo": repo_payload("legacy", "/tmp/legacy"),
+            "command": {
+                "Open": {
+                    "mode": "new",
+                    "case_id": null,
+                    "goal": "legacy client goal",
+                    "direction": "legacy client direction",
+                    "goal_constraints": [],
+                    "constraints": [],
+                    "success_condition": null,
+                    "abort_condition": null
+                }
+            }
+        }))
+        .expect("legacy open RPC payload should deserialize");
+
+        match request.command {
+            CaseCommand::Open {
+                how_to,
+                doc_about,
+                pitfalls_about,
+                known_patterns_for,
+                steps,
+                ..
+            } => {
+                assert!(how_to.is_empty());
+                assert!(doc_about.is_empty());
+                assert!(pitfalls_about.is_empty());
+                assert!(known_patterns_for.is_empty());
+                assert!(steps.is_empty());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn server_reuses_single_db_client_across_repositories() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -156,6 +195,11 @@ mod tests {
                 constraints: vec![],
                 success_condition: None,
                 abort_condition: None,
+                how_to: vec![],
+                doc_about: vec![],
+                pitfalls_about: vec![],
+                known_patterns_for: vec![],
+                steps: vec![],
             },
         };
         let repo_b = CaseRequest {
@@ -169,6 +213,11 @@ mod tests {
                 constraints: vec![],
                 success_condition: None,
                 abort_condition: None,
+                how_to: vec![],
+                doc_about: vec![],
+                pitfalls_about: vec![],
+                known_patterns_for: vec![],
+                steps: vec![],
             },
         };
 
@@ -198,6 +247,11 @@ mod tests {
                 constraints: vec![],
                 success_condition: None,
                 abort_condition: None,
+                how_to: vec![],
+                doc_about: vec![],
+                pitfalls_about: vec![],
+                known_patterns_for: vec![],
+                steps: vec![],
             },
         };
         let repo_b = CaseRequest {
@@ -211,6 +265,11 @@ mod tests {
                 constraints: vec![],
                 success_condition: None,
                 abort_condition: None,
+                how_to: vec![],
+                doc_about: vec![],
+                pitfalls_about: vec![],
+                known_patterns_for: vec![],
+                steps: vec![],
             },
         };
 

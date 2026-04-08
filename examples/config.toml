@@ -28,3 +28,28 @@ sync_enabled = true
 # workspace_id = "ws_123"
 # api_key = "honcho_secret"
 # api_key_env = "HONCHO_API_KEY"
+
+[mcp.hive.claude.env_set]
+# Shared environment variables applied to all hive Claude modes.
+# PATH is inherited from the agpod-mcp parent process; add only explicit overrides here.
+# ANTHROPIC_BASE_URL = "https://example.invalid"
+# ANTHROPIC_AUTH_TOKEN = "token"
+
+[mcp.hive.claude.modes.readonly]
+description = "Read-only Claude worker for analysis and review."
+command = "claude"
+args = ["--dangerously-skip-permissions"]
+# settings = "~/.claude/settings.json"
+# mcp_config = "~/.claude/generated/mcp-readonly.json"
+# system_prompt_file = "~/.config/agpod/prompts/readonly.md"
+# system_prompt = "You are a read-only assistant."  # mutually exclusive with system_prompt_file
+# env = { MAX_MCP_OUTPUT_TOKENS = "12000" }
+
+[mcp.hive.claude.modes.full]
+description = "Full-access Claude worker for implementation."
+command = "claude"
+args = []
+# settings = "~/.claude/settings.json"
+# mcp_config = "~/.mcp.json"
+# system_prompt_file = "~/.config/agpod/prompts/full.md"
+# env = {}

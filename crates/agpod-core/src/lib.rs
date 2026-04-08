@@ -3,8 +3,10 @@
 //! Supports feature-specific configuration sections:
 //! - [diff] - Git diff minimization settings
 //! - [case] - Case server settings
+//! - [mcp] - MCP server settings
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -37,6 +39,10 @@ pub struct Config {
     /// Shared logging configuration.
     #[serde(default)]
     pub log: Option<LogConfig>,
+
+    /// MCP server configuration.
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
 }
 
 impl Default for Config {
@@ -46,6 +52,7 @@ impl Default for Config {
             diff: None,
             case: None,
             log: None,
+            mcp: None,
         }
     }
 }
@@ -185,6 +192,65 @@ pub struct DiffConfig {
     pub max_consecutive_empty_lines: usize,
 }
 
+/// Configuration for MCP-related features.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub hive: Option<McpHiveConfig>,
+}
+
+/// Configuration for the MCP hive tool.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpHiveConfig {
+    #[serde(default)]
+    pub claude: Option<McpHiveClaudeConfig>,
+}
+
+/// Claude-specific hive configuration.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpHiveClaudeConfig {
+    #[serde(default)]
+    pub env_set: BTreeMap<String, String>,
+
+    #[serde(default)]
+    pub modes: BTreeMap<String, McpHiveClaudeModeConfig>,
+}
+
+/// One named Claude execution mode used by the hive tool.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpHiveClaudeModeConfig {
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub command: Option<String>,
+
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    #[serde(default)]
+    pub settings: Option<String>,
+
+    #[serde(default)]
+    pub mcp_config: Option<String>,
+
+    /// Inline system prompt text. Mutually exclusive with `system_prompt_file`.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+
+    /// Path to a file containing the system prompt. Mutually exclusive with `system_prompt`.
+    /// Supports `~` expansion.
+    #[serde(default)]
+    pub system_prompt_file: Option<String>,
+
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
 impl Default for DiffConfig {
     fn default() -> Self {
         Self {
@@ -318,6 +384,10 @@ impl Config {
             self.log = other.log;
         }
 
+        if other.mcp.is_some() {
+            self.mcp = other.mcp;
+        }
+
         self
     }
 
@@ -374,6 +444,7 @@ mod tests {
         assert!(config.diff.is_none());
         assert!(config.case.is_none());
         assert!(config.log.is_none());
+        assert!(config.mcp.is_none());
     }
 
     #[test]
@@ -383,6 +454,7 @@ mod tests {
             diff: None,
             case: None,
             log: None,
+            mcp: None,
         };
         assert!(config.is_version_supported());
         assert!(config.version_warning().is_none());
@@ -392,6 +464,7 @@ mod tests {
             diff: None,
             case: None,
             log: None,
+            mcp: None,
         };
         assert!(!unsupported_config.is_version_supported());
         assert!(unsupported_config.version_warning().is_some());
@@ -408,6 +481,22 @@ large_file_changes_threshold = 200
 
 [case]
 server_addr = "127.0.0.1:6142"
+
+[mcp.hive.claude]
+env_set = { ANTHROPIC_BASE_URL = "https://example.invalid", ANTHROPIC_AUTH_TOKEN = "token" }
+[mcp.hive.claude.modes.readonly]
+description = "只读 Claude worker；适合查阅、总结、分析。"
+command = "claw"
+args = ["--dangerously-skip-permissions"]
+mcp_config = "~/.claude/generated/mcp-readonly.json"
+system_prompt_file = "~/.config/agpod/prompts/readonly.md"
+
+[mcp.hive.claude.modes.full]
+description = "全权限 Claude worker；适合实现与改码。"
+command = "claw"
+args = []
+mcp_config = "~/.mcp.json"
+system_prompt = "You are a full-access coding assistant."
 "#;
 
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -421,6 +510,47 @@ server_addr = "127.0.0.1:6142"
         assert_eq!(diff.large_file_changes_threshold, 200);
         let case = config.case.unwrap();
         assert_eq!(case.server_addr.as_deref(), Some("127.0.0.1:6142"));
+        let mcp = config.mcp.unwrap();
+        let hive = mcp.hive.unwrap();
+        let claude = hive.claude.unwrap();
+        assert_eq!(
+            claude.env_set.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://example.invalid")
+        );
+        assert_eq!(
+            claude
+                .env_set
+                .get("ANTHROPIC_AUTH_TOKEN")
+                .map(String::as_str),
+            Some("token")
+        );
+        let readonly = claude.modes.get("readonly").expect("readonly mode");
+        assert_eq!(
+            readonly.description.as_deref(),
+            Some("只读 Claude worker；适合查阅、总结、分析。")
+        );
+        assert_eq!(readonly.command.as_deref(), Some("claw"));
+        assert_eq!(
+            readonly.mcp_config.as_deref(),
+            Some("~/.claude/generated/mcp-readonly.json")
+        );
+        assert_eq!(
+            readonly.system_prompt_file.as_deref(),
+            Some("~/.config/agpod/prompts/readonly.md")
+        );
+        assert!(readonly.system_prompt.is_none());
+        let full = claude.modes.get("full").expect("full mode");
+        assert_eq!(
+            full.description.as_deref(),
+            Some("全权限 Claude worker；适合实现与改码。")
+        );
+        assert_eq!(full.command.as_deref(), Some("claw"));
+        assert_eq!(full.mcp_config.as_deref(), Some("~/.mcp.json"));
+        assert_eq!(
+            full.system_prompt.as_deref(),
+            Some("You are a full-access coding assistant.")
+        );
+        assert!(full.system_prompt_file.is_none());
     }
 
     #[test]

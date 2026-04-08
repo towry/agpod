@@ -167,6 +167,7 @@ impl CaseDomainEvent {
                 "entry_seq": entry.seq,
                 "entry_type": entry.entry_type.as_str(),
                 "kind": entry.kind,
+                "step_id": entry.step_id,
             }),
             Self::DecisionAppended { case, entry } => json!({
                 "case_id": case.id,
@@ -441,6 +442,7 @@ mod tests {
                 seq: 3,
                 entry_type: crate::types::EntryType::Redirect,
                 kind: None,
+                step_id: None,
                 summary: "redirected".to_string(),
                 reason: None,
                 context: None,

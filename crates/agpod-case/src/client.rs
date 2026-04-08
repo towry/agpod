@@ -170,6 +170,7 @@ impl CaseClient {
             DEFINE FIELD IF NOT EXISTS seq ON entry TYPE int;
             DEFINE FIELD IF NOT EXISTS entry_type ON entry TYPE string;
             DEFINE FIELD IF NOT EXISTS kind ON entry TYPE string;
+            DEFINE FIELD IF NOT EXISTS step_id ON entry TYPE string;
             DEFINE FIELD IF NOT EXISTS summary ON entry TYPE string;
             DEFINE FIELD IF NOT EXISTS reason ON entry TYPE string;
             DEFINE FIELD IF NOT EXISTS context ON entry TYPE string;
@@ -611,6 +612,7 @@ impl CaseClient {
         seq: u32,
         entry_type: EntryType,
         kind: Option<&str>,
+        step_id: Option<&str>,
         summary: &str,
         reason: Option<&str>,
         context: Option<&str>,
@@ -625,13 +627,14 @@ impl CaseClient {
 
         self.query_raw(
             "CREATE entry SET case_id = $case_id, seq = $seq, entry_type = $entry_type, \
-             kind = $kind, summary = $summary, reason = $reason, context = $context, \
+             kind = $kind, step_id = $step_id, summary = $summary, reason = $reason, context = $context, \
              files = $files, artifacts = $artifacts, created_at = $created_at",
             json!({
                 "case_id": case_id,
                 "seq": seq,
                 "entry_type": entry_type.as_str(),
                 "kind": kind.unwrap_or(""),
+                "step_id": step_id.unwrap_or(""),
                 "summary": summary,
                 "reason": reason.unwrap_or(""),
                 "context": context.unwrap_or(""),
@@ -647,6 +650,7 @@ impl CaseClient {
             seq,
             entry_type,
             kind: kind.map(String::from),
+            step_id: step_id.map(String::from),
             summary: summary.to_string(),
             reason: reason.map(String::from),
             context: context.map(String::from),
@@ -654,6 +658,97 @@ impl CaseClient {
             artifacts: artifacts.to_vec(),
             created_at: now,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn advance_step(
+        &self,
+        case_id: &str,
+        current_direction_seq: u32,
+        completed_step_id: &str,
+        record_seq: Option<u32>,
+        record_kind: Option<&str>,
+        record_summary: Option<&str>,
+        record_context: Option<&str>,
+        record_files: &[String],
+        started_step_id: Option<&str>,
+    ) -> CaseResult<()> {
+        let now = Utc::now().to_rfc3339();
+        let files_json =
+            serde_json::to_string(record_files).map_err(|e| CaseError::Other(e.to_string()))?;
+        let mut sql = String::from(
+            "
+            BEGIN TRANSACTION;
+
+            UPDATE step SET status = 'done', reason = '', updated_at = $updated_at
+            WHERE step_id = $completed_step_id;
+            ",
+        );
+        if record_seq.is_some() {
+            sql.push_str(
+                "
+                CREATE entry SET
+                    case_id = $case_id,
+                    seq = $record_seq,
+                    entry_type = 'record',
+                    kind = $record_kind,
+                    step_id = $completed_step_id,
+                    summary = $record_summary,
+                    reason = '',
+                    context = $record_context,
+                    files = $record_files,
+                    artifacts = '[]',
+                    created_at = $created_at;
+                ",
+            );
+        }
+        sql.push_str(
+            "
+            UPDATE step SET status = 'pending', reason = '', updated_at = $updated_at
+            WHERE case_id = $case_id
+              AND direction_seq = $current_direction_seq
+              AND status = 'active'
+              AND step_id != $completed_step_id;
+            ",
+        );
+        if started_step_id.is_some() {
+            sql.push_str(
+                "
+                UPDATE step SET status = 'active', reason = '', updated_at = $updated_at
+                WHERE step_id = $started_step_id;
+                ",
+            );
+        }
+        sql.push_str(
+            "
+            UPDATE case SET
+                current_step_id = $next_current_step_id,
+                updated_at = $updated_at
+            WHERE case_id = $case_id;
+
+            COMMIT TRANSACTION;
+            ",
+        );
+
+        self.query_raw(
+            &sql,
+            json!({
+                "case_id": case_id,
+                "current_direction_seq": current_direction_seq,
+                "completed_step_id": completed_step_id,
+                "record_seq": record_seq,
+                "record_kind": record_kind.unwrap_or(""),
+                "record_summary": record_summary.unwrap_or(""),
+                "record_context": record_context.unwrap_or(""),
+                "record_files": files_json,
+                "started_step_id": started_step_id.unwrap_or(""),
+                "next_current_step_id": started_step_id.unwrap_or(""),
+                "updated_at": now,
+                "created_at": now,
+            }),
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn get_entries(&self, case_id: &str) -> CaseResult<Vec<Entry>> {
@@ -1186,6 +1281,11 @@ fn parse_single_entry(v: &Value) -> Option<Entry> {
         entry_type,
         kind: v
             .get("kind")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        step_id: v
+            .get("step_id")
             .and_then(|s| s.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from),

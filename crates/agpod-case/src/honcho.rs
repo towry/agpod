@@ -933,6 +933,7 @@ mod tests {
             seq,
             entry_type: EntryType::Record,
             kind: kind.map(ToOwned::to_owned),
+            step_id: None,
             summary: summary.to_string(),
             reason: None,
             context: None,
