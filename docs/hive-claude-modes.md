@@ -66,6 +66,16 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 - mode 描述
 - 最小示例
 
+## `probe_mode`
+
+`hive(action="probe_mode")` 不起长任务，只回：
+
+- 所选 mode 将使用之命令、参数、配置路径、环境键
+- prompt 预览
+- 期望之 `result.json` 字段
+- 期望之 `provider_output` 字段
+- 缺失输出时之解析探针样例
+
 ## 生命周期
 
 - `spawn_agent`：建 worker profile，尚无进程

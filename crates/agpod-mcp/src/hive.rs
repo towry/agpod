@@ -2,6 +2,9 @@
 //!
 //! Keywords: hive, process, claude, exec, output file, worker status
 
+use crate::hive_provider::{
+    default_claude_provider, parse_provider_output as parse_provider_output_impl, HiveProviderOutput,
+};
 use agpod_core::{Config, McpHiveClaudeConfig, McpHiveClaudeModeConfig};
 use anyhow::{anyhow, Context, Result};
 use rmcp::{
@@ -33,6 +36,7 @@ const SUPPORTED_MODE_NAMES: [&str; 2] = ["readonly", "full"];
 #[serde(rename_all = "snake_case")]
 pub enum HiveActionInput {
     ModeInfo,
+    ProbeMode,
     ListAgents,
     SpawnAgent,
     SendPrompt,
@@ -248,25 +252,6 @@ struct HiveRunState {
     provider_output: Option<HiveProviderOutput>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct HiveProviderOutput {
-    provider: String,
-    format: HiveProviderOutputFormat,
-    session_id: Option<String>,
-    summary: Option<String>,
-    #[serde(default)]
-    json_keys: Vec<String>,
-    parse_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum HiveProviderOutputFormat {
-    Json,
-    Text,
-    Unknown,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum HiveAgentStatus {
@@ -341,10 +326,6 @@ enum LegacyHiveAgentStatus {
 
 fn default_readonly_mode() -> String {
     "readonly".to_string()
-}
-
-fn default_claude_provider() -> String {
-    "claude".to_string()
 }
 
 impl HiveRuntime {
@@ -632,12 +613,67 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
 
     match req.action {
         HiveActionInput::ModeInfo => mode_info(&runtime, req).await,
+        HiveActionInput::ProbeMode => probe_mode(&runtime, req).await,
         HiveActionInput::ListAgents => list_agents(&runtime).await,
         HiveActionInput::SpawnAgent => spawn_agent(&runtime, req).await,
         HiveActionInput::SendPrompt => send_prompt(&runtime, req).await,
         HiveActionInput::CloseAgent => close_agent(&runtime, req).await,
         HiveActionInput::CloseSession => close_session(&runtime).await,
     }
+}
+
+async fn probe_mode(
+    runtime: &HiveRuntime,
+    req: HiveRequest,
+) -> Result<Map<String, Value>, ErrorData> {
+    let selected = runtime.resolve_mode_name(req.mode.as_deref());
+    let config = runtime.resolve_mode_config(&selected)?;
+    let settings = config
+        .settings
+        .as_deref()
+        .map(expand_home_like)
+        .transpose()
+        .map_err(internal_error)?
+        .map(|path| path.display().to_string());
+    let mcp_config = config
+        .mcp_config
+        .as_deref()
+        .map(expand_home_like)
+        .transpose()
+        .map_err(internal_error)?
+        .map(|path| path.display().to_string());
+    let workdir = resolve_workdir(req.workdir.as_deref(), runtime);
+    let probe_prompt = req
+        .prompt
+        .unwrap_or_else(|| "Return a short JSON object describing current mode.".to_string());
+    let preview = prompt_preview(&probe_prompt);
+
+    let parsed = parse_provider_output(&default_claude_provider(), "/definitely/missing");
+    let mut raw = Map::new();
+    raw.insert("ok".to_string(), Value::Bool(true));
+    raw.insert("state".to_string(), Value::String("probe_mode".to_string()));
+    raw.insert(
+        "message".to_string(),
+        Value::String(format!("hive mode `{selected}` probe plan prepared")),
+    );
+    raw.insert(
+        "probe".to_string(),
+        serde_json::json!({
+            "mode": selected,
+            "provider": default_claude_provider(),
+            "workdir": workdir,
+            "prompt_preview": preview,
+            "command": config.command,
+            "args": config.args,
+            "settings": settings,
+            "mcp_config": mcp_config,
+            "env_keys": config.env.keys().cloned().collect::<Vec<_>>(),
+            "expected_result_fields": ["provider", "exit_code", "started_at_ms", "finished_at_ms"],
+            "expected_provider_output_fields": ["provider", "format", "session_id", "summary", "json_keys", "parse_error"],
+            "missing_output_probe": provider_output_json(&parsed),
+        }),
+    );
+    Ok(raw)
 }
 
 async fn mode_info(
@@ -1333,60 +1369,7 @@ fn read_output_excerpt(path: &str) -> Option<String> {
 }
 
 fn parse_provider_output(provider: &str, output_path: &str) -> HiveProviderOutput {
-    let raw = match fs::read_to_string(output_path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            return HiveProviderOutput {
-                provider: provider.to_string(),
-                format: HiveProviderOutputFormat::Unknown,
-                session_id: None,
-                summary: None,
-                json_keys: Vec::new(),
-                parse_error: Some(err.to_string()),
-            };
-        }
-    };
-
-    match serde_json::from_str::<Value>(&raw) {
-        Ok(Value::Object(obj)) => {
-            let session_id = obj
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            let summary = obj
-                .get("result")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| obj.get("summary").and_then(Value::as_str).map(ToOwned::to_owned))
-                .or_else(|| session_id.as_ref().map(|id| format!("session_id={id}")));
-            let mut json_keys = obj.keys().cloned().collect::<Vec<_>>();
-            json_keys.sort();
-            HiveProviderOutput {
-                provider: provider.to_string(),
-                format: HiveProviderOutputFormat::Json,
-                session_id,
-                summary,
-                json_keys,
-                parse_error: None,
-            }
-        }
-        Ok(_) => HiveProviderOutput {
-            provider: provider.to_string(),
-            format: HiveProviderOutputFormat::Json,
-            session_id: None,
-            summary: Some(prompt_preview(&raw)),
-            json_keys: Vec::new(),
-            parse_error: Some("provider output is valid json but not an object".to_string()),
-        },
-        Err(err) => HiveProviderOutput {
-            provider: provider.to_string(),
-            format: HiveProviderOutputFormat::Text,
-            session_id: None,
-            summary: Some(prompt_preview(&raw)),
-            json_keys: Vec::new(),
-            parse_error: Some(err.to_string()),
-        },
-    }
+    parse_provider_output_impl(provider, output_path, prompt_preview)
 }
 
 fn prompt_preview(prompt: &str) -> String {
@@ -1685,6 +1668,7 @@ fn shell_escape(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hive_provider::HiveProviderOutputFormat;
     use std::process::Command as StdCommand;
     use tempfile::tempdir;
 
