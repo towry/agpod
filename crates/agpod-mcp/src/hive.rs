@@ -55,8 +55,7 @@ pub struct HiveRequest {
     pub session_id: Option<String>,
     /// Existing worker agent ID for `run_hive_agent`, `list_agents`, and `close_agent`.
     pub agent_id: Option<String>,
-    /// Named Claude mode from agpod config. Supported public modes are `readonly` and `full`.
-    /// Reads `[mcp.hive.claude.modes.<name>]`; `~` in configured paths is expanded.
+    /// Public mode name for `run_hive_agent`. Supported values are `readonly` and `full`.
     pub mode: Option<String>,
     /// Optional worker display name when `run_hive_agent` creates a new worker.
     pub worker_name: Option<String>,
