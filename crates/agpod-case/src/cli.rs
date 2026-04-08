@@ -154,6 +154,7 @@ pub enum CaseCommand {
         known_patterns_for: Vec<String>,
 
         /// Initial step spec. Repeatable; each value may be plain text or JSON like {"title":"...","reason":"...","start":true}; at most one step may set start=true
+        #[serde(default)]
         #[arg(long = "step")]
         steps: Vec<String>,
     },

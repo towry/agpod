@@ -1577,7 +1577,7 @@ mod tests {
         assert!(instructions.contains("startup_context"));
         assert!(instructions.contains("omit `query` only when `context_shortcut=recent_work`"));
         assert!(instructions.contains("When `context_scope=case`, `context_id` is required"));
-        assert!(instructions.contains("`mode_info` explains the required mode config"));
+        assert!(instructions.contains("`mode_info` explains required mode config"));
         assert!(instructions.contains("Public `mode` names are fixed to `readonly` and `full`"));
     }
 
