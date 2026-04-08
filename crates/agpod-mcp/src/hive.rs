@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::process::CommandExt;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1562,6 +1562,7 @@ fn validate_mode_config(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_claude_exec_command(
     runtime: &HiveRuntime,
     mode_config: &McpHiveClaudeModeConfig,
@@ -1647,7 +1648,7 @@ fn build_claude_exec_command(
         "FINISHED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n",
     );
     script.push_str(&format!(
-        "python3 - <<'PY' {} \"$STARTED_AT_MS\" \"$FINISHED_AT_MS\" \"$RC\"\nimport json, pathlib, sys\nresult_path = pathlib.Path(sys.argv[1])\nstarted_at_ms = int(sys.argv[2])\nfinished_at_ms = int(sys.argv[3])\nexit_code = int(sys.argv[4])\nresult_path.write_text(json.dumps({\n    'provider': 'claude',\n    'exit_code': exit_code,\n    'started_at_ms': started_at_ms,\n    'finished_at_ms': finished_at_ms,\n}))\nPY\n",
+        "python3 - <<'PY' {} \"$STARTED_AT_MS\" \"$FINISHED_AT_MS\" \"$RC\"\nimport json, pathlib, sys\nresult_path = pathlib.Path(sys.argv[1])\nstarted_at_ms = int(sys.argv[2])\nfinished_at_ms = int(sys.argv[3])\nexit_code = int(sys.argv[4])\nresult_path.write_text(json.dumps({{\n    'provider': 'claude',\n    'exit_code': exit_code,\n    'started_at_ms': started_at_ms,\n    'finished_at_ms': finished_at_ms,\n}}))\nPY\n",
         shell_escape(&result_path.display().to_string()),
     ));
     script.push_str("exit \"$RC\"\n");

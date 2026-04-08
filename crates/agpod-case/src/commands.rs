@@ -1825,7 +1825,7 @@ async fn cmd_redirect(
             let dispatch = dispatch_event(
                 client,
                 CaseDomainEvent::RedirectRecovered {
-                    case: updated_case,
+                    case: updated_case.clone(),
                     from_direction: prev_dir.clone(),
                     to_direction: existing_dir.clone(),
                 },
@@ -1906,7 +1906,7 @@ async fn cmd_redirect(
     let dispatch = dispatch_event(
         client,
         CaseDomainEvent::RedirectCommitted {
-            case: updated_case,
+            case: updated_case.clone(),
             from_direction: prev_dir.clone(),
             to_direction: new_dir.clone(),
             entry: entry.clone(),
