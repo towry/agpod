@@ -23,6 +23,7 @@ command = "claude"
 args = ["--dangerously-skip-permissions"]
 settings = "~/.claude/settings.json"
 mcp_config = "~/.claude/generated/mcp-readonly.json"
+system_prompt_file = "~/.config/agpod/prompts/readonly.md"
 env = { MAX_MCP_OUTPUT_TOKENS = "12000" }
 
 [mcp.hive.claude.modes.full]
@@ -31,6 +32,7 @@ command = "claude"
 args = []
 settings = "~/.claude/settings.json"
 mcp_config = "~/.mcp.json"
+system_prompt = "You are a full-access coding assistant."
 env = {}
 ```
 
@@ -44,6 +46,7 @@ command = "claude"
 args = ["--dangerously-skip-permissions"]
 settings = "~/.claude/settings.json"
 mcp_config = "~/.claude/generated/mcp-readonly.json"
+system_prompt_file = "~/.config/agpod/prompts/readonly.md"
 ```
 
 ## 字段
@@ -53,7 +56,19 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 - `args`：固定参数数组
 - `settings`：Claude settings 文件
 - `mcp_config`：该 mode 所用 MCP 配置
+- `system_prompt`：内联 system prompt 文本；与 `system_prompt_file` 互斥
+- `system_prompt_file`：system prompt 文件路径，支持 `~` 展开；与 `system_prompt` 互斥
 - `env`：附加环境变量
+
+## System Prompt 交付
+
+system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
+
+- 若 provider 支持文本方式（如 Claude 之 `--system-prompt`），配置给内联文本则直传；配置给文件路径则读取文件内容后转文本参数
+- 若 provider 仅支持文件方式，配置给文件路径则直传；配置给内联文本则落临时文件于 run dir 再传路径
+- 若 provider 兼支持文本与文件，内联文本走文本参数，文件路径走文件参数
+- 若 provider 不支持 system prompt，则忽略该配置，不报错
+- `system_prompt` 与 `system_prompt_file` 同时配置属配置错误，验证阶段即 fail fast
 
 ## `mode_info`
 
@@ -70,7 +85,7 @@ mcp_config = "~/.claude/generated/mcp-readonly.json"
 
 `hive(action="probe_mode")` 不起长任务，只回：
 
-- 所选 mode 将使用之命令、参数、配置路径、环境键
+- 所选 mode 将使用之命令、参数、配置路径、system prompt 配置状态与交付方式、环境键
 - `launch_args`：含 `-p --output-format json` 及 `resume` 追加参数之近似实参
 - `runtime_dependencies`：运行前须可见之 binary，如 `bash`、`python3`、provider command
 - prompt 预览

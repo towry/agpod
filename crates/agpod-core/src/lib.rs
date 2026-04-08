@@ -235,6 +235,15 @@ pub struct McpHiveClaudeModeConfig {
     #[serde(default)]
     pub mcp_config: Option<String>,
 
+    /// Inline system prompt text. Mutually exclusive with `system_prompt_file`.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+
+    /// Path to a file containing the system prompt. Mutually exclusive with `system_prompt`.
+    /// Supports `~` expansion.
+    #[serde(default)]
+    pub system_prompt_file: Option<String>,
+
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
@@ -476,12 +485,14 @@ description = "只读 Claude worker；适合查阅、总结、分析。"
 command = "claw"
 args = ["--dangerously-skip-permissions"]
 mcp_config = "~/.claude/generated/mcp-readonly.json"
+system_prompt_file = "~/.config/agpod/prompts/readonly.md"
 
 [mcp.hive.claude.modes.full]
 description = "全权限 Claude worker；适合实现与改码。"
 command = "claw"
 args = []
 mcp_config = "~/.mcp.json"
+system_prompt = "You are a full-access coding assistant."
 "#;
 
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -508,6 +519,11 @@ mcp_config = "~/.mcp.json"
             readonly.mcp_config.as_deref(),
             Some("~/.claude/generated/mcp-readonly.json")
         );
+        assert_eq!(
+            readonly.system_prompt_file.as_deref(),
+            Some("~/.config/agpod/prompts/readonly.md")
+        );
+        assert!(readonly.system_prompt.is_none());
         let full = claude.modes.get("full").expect("full mode");
         assert_eq!(
             full.description.as_deref(),
@@ -515,6 +531,11 @@ mcp_config = "~/.mcp.json"
         );
         assert_eq!(full.command.as_deref(), Some("claw"));
         assert_eq!(full.mcp_config.as_deref(), Some("~/.mcp.json"));
+        assert_eq!(
+            full.system_prompt.as_deref(),
+            Some("You are a full-access coding assistant.")
+        );
+        assert!(full.system_prompt_file.is_none());
     }
 
     #[test]

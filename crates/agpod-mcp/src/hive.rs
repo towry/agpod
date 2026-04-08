@@ -3,8 +3,8 @@
 //! Keywords: hive, process, claude, exec, output file, worker status
 
 use crate::hive_provider::{
-    default_claude_provider, parse_provider_output as parse_provider_output_impl,
-    HiveProviderOutput,
+    default_claude_provider, parse_provider_output as parse_provider_output_impl, provider_caps,
+    resolve_system_prompt_args, HiveProviderCaps, HiveProviderOutput, SystemPromptSupport,
 };
 use agpod_core::{Config, McpHiveClaudeConfig, McpHiveClaudeModeConfig};
 use anyhow::{anyhow, Context, Result};
@@ -666,6 +666,14 @@ async fn probe_mode(
     if !runtime_dependencies.iter().any(|value| value == &command) {
         runtime_dependencies.push(command.clone());
     }
+    let caps = provider_caps(&command);
+    let (system_prompt_configured, system_prompt_delivery, system_prompt_probe_args) =
+        probe_system_prompt_preview(
+            &caps,
+            config.system_prompt.as_deref(),
+            config.system_prompt_file.as_deref(),
+        );
+
     let mut launch_args = config.args.clone();
     if req.resume.unwrap_or(false) {
         launch_args.push("--resume".to_string());
@@ -679,6 +687,7 @@ async fn probe_mode(
         launch_args.push("--mcp-config".to_string());
         launch_args.push(mcp_config.clone());
     }
+    launch_args.extend(system_prompt_probe_args);
     launch_args.push("-p".to_string());
     launch_args.push("--output-format".to_string());
     launch_args.push("json".to_string());
@@ -704,6 +713,8 @@ async fn probe_mode(
             "launch_args": launch_args,
             "settings": settings,
             "mcp_config": mcp_config,
+            "system_prompt_configured": system_prompt_configured,
+            "system_prompt_delivery": system_prompt_delivery,
             "env_keys": config.env.keys().cloned().collect::<Vec<_>>(),
             "runtime_dependencies": runtime_dependencies,
             "expected_result_fields": ["provider", "exit_code", "started_at_ms", "finished_at_ms"],
@@ -712,6 +723,76 @@ async fn probe_mode(
         }),
     );
     Ok(raw)
+}
+
+fn probe_system_prompt_preview(
+    caps: &HiveProviderCaps,
+    system_prompt: Option<&str>,
+    system_prompt_file: Option<&str>,
+) -> (bool, &'static str, Vec<String>) {
+    let configured = system_prompt.is_some() || system_prompt_file.is_some();
+    if !configured {
+        return (false, "none", Vec::new());
+    }
+
+    match (&caps.system_prompt, system_prompt, system_prompt_file) {
+        (SystemPromptSupport::None, _, _) => (true, "unsupported_by_provider", Vec::new()),
+        (
+            SystemPromptSupport::Supported {
+                text_flag,
+                file_flag,
+            },
+            Some(_),
+            None,
+        ) => {
+            if let Some(flag) = text_flag {
+                (
+                    true,
+                    "text",
+                    vec![flag.to_string(), "<system_prompt_text>".to_string()],
+                )
+            } else if let Some(flag) = file_flag {
+                (
+                    true,
+                    "file",
+                    vec![
+                        flag.to_string(),
+                        "<system_prompt_file_from_text>".to_string(),
+                    ],
+                )
+            } else {
+                (true, "invalid", Vec::new())
+            }
+        }
+        (
+            SystemPromptSupport::Supported {
+                text_flag,
+                file_flag,
+            },
+            None,
+            Some(_),
+        ) => {
+            if let Some(flag) = file_flag {
+                (
+                    true,
+                    "file",
+                    vec![flag.to_string(), "<system_prompt_file>".to_string()],
+                )
+            } else if let Some(flag) = text_flag {
+                (
+                    true,
+                    "text",
+                    vec![
+                        flag.to_string(),
+                        "<system_prompt_text_from_file>".to_string(),
+                    ],
+                )
+            } else {
+                (true, "invalid", Vec::new())
+            }
+        }
+        _ => (true, "invalid", Vec::new()),
+    }
 }
 
 async fn mode_info(
@@ -758,12 +839,14 @@ async fn mode_info(
             "configured": configured,
             "config_path": format!("[mcp.hive.claude.modes.{selected}]"),
             "default_mode_behavior": "hive defaults to `readonly` when `mode` is omitted",
-            "fields": ["description", "command", "args", "settings", "mcp_config", "env"],
+            "fields": ["description", "command", "args", "settings", "mcp_config", "system_prompt", "system_prompt_file", "env"],
             "notes": [
                 "Only `readonly` and `full` are valid public mode names.",
-                "Configured `settings` and `mcp_config` paths may begin with `~`; hive expands them to the current user home directory before launch.",
+                "Configured `settings`, `mcp_config`, and `system_prompt_file` paths may begin with `~`; hive expands them to the current user home directory before launch.",
                 "If a mode is missing, `spawn_agent` and `send_prompt` fail fast instead of guessing defaults.",
-                "`send_prompt` supports `resume=true`, but only when the agent already has a saved Claude conversation session id."
+                "`send_prompt` supports `resume=true`, but only when the agent already has a saved Claude conversation session id.",
+                "`system_prompt` and `system_prompt_file` are mutually exclusive; setting both is a config error.",
+                "System prompt delivery depends on provider capabilities: the provider capability layer adapts between inline text and file-based delivery automatically."
             ],
             "configured_values": mode_config.map(|cfg| serde_json::json!({
                 "description": cfg.description.clone(),
@@ -771,6 +854,8 @@ async fn mode_info(
                 "args": cfg.args.clone(),
                 "settings": cfg.settings.clone(),
                 "mcp_config": cfg.mcp_config.clone(),
+                "system_prompt": cfg.system_prompt.as_ref().map(|s| prompt_preview(s)),
+                "system_prompt_file": cfg.system_prompt_file.clone(),
                 "env_keys": cfg.env.keys().cloned().collect::<Vec<_>>(),
             })),
             "example": {
@@ -780,6 +865,7 @@ async fn mode_info(
                     "args": ["--dangerously-skip-permissions"],
                     "settings": "~/.claude/settings.json",
                     "mcp_config": "~/.claude/generated/mcp-readonly.json",
+                    "system_prompt_file": "~/.config/agpod/prompts/readonly.md",
                     "env": { "MAX_MCP_OUTPUT_TOKENS": "12000" }
                 },
                 "full": {
@@ -788,6 +874,7 @@ async fn mode_info(
                     "args": [],
                     "settings": "~/.claude/settings.json",
                     "mcp_config": "~/.mcp.json",
+                    "system_prompt": "You are a full-access coding assistant.",
                     "env": {}
                 }
             }
@@ -1000,6 +1087,7 @@ async fn send_prompt(
         &prompt_path,
         &output_path,
         &result_path,
+        &run_dir,
         conversation_session_id.as_deref(),
         resume,
     )
@@ -1545,6 +1633,14 @@ fn validate_mode_config(
             None,
         ));
     }
+    if config.system_prompt.is_some() && config.system_prompt_file.is_some() {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "hive mode `{mode_name}` sets both `system_prompt` and `system_prompt_file`; only one is allowed"
+            ),
+            None,
+        ));
+    }
     for key in config.env.keys() {
         let first = key.chars().next();
         if first.is_none()
@@ -1570,6 +1666,7 @@ fn build_claude_exec_command(
     prompt_path: &Path,
     output_path: &Path,
     result_path: &Path,
+    run_dir: &Path,
     resume_session_id: Option<&str>,
     resume: bool,
 ) -> Result<String> {
@@ -1588,6 +1685,14 @@ fn build_claude_exec_command(
         .as_deref()
         .map(expand_home_like)
         .transpose()?;
+
+    let caps = provider_caps(command);
+    let system_prompt_args = resolve_system_prompt_args(
+        &caps,
+        mode_config.system_prompt.as_deref(),
+        mode_config.system_prompt_file.as_deref(),
+        run_dir,
+    )?;
 
     let mut command_parts = vec![shell_escape(command)];
     command_parts.extend(
@@ -1610,6 +1715,9 @@ fn build_claude_exec_command(
     if let Some(mcp_config) = expanded_mcp {
         command_parts.push("--mcp-config".to_string());
         command_parts.push(shell_escape(&mcp_config.display().to_string()));
+    }
+    for arg in &system_prompt_args {
+        command_parts.push(shell_escape(arg));
     }
 
     let mut script = String::from("set -euo pipefail\n");
@@ -2054,6 +2162,59 @@ mod tests {
     }
 
     #[test]
+    fn validate_mode_config_rejects_both_system_prompt_fields() {
+        let cfg = McpHiveClaudeModeConfig {
+            command: Some("claude".to_string()),
+            system_prompt: Some("hello".to_string()),
+            system_prompt_file: Some("~/.config/agpod/prompt.md".to_string()),
+            ..Default::default()
+        };
+        let err = validate_mode_config("readonly", &cfg)
+            .expect_err("both system_prompt fields should fail");
+        assert!(err.message.contains("system_prompt"));
+        assert!(err.message.contains("system_prompt_file"));
+    }
+
+    #[test]
+    fn validate_mode_config_accepts_system_prompt_alone() {
+        let cfg = McpHiveClaudeModeConfig {
+            command: Some("claude".to_string()),
+            system_prompt: Some("You are a helper.".to_string()),
+            ..Default::default()
+        };
+        assert!(validate_mode_config("readonly", &cfg).is_ok());
+    }
+
+    #[test]
+    fn validate_mode_config_accepts_system_prompt_file_alone() {
+        let cfg = McpHiveClaudeModeConfig {
+            command: Some("claude".to_string()),
+            system_prompt_file: Some("~/.config/agpod/prompt.md".to_string()),
+            ..Default::default()
+        };
+        assert!(validate_mode_config("readonly", &cfg).is_ok());
+    }
+
+    #[test]
+    fn probe_system_prompt_preview_reports_file_delivery_for_claude_file_config() {
+        let caps = provider_caps("claude");
+        let (configured, delivery, args) =
+            probe_system_prompt_preview(&caps, None, Some("/tmp/prompt.md"));
+        assert!(configured);
+        assert_eq!(delivery, "file");
+        assert_eq!(args, vec!["--system-prompt-file", "<system_prompt_file>"]);
+    }
+
+    #[test]
+    fn probe_system_prompt_preview_reports_text_delivery_for_claude_inline_config() {
+        let caps = provider_caps("claude");
+        let (configured, delivery, args) = probe_system_prompt_preview(&caps, Some("inline"), None);
+        assert!(configured);
+        assert_eq!(delivery, "text");
+        assert_eq!(args, vec!["--system-prompt", "<system_prompt_text>"]);
+    }
+
+    #[test]
     fn load_state_migrates_legacy_session_shape() {
         let temp = tempdir().expect("temp dir");
         let runtime = sample_runtime(&temp);
@@ -2303,6 +2464,8 @@ mod tests {
     fn build_claude_exec_command_adds_resume_flag() {
         let temp = tempdir().expect("temp dir");
         let runtime = sample_runtime(&temp);
+        let run_dir = temp.path().join("run");
+        fs::create_dir_all(&run_dir).expect("run dir");
         let cfg = McpHiveClaudeModeConfig {
             description: Some("readonly".to_string()),
             command: Some("claude".to_string()),
@@ -2310,6 +2473,7 @@ mod tests {
             settings: Some("~/.claude/settings.json".to_string()),
             mcp_config: Some("~/.mcp.json".to_string()),
             env: Default::default(),
+            ..Default::default()
         };
         let script = build_claude_exec_command(
             &runtime,
@@ -2318,6 +2482,7 @@ mod tests {
             Path::new("/tmp/prompt.txt"),
             Path::new("/tmp/output.log"),
             Path::new("/tmp/result.json"),
+            &run_dir,
             Some("claude-session-1"),
             true,
         )
@@ -2326,6 +2491,65 @@ mod tests {
         assert!(script.contains("--resume"));
         assert!(script.contains("'claude-session-1'"));
         assert!(script.contains("--output-format json"));
+    }
+
+    #[test]
+    fn build_claude_exec_command_includes_system_prompt_flag() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let run_dir = temp.path().join("run");
+        fs::create_dir_all(&run_dir).expect("run dir");
+        let cfg = McpHiveClaudeModeConfig {
+            command: Some("claude".to_string()),
+            system_prompt: Some("You are a readonly assistant.".to_string()),
+            ..Default::default()
+        };
+        let script = build_claude_exec_command(
+            &runtime,
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/prompt.txt"),
+            Path::new("/tmp/output.log"),
+            Path::new("/tmp/result.json"),
+            &run_dir,
+            None,
+            false,
+        )
+        .expect("script should build");
+
+        assert!(script.contains("--system-prompt"));
+        assert!(script.contains("You are a readonly assistant."));
+        assert!(script.contains("--output-format json"));
+    }
+
+    #[test]
+    fn build_claude_exec_command_passes_system_prompt_file_directly() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let run_dir = temp.path().join("run");
+        fs::create_dir_all(&run_dir).expect("run dir");
+        let prompt_file = temp.path().join("sys_prompt.md");
+        fs::write(&prompt_file, "File-based system prompt content.").expect("write prompt file");
+        let cfg = McpHiveClaudeModeConfig {
+            command: Some("claude".to_string()),
+            system_prompt_file: Some(prompt_file.display().to_string()),
+            ..Default::default()
+        };
+        let script = build_claude_exec_command(
+            &runtime,
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/prompt.txt"),
+            Path::new("/tmp/output.log"),
+            Path::new("/tmp/result.json"),
+            &run_dir,
+            None,
+            false,
+        )
+        .expect("script should build");
+
+        assert!(script.contains("--system-prompt-file"));
+        assert!(script.contains(&prompt_file.display().to_string()));
     }
 
     #[test]

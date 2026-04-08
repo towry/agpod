@@ -35,6 +35,8 @@ command = "claude"
 args = ["--dangerously-skip-permissions"]
 # settings = "~/.claude/settings.json"
 # mcp_config = "~/.claude/generated/mcp-readonly.json"
+# system_prompt_file = "~/.config/agpod/prompts/readonly.md"
+# system_prompt = "You are a read-only assistant."  # mutually exclusive with system_prompt_file
 # env = { MAX_MCP_OUTPUT_TOKENS = "12000" }
 
 [mcp.hive.claude.modes.full]
@@ -43,4 +45,5 @@ command = "claude"
 args = []
 # settings = "~/.claude/settings.json"
 # mcp_config = "~/.mcp.json"
+# system_prompt_file = "~/.config/agpod/prompts/full.md"
 # env = {}
