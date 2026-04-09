@@ -6,8 +6,8 @@ mod hive;
 mod hive_provider;
 
 use agpod_case::{
-    CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg, RecordKind,
-    StepCommand,
+    CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg,
+    RecallModeArg, RecordKind, StepCommand,
 };
 use anyhow::Result;
 use hive::{hive_tool_output_schema, HiveRequest, HiveToolEnvelope, HiveToolResponse};
@@ -206,6 +206,7 @@ impl AgpodMcpServer {
                     "case_recall",
                     CaseCommand::Recall {
                         query: req.query.unwrap_or_default(),
+                        mode: RecallModeArg::Find,
                         status: req.find_status.map(Into::into),
                         limit: req.find_limit,
                         recent_days: req.find_recent_days,

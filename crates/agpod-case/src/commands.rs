@@ -4,7 +4,7 @@
 
 use crate::cli::{
     CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, NeededContextQueryArg, OpenModeArg,
-    StepCommand,
+    RecallModeArg, StepCommand,
 };
 use crate::client::CaseClient;
 use crate::config::{CaseConfig, CaseOverrides};
@@ -377,16 +377,34 @@ pub(crate) async fn execute_command_json(
         CaseCommand::Step { command } => cmd_step(client, command).await,
         CaseCommand::Recall {
             query,
+            mode,
             status,
             limit,
             recent_days,
         } => {
-            cmd_recall(
+            let options = CaseListOptions::new(*status, *limit, *recent_days);
+            validate_recall_query(query)?;
+
+            if matches!(mode, RecallModeArg::Find) || status.is_some() || recent_days.is_some() {
+                return cmd_recall(client, query, options).await;
+            }
+
+            match cmd_context(
                 client,
-                query,
-                CaseListOptions::new(*status, *limit, *recent_days),
+                None,
+                ContextScopeArg::Repo,
+                Some(query.as_str()),
+                *limit,
+                None,
             )
             .await
+            {
+                Ok(value) => Ok(value),
+                Err(error) if should_fallback_to_find(&error) => {
+                    cmd_recall(client, query, options).await
+                }
+                Err(error) => Err(error),
+            }
         }
         CaseCommand::Context {
             id,
@@ -3169,6 +3187,17 @@ fn validate_recall_query(query: &str) -> CaseResult<()> {
     Ok(())
 }
 
+fn should_fallback_to_find(error: &CaseError) -> bool {
+    matches!(
+        error,
+        CaseError::SemanticBackendUnavailable(_)
+            | CaseError::ContextProviderUnavailable(_)
+            | CaseError::HonchoConfig(_)
+            | CaseError::HonchoHttp(_)
+            | CaseError::HonchoApi(_)
+    )
+}
+
 fn filter_recall_results(results: &mut Vec<CaseSearchResult>, options: CaseListOptions) {
     results.retain(|result| matches_case_filters(&result.case, options));
 }
@@ -4041,6 +4070,146 @@ mod tests {
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0]["id"].as_str(), Some(direct_id.as_str()));
         assert_eq!(recalled["_meta"]["limit"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn recall_context_mode_returns_context_brief() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        cmd_record(
+            &client,
+            None,
+            "audit issue noted in standalone worklog",
+            "issue",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("orphan session record should succeed");
+
+        let recalled = execute_command_json(
+            &client,
+            &CaseCommand::Recall {
+                query: "audit issue".to_string(),
+                mode: RecallModeArg::Context,
+                status: None,
+                limit: Some(3),
+                recent_days: None,
+            },
+        )
+        .await
+        .expect("recall context should succeed");
+
+        assert!(recalled.get("case_context").is_some());
+        assert!(recalled.get("cases").is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_context_mode_falls_back_to_find_when_context_backend_unavailable() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.honcho_enabled = true;
+        config.semantic_recall_enabled = true;
+        config.honcho_workspace_id = None;
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        cmd_record(
+            &client,
+            None,
+            "fallback should still return raw find matches",
+            "finding",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("orphan session record should succeed");
+
+        let recalled = execute_command_json(
+            &client,
+            &CaseCommand::Recall {
+                query: "raw find".to_string(),
+                mode: RecallModeArg::Context,
+                status: None,
+                limit: Some(3),
+                recent_days: None,
+            },
+        )
+        .await
+        .expect("recall should fallback to find");
+
+        assert!(recalled.get("cases").is_some());
+        assert!(recalled.get("session_records").is_some());
+        assert!(recalled.get("case_context").is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_find_mode_keeps_raw_find_shape() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        cmd_record(
+            &client,
+            None,
+            "explicit find mode keeps raw recall payload",
+            "note",
+            &[],
+            &[],
+            None,
+        )
+        .await
+        .expect("orphan session record should succeed");
+
+        let recalled = execute_command_json(
+            &client,
+            &CaseCommand::Recall {
+                query: "raw recall".to_string(),
+                mode: RecallModeArg::Find,
+                status: None,
+                limit: Some(3),
+                recent_days: None,
+            },
+        )
+        .await
+        .expect("recall find should succeed");
+
+        assert!(recalled.get("cases").is_some());
+        assert!(recalled.get("session_records").is_some());
+        assert!(recalled.get("case_context").is_none());
     }
 
     #[tokio::test]

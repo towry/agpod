@@ -59,6 +59,25 @@ pub enum ContextScopeArg {
     Repo,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+    JsonSchema,
+    Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum RecallModeArg {
+    Find,
+    #[default]
+    Context,
+}
+
 #[derive(Debug, Args)]
 pub struct CaseArgs {
     /// SurrealDB data directory (default: $XDG_DATA_HOME/agpod/case.db)
@@ -287,10 +306,14 @@ pub enum CaseCommand {
         command: StepCommand,
     },
 
-    /// Recall historical records when you need raw matches (cases + session records)
+    /// Unified recall entry: defaults to context brief; falls back to raw find when context backend is unavailable
     Recall {
         /// Search query used for case/session-record matching
         query: String,
+
+        /// Retrieval mode: `context` (default) or raw `find`
+        #[arg(long, value_enum, default_value = "context")]
+        mode: RecallModeArg,
 
         /// Filter case results by status. Note: when set, session_record hits are omitted.
         #[arg(long, value_enum)]
