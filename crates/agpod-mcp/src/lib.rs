@@ -370,7 +370,7 @@ impl ServerHandler for AgpodMcpServer {
         let instructions = if self.readonly {
             "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. Prefer `case_recall` in `mode=context` before `mode=find`: repo context recall is independent and does not require an open case. Do not create or open a case just to call `case_recall`; only `context_scope=case` needs an explicit `context_id`. `hive` is not available in read-only mode. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, or otherwise mutate case state."
         } else {
-            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work. Use `case_recall` before creating a case whenever retrieval is enough: prefer `mode=context` first because repo context recall is independent, defaults to `context_scope=repo`, and does not require an open case. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call `case_recall`; only `mode=context` with `context_scope=case` needs an explicit `context_id`. Once you decide the task should use case tracking, call `case_current` to inspect active state (it also serves as the resume entry point, returning direction, steps, last decision, last evidence, health, and next action); use `case_show` when you need the full case tree and step history. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input and `steps` is an optional initial step queue; they may be used together, `steps` may contain at most one item with `start=true`, and `startup_context` may return status `ok`, `empty`, or `degraded` while open still succeeds. Use `case_steps_add` to add more steps later, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case in a single call. `hive` manages reusable worker agents in a repo-scoped default session, or an explicit `session_id` when provided. `mode_info` takes no `mode` parameter and returns all currently available mode names, including custom configured modes, `run_hive_agent` creates or reuses one worker and starts one run, `list_agents` reports session or agent state, `close_agent` closes one worker, and `close_session` closes the whole hive session. `run_hive_agent` blocks until completion unless `async=true`; when async, poll `list_agents` with `agent_id`. When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list; if `mode` is omitted, hive defaults to `readonly`. `resume=true` requires a previously saved conversation for that worker and fails fast if none is available. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
+            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work (for example, one-shot read/query tasks without cross-step tracking). Use `case_recall` before creating a case whenever retrieval is enough: prefer `mode=context` first because repo context recall is independent, defaults to `context_scope=repo`, and does not require an open case. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call `case_recall`; only `mode=context` with `context_scope=case` needs an explicit `context_id`. Once you decide the task should use case tracking, call `case_current` to inspect active state (it also serves as the resume entry point, returning direction, steps, last decision, last evidence, health, and next action); use `case_show` only when you need full case tree and step history details. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input and `steps` is an optional initial step queue; they may be used together, `steps` may contain at most one item with `start=true`, and `startup_context` may return status `ok`, `empty`, or `degraded` while open still succeeds. Use `case_steps_add` to add more steps later, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. In `case_step_advance`, `record` must be an object payload; plain string shorthand is rejected. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case in a single call. `hive` manages reusable worker agents in a repo-scoped default session, or an explicit `session_id` when provided. Use `mode_info`, `run_hive_agent`, `wait_agent`, `list_agents`, `close_agent`, and `close_session`. `mode_info` takes no `mode` parameter and returns all currently available mode names, including custom configured modes. `run_hive_agent` creates one worker when `agent_id` is omitted, or targets an existing live worker when `agent_id` is provided; when `agent_id` is provided, do not pass `mode`, `worker_name`, or `workdir`. `wait_agent` blocks for one agent and waits up to `timeout_ms` (default 30000) before returning, and returns the latest agent payload so callers usually do not need an extra follow-up query. `run_hive_agent` defaults to `async=true` (recommended); when async, poll `list_agents` with `agent_id` for snapshots or call `wait_agent` for bounded blocking waits. Set `async=false` only when the caller explicitly needs one blocking call that waits for completion. When live agents hit the limit and no `agent_id` is provided, hive returns actionable close suggestions instead of auto-reusing any worker. Reuse and resume are caller-controlled: pass `agent_id` explicitly to reuse a worker, and keep `resume=false` (default) unless prior conversation context is explicitly needed. When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list; if `mode` is omitted, hive defaults to `readonly`. `resume=true` requires a previously saved conversation for that worker and fails fast if none is available. The `hive` tool description is the canonical contract; `mode_info` notes are explanatory. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -391,7 +391,7 @@ impl ServerHandler for AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "hive",
-        description = "Manage reusable worker agents in a repo-scoped default session, or an explicit `session_id` when provided. Use `mode_info`, `run_hive_agent`, `list_agents`, `close_agent`, or `close_session`. `mode_info` takes no `mode` parameter and returns all currently available mode names, including custom configured modes, `run_hive_agent` creates or reuses one worker and starts one run, `list_agents` reports session or agent state, `close_agent` closes one worker, and `close_session` closes the whole hive session. `run_hive_agent` blocks until completion unless `async=true`; when async, poll `list_agents` with `agent_id`. When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list; if `mode` is omitted, hive defaults to `readonly`. `resume=true` requires a previously saved conversation for that worker and fails fast if none is available.",
+        description = "Manage reusable worker agents in a repo-scoped default session, or an explicit `session_id` when provided. Use `mode_info`, `run_hive_agent`, `wait_agent`, `list_agents`, `close_agent`, or `close_session`. `mode_info` takes no `mode` parameter and returns all currently available mode names, including custom configured modes. `run_hive_agent` creates one worker when `agent_id` is omitted, or targets an existing live worker when `agent_id` is provided; when `agent_id` is provided, do not pass `mode`, `worker_name`, or `workdir`. `wait_agent` blocks for one agent and waits up to `timeout_ms` (default 30000) before returning, and returns the latest agent payload (`current_run`/`last_run` with output excerpts) so callers usually do not need an extra query. `list_agents` reports session or agent state, `close_agent` closes one worker, and `close_session` closes the whole hive session. `run_hive_agent` defaults to `async=true` (recommended); when async, poll `list_agents` with `agent_id` for snapshots or call `wait_agent` for bounded blocking waits. Set `async=false` only when the caller explicitly needs one blocking call that waits for completion. When live agents hit the limit and no `agent_id` is provided, hive returns actionable close suggestions instead of auto-reusing any worker. Reuse and resume are caller-controlled: pass `agent_id` explicitly to reuse a worker, and keep `resume=false` (default) unless prior conversation context is explicitly needed. When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list; if `mode` is omitted, hive defaults to `readonly`. `resume=true` requires a previously saved conversation for that worker and fails fast if none is available.",
         output_schema = hive_tool_output_schema()
     )]
     async fn hive(
@@ -556,7 +556,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_show",
-        description = "Show case tree and step history. Use after `case_current` when needed.",
+        description = "Show full case tree and step history. Call `case_current` first; use this when detailed history is required.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_show(
@@ -581,7 +581,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_list",
-        description = "List repo cases with optional status, recency, and limit filters. Safe discovery call.",
+        description = "List repo cases with optional status, recency, and limit filters. Read-only discovery call; it does not mutate case state.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_list(
@@ -670,7 +670,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_step_mark_as",
-        description = "Start or block a step. To complete the active step, use `case_step_advance` instead.",
+        description = "Start or block a step. To complete the active step, use `case_step_advance` instead. When `status=blocked`, provide a non-empty `reason`.",
         output_schema = case_tool_output_schema()
     )]
     async fn case_step_mark_as(
@@ -694,7 +694,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_step_advance",
-        description = "Complete the current active step, optionally append one factual record, and optionally start the next step in one call.",
+        description = "Complete the current active step, optionally append one factual record, and optionally start the next step in one call. `record` must be an object payload (plain string is not supported).",
         output_schema = case_tool_output_schema()
     )]
     async fn case_step_advance(
@@ -796,7 +796,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_list",
-        description = "List repo cases with optional status, recency, and limit filters. Safe discovery call.",
+        description = "List repo cases with optional status, recency, and limit filters. Read-only discovery call; it does not mutate case state.",
         output_schema = case_tool_output_schema()
     )]
     async fn readonly_case_list(
@@ -1079,6 +1079,15 @@ fn describe_case_step_mark_as_request_schema(_schema: &mut schemars::Schema) {
     // with providers that reject top-level allOf.
 }
 
+fn describe_case_step_advance_request_schema(_schema: &mut schemars::Schema) {
+    // `record` must be an object with summary/kind/files/context.
+    // Runtime validation rejects shorthand strings to keep contract strict.
+}
+
+fn case_step_advance_record_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    <CaseStepAdvanceRecordInput as schemars::JsonSchema>::json_schema(generator)
+}
+
 fn deserialize_optional_record_kind<'de, D>(deserializer: D) -> Result<Option<RecordKind>, D::Error>
 where
     D: Deserializer<'de>,
@@ -1095,6 +1104,34 @@ where
                 RecordKind::allowed_values_code_span()
             ))
         }),
+    }
+}
+
+fn deserialize_case_step_advance_record_object_only<'de, D>(
+    deserializer: D,
+) -> Result<Option<CaseStepAdvanceRecordInput>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(Value::Object(obj)) => {
+            let mut record = serde_json::from_value::<CaseStepAdvanceRecordInput>(Value::Object(obj))
+                .map_err(|err| {
+                    D::Error::custom(format!(
+                        "`record` must be an object with at least `summary`; parse error: {err}"
+                    ))
+                })?;
+            record.summary = record.summary.trim().to_string();
+            if record.summary.is_empty() {
+                return Err(D::Error::custom("`record.summary` must not be empty"));
+            }
+            Ok(Some(record))
+        }
+        Some(_) => Err(D::Error::custom(
+            "`record` must be an object like {\"summary\":\"...\",\"kind\":\"note|finding|evidence|blocker\",\"files\":[],\"context\":\"...\"}; plain string is not supported",
+        )),
     }
 }
 
@@ -1488,12 +1525,18 @@ pub struct CaseStepAdvanceRecordInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = describe_case_step_advance_request_schema)]
 pub struct CaseStepAdvanceRequest {
     /// Case ID. Omit to use the open case in this repository.
     pub id: Option<String>,
     /// Step ID. Omit to use the current active step.
     pub step_id: Option<String>,
-    /// Optional record appended while advancing.
+    /// Optional record appended while advancing. Must be an object payload.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_case_step_advance_record_object_only"
+    )]
+    #[schemars(schema_with = "case_step_advance_record_schema")]
     pub record: Option<CaseStepAdvanceRecordInput>,
     /// Explicit next step to start after completion.
     pub next_step_id: Option<String>,
@@ -2217,6 +2260,17 @@ mod tests {
         assert_eq!(record.files, vec!["docs/runbook.md"]);
         assert_eq!(record.context.as_deref(), Some("from smoke"));
         assert!(request.next_step_auto);
+    }
+
+    #[test]
+    fn case_step_advance_request_rejects_record_summary_shorthand() {
+        let error = serde_json::from_value::<CaseStepAdvanceRequest>(serde_json::json!({
+            "record": "captured evidence from smoke"
+        }))
+        .expect_err("string shorthand should fail");
+        let message = error.to_string();
+        assert!(message.contains("record"));
+        assert!(message.contains("plain string is not supported"));
     }
 
     #[tokio::test]

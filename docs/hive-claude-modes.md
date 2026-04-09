@@ -7,7 +7,10 @@
 - 对外仅二 mode：`readonly`、`full`
 - agent 若不知本机配置，可先调 `hive(action="mode_info")`
 - `run_hive_agent` 一步建或复用 worker，并起本地 child process
-- 缺省阻塞至子进程完结；若 `async=true`，则即返，后以 `list_agents(agent_id=...)` 取结果
+- 缺省 `async=true`（推荐）；即返后可用 `wait_agent(agent_id=..., timeout_ms=...)` 阻塞等候，或以 `list_agents(agent_id=...)` 取快照
+- `wait_agent` 缺省等待上限 `timeout_ms=30000`；超时则返“仍运行”，便于 caller 继续轮询
+- 达 live limit 且未指 `agent_id` 时，不自动复用；直接报可执行建议（显式复用某 `agent_id`，或 `close_agent` / `close_session`）
+- 复用不等于续聊：`resume=false`（缺省）即新上下文；仅确需沿用既有对话时设 `resume=true`
 - `resume` 由 caller 明定；缺已存 Claude session id 而强求 `resume=true`，径失败
 - `settings`、`mcp_config` 若以 `~` 起首，运行时自动展为家目录
 
@@ -94,6 +97,7 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 ## 生命周期
 
 - `run_hive_agent`：建或复用 worker，写 `prompt.txt`，生成 `launcher.sh`，再起 child process
+- `wait_agent`：对指定 `agent_id` 阻塞等待至完成或超时；适合异步后之有界等待
 - Claude 运行时，流式输出入 `output.log`
 - 运行止后，`result.json` 记 `provider`、`exit_code`、起止时刻；会话 id 自 `output.log` 解析入统一封装
 - `list_agents` 会依 pid 与 `result.json` 同步状态，并将所得 `provider_session_id` 回写为 agent 之 `conversation_session_id`
@@ -135,6 +139,13 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 - 若 `run_hive_agent` 指定 `resume=true`，`hive` 必取该 agent 先前保存之 `conversation_session_id`
 - 若无已存会话 id，直接报错，不暗中新开
 - 若 `resume=false`，即起新 Claude 会话
+
+## Wait 契约
+
+- `wait_agent` 必填 `agent_id`
+- `timeout_ms` 可省；省则取 `30000`
+- 若等待期内完成，返 `state=completed`
+- 若超时仍运行，返 `state=running` 并提示继续调用 `wait_agent`
 
 ## 边缘风险
 
