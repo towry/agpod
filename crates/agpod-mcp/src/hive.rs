@@ -17,7 +17,6 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom};
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -32,7 +31,6 @@ const HIVE_AGENT_LIMIT: usize = 5;
 const HIVE_LOCK_STALE_MS: u64 = 30_000;
 const HIVE_BLOCKING_POLL_MS: u64 = 100;
 const HIVE_WAIT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
-const OUTPUT_EXCERPT_LIMIT: usize = 1200;
 const HIVE_RUN_MARKER_PREFIX: &str = "--agpod-hive-run=";
 const FNV1A_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV1A_PRIME: u32 = 0x0100_0193;
@@ -347,12 +345,7 @@ impl HiveRuntime {
         })?;
         let state_dir = std::env::var("AGPOD_HIVE_STATE_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::data_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("agpod")
-                    .join("hive")
-            });
+            .unwrap_or_else(|_| default_hive_state_dir());
         let session_id = match session_id_hint {
             Some(value) => {
                 ensure_valid_session_id(value).map_err(internal_error)?;
@@ -503,6 +496,16 @@ impl HiveRuntime {
         validate_mode_config(mode_name, &config)?;
         Ok(config)
     }
+}
+
+fn default_hive_state_dir() -> PathBuf {
+    std::env::temp_dir().join("agpod").join("hive")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HiveResponseShape {
+    Summary,
+    List,
 }
 
 fn parse_hive_session_state(raw: &str) -> Result<HiveSessionState> {
@@ -749,6 +752,7 @@ async fn list_agents(
         message,
         &state,
         selected_agent,
+        HiveResponseShape::List,
     ))
 }
 
@@ -781,6 +785,7 @@ async fn run_hive_agent(
                 ),
                 &state,
                 Some(agent),
+                HiveResponseShape::Summary,
             ));
         }
 
@@ -800,6 +805,7 @@ async fn run_hive_agent(
             ),
             &state,
             Some(&state.agents[agent_index]),
+            HiveResponseShape::Summary,
         );
         (agent_id, run_id, response)
     };
@@ -855,6 +861,7 @@ async fn wait_agent(
                 ),
                 &state,
                 Some(agent),
+                HiveResponseShape::Summary,
             ));
         } else {
             return Ok(build_error_response(
@@ -864,6 +871,7 @@ async fn wait_agent(
                 ),
                 &state,
                 Some(agent),
+                HiveResponseShape::Summary,
             ));
         }
     };
@@ -928,6 +936,7 @@ async fn close_agent(
             ),
             &state,
             Some(agent),
+            HiveResponseShape::Summary,
         ));
     }
 
@@ -957,6 +966,7 @@ async fn close_agent(
         format!("hive agent `{agent_id}` closed"),
         &state,
         Some(agent),
+        HiveResponseShape::Summary,
     ))
 }
 
@@ -1009,6 +1019,7 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
             ),
             &state,
             None,
+            HiveResponseShape::Summary,
         ));
     }
     Ok(build_session_response(
@@ -1016,6 +1027,7 @@ async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, Erro
         "hive session closed",
         &state,
         None,
+        HiveResponseShape::Summary,
     ))
 }
 
@@ -1338,6 +1350,7 @@ async fn wait_for_run_completion(
                     completed_run_message(agent_id, last_run),
                     &state,
                     Some(agent),
+                    HiveResponseShape::Summary,
                 )))
             } else if let Some(current_run) = agent
                 .current_run
@@ -1365,6 +1378,7 @@ async fn wait_for_run_completion(
                                 ),
                                 &state,
                                 Some(agent),
+                                HiveResponseShape::Summary,
                             )))
                         }
                     }
@@ -1425,6 +1439,7 @@ async fn wait_timeout_response(
             completed_run_message(agent_id, last_run),
             &state,
             Some(agent),
+            HiveResponseShape::Summary,
         ));
     }
     if agent
@@ -1441,6 +1456,7 @@ async fn wait_timeout_response(
             ),
             &state,
             Some(agent),
+            HiveResponseShape::Summary,
         ));
     }
     Ok(build_error_response(
@@ -1450,6 +1466,7 @@ async fn wait_timeout_response(
         ),
         &state,
         Some(agent),
+        HiveResponseShape::Summary,
     ))
 }
 
@@ -1681,14 +1698,8 @@ fn build_session_response(
     message: impl Into<String>,
     state: &HiveSessionState,
     agent: Option<&HiveAgentState>,
+    shape: HiveResponseShape,
 ) -> Map<String, Value> {
-    let agents: Vec<Value> = state.agents.iter().map(agent_json).collect();
-    let reusable_agents: Vec<Value> = state
-        .agents
-        .iter()
-        .filter(|agent| agent.status == HiveAgentStatus::Idle)
-        .map(|agent| Value::String(agent.agent_id.clone()))
-        .collect();
     let session_state = derive_session_state(state);
 
     let mut raw = Map::new();
@@ -1704,8 +1715,17 @@ fn build_session_response(
             "state": session_state
         }),
     );
-    raw.insert("agents".to_string(), Value::Array(agents));
-    raw.insert("reusable_agents".to_string(), Value::Array(reusable_agents));
+    if shape == HiveResponseShape::List {
+        let agents: Vec<Value> = state.agents.iter().map(agent_json).collect();
+        let reusable_agents: Vec<Value> = state
+            .agents
+            .iter()
+            .filter(|agent| agent.status == HiveAgentStatus::Idle)
+            .map(|agent| Value::String(agent.agent_id.clone()))
+            .collect();
+        raw.insert("agents".to_string(), Value::Array(agents));
+        raw.insert("reusable_agents".to_string(), Value::Array(reusable_agents));
+    }
     if let Some(agent) = agent {
         raw.insert("agent".to_string(), agent_json(agent));
     }
@@ -1735,8 +1755,9 @@ fn build_error_response(
     message: impl Into<String>,
     state: &HiveSessionState,
     agent: Option<&HiveAgentState>,
+    shape: HiveResponseShape,
 ) -> Map<String, Value> {
-    let mut raw = build_session_response(state_name, message, state, agent);
+    let mut raw = build_session_response(state_name, message, state, agent, shape);
     raw.insert("ok".to_string(), Value::Bool(false));
     raw
 }
@@ -1772,31 +1793,13 @@ fn run_json(run: &HiveRunState) -> Value {
         "exit_code": run.exit_code,
         "termination_reason": run.termination_reason,
         "provider_output": run.provider_output.as_ref().map(provider_output_json),
-        "output_excerpt": read_output_excerpt(&run.output_path),
     })
 }
 
 fn provider_output_json(output: &HiveProviderOutput) -> Value {
     serde_json::json!({
-        "provider": output.provider,
-        "format": output.format,
-        "session_id": output.session_id,
         "summary": output.summary,
-        "json_keys": output.json_keys,
-        "parse_error": output.parse_error,
     })
-}
-
-fn read_output_excerpt(path: &str) -> Option<String> {
-    let mut file = fs::File::open(path).ok()?;
-    let file_len = file.metadata().ok()?.len();
-    let seek_back = std::cmp::min(file_len, OUTPUT_EXCERPT_LIMIT as u64);
-    if file.seek(SeekFrom::End(-(seek_back as i64))).is_err() {
-        return None;
-    }
-    let mut buf = Vec::with_capacity(seek_back as usize);
-    file.read_to_end(&mut buf).ok()?;
-    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn parse_provider_output(provider: &str, output_path: &str) -> HiveProviderOutput {
@@ -2490,7 +2493,7 @@ mod tests {
             ],
         };
 
-        let raw = build_session_response("listed", "ok", &state, None);
+        let raw = build_session_response("listed", "ok", &state, None, HiveResponseShape::List);
         let reusable = raw
             .get("reusable_agents")
             .and_then(Value::as_array)
@@ -2502,6 +2505,24 @@ mod tests {
                 .and_then(Value::as_str),
             Some("running")
         );
+    }
+
+    #[test]
+    fn build_session_response_summary_omits_agent_lists() {
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: "hive-repo-1234abcd".to_string(),
+            session_name: "agpod-hive-repo-1234abcd".to_string(),
+            repo_root: "/repo".to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: vec![],
+        };
+
+        let raw =
+            build_session_response("completed", "ok", &state, None, HiveResponseShape::Summary);
+        assert!(raw.get("agents").is_none());
+        assert!(raw.get("reusable_agents").is_none());
     }
 
     #[test]
@@ -2712,6 +2733,8 @@ mod tests {
         .expect("run_hive_agent should succeed");
 
         assert_eq!(raw.get("state").and_then(Value::as_str), Some("completed"));
+        assert!(raw.get("agents").is_none());
+        assert!(raw.get("reusable_agents").is_none());
         assert_eq!(
             raw.get("agent")
                 .and_then(|agent| agent.get("status"))
@@ -2732,6 +2755,14 @@ mod tests {
                 .and_then(|output| output.get("summary"))
                 .and_then(Value::as_str),
             Some("done")
+        );
+        assert_eq!(
+            raw.get("agent")
+                .and_then(|agent| agent.get("last_run"))
+                .and_then(|run| run.get("provider_output"))
+                .and_then(Value::as_object)
+                .map(|object| object.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["summary".to_string()])
         );
     }
 
@@ -2764,6 +2795,8 @@ mod tests {
             started.get("state").and_then(Value::as_str),
             Some("running")
         );
+        assert!(started.get("agents").is_none());
+        assert!(started.get("reusable_agents").is_none());
         let agent_id = started
             .get("agent")
             .and_then(|agent| agent.get("agent_id"))
@@ -2973,10 +3006,17 @@ mod tests {
             waited.get("state").and_then(Value::as_str),
             Some("completed")
         );
+        assert!(waited.get("agents").is_none());
         assert!(waited
             .get("message")
             .and_then(Value::as_str)
             .is_some_and(|text| text.contains("No active run remains")));
+    }
+
+    #[test]
+    fn default_hive_state_dir_uses_tmp_root() {
+        let path = default_hive_state_dir();
+        assert_eq!(path, std::env::temp_dir().join("agpod").join("hive"));
     }
 
     #[tokio::test]
