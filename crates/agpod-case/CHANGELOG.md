@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/towry/agpod/compare/agpod-case-v0.6.2...agpod-case-v0.6.3) (2026-04-09)
+
+
+### Bug Fixes
+
+* cli recall usage ([f0ecb5b](https://github.com/towry/agpod/commit/f0ecb5bc906660a0e6bc283234ce4294d35ef423))
+
 ## [0.6.2](https://github.com/towry/agpod/compare/agpod-case-v0.6.1...agpod-case-v0.6.2) (2026-04-09)
 
 

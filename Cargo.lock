@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "agpod"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "agpod-case",
  "agpod-core",
@@ -47,7 +47,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-case"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "agpod-core",
  "anyhow",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-case-server"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "agpod-case",
  "agpod-core",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "agpod-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "agpod-case",
  "agpod-core",
