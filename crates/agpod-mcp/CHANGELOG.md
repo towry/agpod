@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.0...agpod-mcp-v0.8.1) (2026-04-09)
+
+
+### Bug Fixes
+
+* cli recall usage ([f0ecb5b](https://github.com/towry/agpod/commit/f0ecb5bc906660a0e6bc283234ce4294d35ef423))
+
 ## [0.8.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.5...agpod-mcp-v0.8.0) (2026-04-09)
 
 
