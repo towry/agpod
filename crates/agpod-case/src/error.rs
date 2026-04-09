@@ -96,6 +96,9 @@ pub enum CaseError {
     #[error("record kind `goal_constraint_update` requires at least one `goal_constraint`")]
     GoalConstraintUpdateRequiresConstraints,
 
+    #[error("record kind `goal_constraint_update` requires an associated open case")]
+    GoalConstraintUpdateRequiresAssociatedCase,
+
     #[error("`goal_constraint` is only allowed when record kind is `goal_constraint_update`")]
     GoalConstraintsOnlyAllowedForGoalConstraintUpdate,
 

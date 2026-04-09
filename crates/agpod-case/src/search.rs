@@ -220,6 +220,40 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                     );
                 }
             }
+            let session_records = self.client.list_session_records().await?;
+            for session_record in session_records
+                .iter()
+                .filter(|record| record.case_id.as_deref() == Some(case.id.as_str()))
+            {
+                push_hit(
+                    &mut hits,
+                    Some(case.id.as_str()),
+                    "session_record",
+                    "summary",
+                    session_record.summary.as_str(),
+                    &needle,
+                    44,
+                    Some(case.current_direction_seq),
+                    Some(session_record.seq),
+                    None,
+                    Some(session_record.kind.as_str()),
+                );
+                if let Some(context) = session_record.context.as_deref() {
+                    push_hit(
+                        &mut hits,
+                        Some(case.id.as_str()),
+                        "session_record",
+                        "context",
+                        context,
+                        &needle,
+                        28,
+                        Some(case.current_direction_seq),
+                        Some(session_record.seq),
+                        None,
+                        Some(session_record.kind.as_str()),
+                    );
+                }
+            }
 
             hits.sort_by(|left, right| {
                 right
@@ -383,6 +417,37 @@ impl CaseSearchBackend for LocalTextSearchBackend {
                             entry.kind.as_deref(),
                         );
                     }
+                }
+            }
+            let session_records = self.client.list_session_records().await?;
+            for session_record in &session_records {
+                push_hit(
+                    &mut hits,
+                    session_record.case_id.as_deref(),
+                    "session_record",
+                    "summary",
+                    session_record.summary.as_str(),
+                    &needle,
+                    44,
+                    None,
+                    Some(session_record.seq),
+                    None,
+                    Some(session_record.kind.as_str()),
+                );
+                if let Some(context) = session_record.context.as_deref() {
+                    push_hit(
+                        &mut hits,
+                        session_record.case_id.as_deref(),
+                        "session_record",
+                        "context",
+                        context,
+                        &needle,
+                        28,
+                        None,
+                        Some(session_record.seq),
+                        None,
+                        Some(session_record.kind.as_str()),
+                    );
                 }
             }
 

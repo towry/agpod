@@ -3,7 +3,7 @@
 //! Keywords: case event, domain event, hook event, semantic sync
 
 use crate::client::CaseClient;
-use crate::types::{Case, Direction, Entry, Step};
+use crate::types::{Case, Direction, Entry, SessionRecord, Step};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -22,6 +22,11 @@ pub enum CaseDomainEvent {
     RecordAppended {
         case: Case,
         entry: Entry,
+    },
+    SessionRecordAppended {
+        case: Option<Case>,
+        session_record: SessionRecord,
+        linked_entry: Option<Entry>,
     },
     DecisionAppended {
         case: Case,
@@ -76,6 +81,7 @@ impl CaseDomainEvent {
             Self::CaseOpened { .. } => "case_opened",
             Self::CaseReopened { .. } => "case_reopened",
             Self::RecordAppended { .. } => "record_appended",
+            Self::SessionRecordAppended { .. } => "session_record_appended",
             Self::DecisionAppended { .. } => "decision_appended",
             Self::RedirectCommitted { .. } => "redirect_committed",
             Self::RedirectRecovered { .. } => "redirect_recovered",
@@ -94,6 +100,9 @@ impl CaseDomainEvent {
             Self::CaseOpened { case, .. } => case.opened_at.as_str(),
             Self::CaseReopened { reopened_entry, .. } => reopened_entry.created_at.as_str(),
             Self::RecordAppended { entry, .. } => entry.created_at.as_str(),
+            Self::SessionRecordAppended { session_record, .. } => {
+                session_record.created_at.as_str()
+            }
             Self::DecisionAppended { entry, .. } => entry.created_at.as_str(),
             Self::RedirectCommitted { entry, .. } => entry.created_at.as_str(),
             Self::RedirectRecovered { case, .. } => case.updated_at.as_str(),
@@ -109,7 +118,7 @@ impl CaseDomainEvent {
         }
     }
 
-    pub fn case_id(&self) -> &str {
+    pub fn case_id(&self) -> Option<&str> {
         match self {
             Self::CaseOpened { case, .. }
             | Self::CaseReopened { case, .. }
@@ -123,7 +132,8 @@ impl CaseDomainEvent {
             | Self::StepBlocked { case, .. }
             | Self::StepsReordered { case, .. }
             | Self::CaseClosed { case, .. }
-            | Self::CaseAbandoned { case, .. } => case.id.as_str(),
+            | Self::CaseAbandoned { case, .. } => Some(case.id.as_str()),
+            Self::SessionRecordAppended { case, .. } => case.as_ref().map(|case| case.id.as_str()),
         }
     }
 
@@ -141,6 +151,9 @@ impl CaseDomainEvent {
             | Self::StepsReordered { case, .. }
             | Self::CaseClosed { case, .. }
             | Self::CaseAbandoned { case, .. } => Some(case.current_direction_seq),
+            Self::SessionRecordAppended { case, .. } => {
+                case.as_ref().map(|case| case.current_direction_seq)
+            }
             Self::RedirectRecovered { to_direction, .. } => Some(to_direction.seq),
             Self::RedirectCommitted { to_direction, .. } => Some(to_direction.seq),
         }
@@ -168,6 +181,19 @@ impl CaseDomainEvent {
                 "entry_type": entry.entry_type.as_str(),
                 "kind": entry.kind,
                 "step_id": entry.step_id,
+            }),
+            Self::SessionRecordAppended {
+                case,
+                session_record,
+                linked_entry,
+            } => json!({
+                "case_id": case.as_ref().map(|case| case.id.clone()),
+                "session_record_id": session_record.id,
+                "session_record_seq": session_record.seq,
+                "kind": session_record.kind.as_str(),
+                "entry_seq": linked_entry.as_ref().map(|entry| entry.seq),
+                "entry_type": linked_entry.as_ref().map(|entry| entry.entry_type.as_str()),
+                "step_id": linked_entry.as_ref().and_then(|entry| entry.step_id.clone()),
             }),
             Self::DecisionAppended { case, entry } => json!({
                 "case_id": case.id,
@@ -249,6 +275,27 @@ impl CaseDomainEvent {
                 }
                 _ => format!("Recorded: {}.", compact_text(&entry.summary)),
             },
+            Self::SessionRecordAppended {
+                case,
+                session_record,
+                ..
+            } => {
+                let label = session_record.kind.as_str();
+                if let Some(case) = case {
+                    format!(
+                        "Session record ({}) in {}: {}.",
+                        label,
+                        compact_text(&case.id),
+                        compact_text(&session_record.summary)
+                    )
+                } else {
+                    format!(
+                        "Session record ({}): {}.",
+                        label,
+                        compact_text(&session_record.summary)
+                    )
+                }
+            }
             Self::DecisionAppended { entry, .. } => {
                 format!("Decision: {}.", compact_text(&entry.summary))
             }
@@ -309,6 +356,7 @@ fn compact_text(text: &str) -> String {
 pub struct CaseEventEnvelope {
     pub event_id: String,
     pub case_id: String,
+    pub associated_case_id: Option<String>,
     pub repo_id: String,
     pub repo_label: String,
     pub worktree_id: String,
@@ -322,8 +370,13 @@ impl CaseEventEnvelope {
     pub fn new(client: &CaseClient, event: CaseDomainEvent) -> Self {
         let occurred_at = event.occurred_at().to_string();
         let metadata = event.metadata();
+        let associated_case_id = event.case_id().map(ToOwned::to_owned);
+        let session_id = associated_case_id
+            .clone()
+            .unwrap_or_else(|| format!("session-{}-{}", client.repo_id(), client.worktree_id()));
         let discriminator = metadata
             .get("entry_seq")
+            .or_else(|| metadata.get("session_record_seq"))
             .or_else(|| metadata.get("step_id"))
             .or_else(|| metadata.get("to_direction_seq"))
             .or_else(|| metadata.get("summary"))
@@ -332,12 +385,13 @@ impl CaseEventEnvelope {
         Self {
             event_id: format!(
                 "{}:{}:{}:{}",
-                event.case_id(),
+                session_id,
                 event.event_type(),
                 discriminator,
                 occurred_at
             ),
-            case_id: event.case_id().to_string(),
+            case_id: session_id,
+            associated_case_id,
             repo_id: client.repo_id().to_string(),
             repo_label: client.repo_label().to_string(),
             worktree_id: client.worktree_id().to_string(),

@@ -312,7 +312,7 @@ pub(crate) async fn execute_command_json(
             .await
         }
         CaseCommand::Current { state } => cmd_current(client, *state).await,
-        CaseCommand::Record {
+        CaseCommand::SessionRecord {
             id,
             summary,
             kind,
@@ -324,7 +324,7 @@ pub(crate) async fn execute_command_json(
                 .as_ref()
                 .map(|f| f.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            cmd_record(
+            cmd_session_record(
                 client,
                 id.as_deref(),
                 summary,
@@ -587,7 +587,7 @@ async fn load_context_case(
 
 fn command_case_id(command: &CaseCommand) -> Option<&str> {
     match command {
-        CaseCommand::Record { id, .. }
+        CaseCommand::SessionRecord { id, .. }
         | CaseCommand::Decide { id, .. }
         | CaseCommand::Redirect { id, .. }
         | CaseCommand::Close { id, .. }
@@ -1019,11 +1019,36 @@ async fn next_entry_seq(client: &CaseClient, case_id: &str) -> CaseResult<u32> {
     Ok(count + 1)
 }
 
+/// Get next session-record seq for the current repo/worktree scope.
+async fn next_session_record_seq(client: &CaseClient) -> CaseResult<u32> {
+    let count = client.get_session_record_count().await?;
+    Ok(count + 1)
+}
+
 /// Resolve a case ID: use given ID or find the open case.
 async fn resolve_case(client: &CaseClient, id: Option<&str>) -> CaseResult<Case> {
     match id {
         Some(id) => client.get_case(id).await,
         None => client.find_open_case().await?.ok_or(CaseError::NoOpenCase),
+    }
+}
+
+/// Resolve optional session-record association.
+///
+/// - If `id` is provided, require that case to exist and be open.
+/// - If `id` is omitted, associate with the current open case when one exists.
+/// - If no open case exists, return `None` (session-level record only).
+async fn resolve_session_record_association(
+    client: &CaseClient,
+    id: Option<&str>,
+) -> CaseResult<Option<Case>> {
+    match id {
+        Some(id) => {
+            let case = client.get_case(id).await?;
+            ensure_open(&case)?;
+            Ok(Some(case))
+        }
+        None => client.find_open_case().await,
     }
 }
 
@@ -1616,7 +1641,7 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
     Ok(result)
 }
 
-async fn cmd_record(
+async fn cmd_session_record(
     client: &CaseClient,
     case_id: Option<&str>,
     summary: &str,
@@ -1625,10 +1650,6 @@ async fn cmd_record(
     files: &[String],
     context: Option<&str>,
 ) -> CaseResult<serde_json::Value> {
-    let mut case = resolve_case(client, case_id).await?;
-    ensure_open(&case)?;
-    let case_id = case.id.as_str();
-
     if summary.trim().is_empty() {
         return Err(CaseError::Other("summary must not be empty".to_string()));
     }
@@ -1645,30 +1666,11 @@ async fn cmd_record(
         return Err(CaseError::GoalConstraintsOnlyAllowedForGoalConstraintUpdate);
     }
 
-    if record_kind == RecordKind::GoalConstraintUpdate {
-        let mut merged = case.goal_constraints.clone();
-        for constraint in goal_constraints.iter().cloned() {
-            if !merged.contains(&constraint) {
-                merged.push(constraint);
-            }
-        }
-        client
-            .update_case_goal_constraints(case_id, &merged)
-            .await?;
-        case.goal_constraints = merged;
+    let mut associated_case = resolve_session_record_association(client, case_id).await?;
+    if record_kind == RecordKind::GoalConstraintUpdate && associated_case.is_none() {
+        return Err(CaseError::GoalConstraintUpdateRequiresAssociatedCase);
     }
 
-    let steps = client
-        .get_steps(case_id, case.current_direction_seq)
-        .await?;
-    let (current_step, pending_steps) = split_steps(&steps);
-    let record_step_id = if record_kind == RecordKind::GoalConstraintUpdate {
-        None
-    } else {
-        current_step.as_ref().map(|step| step.id.as_str())
-    };
-
-    let seq = next_entry_seq(client, case_id).await?;
     let artifacts = if record_kind == RecordKind::GoalConstraintUpdate {
         goal_constraints
             .iter()
@@ -1678,15 +1680,68 @@ async fn cmd_record(
     } else {
         vec![]
     };
-    let entry = client
-        .create_entry(
-            case_id,
-            seq,
-            EntryType::Record,
-            Some(kind),
-            record_step_id,
+
+    let mut linked_entry: Option<Entry> = None;
+    let mut current_step_json: Option<serde_json::Value> = None;
+    let mut next: Option<NextAction> = None;
+    if let Some(case) = associated_case.as_mut() {
+        let case_id = case.id.as_str();
+        if record_kind == RecordKind::GoalConstraintUpdate {
+            let mut merged = case.goal_constraints.clone();
+            for constraint in goal_constraints.iter().cloned() {
+                if !merged.contains(&constraint) {
+                    merged.push(constraint);
+                }
+            }
+            client
+                .update_case_goal_constraints(case_id, &merged)
+                .await?;
+            case.goal_constraints = merged;
+        }
+
+        let steps = client
+            .get_steps(case_id, case.current_direction_seq)
+            .await?;
+        let (current_step, pending_steps) = split_steps(&steps);
+        let record_step_id = if record_kind == RecordKind::GoalConstraintUpdate {
+            None
+        } else {
+            current_step.as_ref().map(|step| step.id.as_str())
+        };
+        let seq = next_entry_seq(client, case_id).await?;
+        let entry = client
+            .create_entry(
+                case_id,
+                seq,
+                EntryType::Record,
+                Some(record_kind.as_str()),
+                record_step_id,
+                summary,
+                None,
+                context,
+                files,
+                &artifacts,
+            )
+            .await?;
+        let entries = client.get_entries(case_id).await?;
+        linked_entry = Some(entry);
+        current_step_json = Some(json!(current_step.as_ref().map(output::step_json)));
+        next = Some(suggest_next(
+            case,
+            current_step.as_ref(),
+            &pending_steps,
+            &Health::OnTrack,
+            &entries,
+        ));
+    }
+
+    let session_seq = next_session_record_seq(client).await?;
+    let session_record = client
+        .create_session_record(
+            session_seq,
+            associated_case.as_ref().map(|case| case.id.as_str()),
+            record_kind,
             summary,
-            None,
             context,
             files,
             &artifacts,
@@ -1694,45 +1749,70 @@ async fn cmd_record(
         .await?;
     let dispatch = dispatch_event(
         client,
-        CaseDomainEvent::RecordAppended {
-            case: case.clone(),
-            entry: entry.clone(),
+        CaseDomainEvent::SessionRecordAppended {
+            case: associated_case.clone(),
+            session_record: session_record.clone(),
+            linked_entry: linked_entry.clone(),
         },
     )
     .await;
-    let entries = client.get_entries(case_id).await?;
-    let next = suggest_next(
-        &case,
-        current_step.as_ref(),
-        &pending_steps,
-        &Health::OnTrack,
-        &entries,
-    );
-
     let mut result = json!({
         "ok": true,
-        "case": output::case_json(&case),
+        "session_record": session_record,
         "event": {
-            "seq": entry.seq,
-            "entry_type": "record",
-            "kind": kind,
-            "step_id": entry.step_id,
+            "entry_type": "session_record",
+            "seq": session_seq,
+            "kind": record_kind.as_str(),
             "summary": summary,
-            "files": files
-        },
-        "steps": {
-            "current": current_step.map(|s| output::step_json(&s))
-        },
-        "next": output::next_json(&next)
+            "files": files,
+        }
     });
+    if let Some(case) = associated_case.as_ref() {
+        result["case"] = output::case_json(case);
+        result["steps"] = json!({ "current": current_step_json });
+        if let Some(next) = next {
+            result["next"] = output::next_json(&next);
+        }
+        result["context"] = output::context_json(&case.id, case.current_direction_seq);
+    }
+    if let Some(entry) = linked_entry {
+        result["linked_entry"] = json!({
+            "seq": entry.seq,
+            "entry_type": entry.entry_type.as_str(),
+            "kind": entry.kind,
+            "step_id": entry.step_id,
+        });
+        result["event"]["linked_entry_seq"] = json!(entry.seq);
+    }
 
-    if record_kind == RecordKind::GoalConstraintUpdate {
+    if matches!(record_kind, RecordKind::GoalConstraintUpdate) {
         result["event"]["goal_constraints"] = json!(goal_constraints);
-        result["case"] = output::case_json(&case);
     }
     append_dispatch_report(&mut result, &dispatch);
 
     Ok(result)
+}
+
+#[cfg(test)]
+async fn cmd_record(
+    client: &CaseClient,
+    case_id: Option<&str>,
+    summary: &str,
+    kind: &str,
+    goal_constraint_strs: &[String],
+    files: &[String],
+    context: Option<&str>,
+) -> CaseResult<serde_json::Value> {
+    cmd_session_record(
+        client,
+        case_id,
+        summary,
+        kind,
+        goal_constraint_strs,
+        files,
+        context,
+    )
+    .await
 }
 
 async fn cmd_decide(
@@ -2256,7 +2336,7 @@ async fn cmd_step_add(
 
     let next = if start {
         NextAction {
-            suggested_command: "record".to_string(),
+            suggested_command: "session_record".to_string(),
             why: "capture findings as you execute the active step".to_string(),
         }
     } else {
@@ -2315,7 +2395,7 @@ async fn cmd_step_start(
     .await;
 
     let next = NextAction {
-        suggested_command: "record".to_string(),
+        suggested_command: "session_record".to_string(),
         why: "capture findings as you execute the step".to_string(),
     };
 
@@ -2565,7 +2645,7 @@ fn build_step_advance_record<'a>(
         .map_err(|_| CaseError::invalid_record_kind(kind))?;
     if matches!(record_kind, RecordKind::GoalConstraintUpdate) {
         return Err(CaseError::Other(
-            "advance record kind must be one of `note`, `finding`, `evidence`, `blocker`"
+            "advance record kind must be one of `note`, `finding`, `evidence`, `blocker`, `issue`"
                 .to_string(),
         ));
     }
@@ -2641,7 +2721,7 @@ fn step_advance_next(
 ) -> NextAction {
     if started_step.is_some() {
         return NextAction {
-            suggested_command: "record".to_string(),
+            suggested_command: "session_record".to_string(),
             why: "active step is now collecting evidence".to_string(),
         };
     }
@@ -2920,11 +3000,42 @@ async fn cmd_recall(
         cases.truncate(limit);
     }
 
+    let mut session_records = if options.status.is_none() {
+        client.search_session_records(query).await?
+    } else {
+        Vec::new()
+    };
+    if let Some(recent_days) = options.recent_days {
+        let cutoff = Utc::now() - Duration::days(recent_days as i64);
+        session_records.retain(|record| {
+            parse_case_timestamp(&record.created_at).is_some_and(|created_at| created_at >= cutoff)
+        });
+    }
+    if let Some(limit) = options.limit {
+        session_records.truncate(limit);
+    }
+
     let case_list: Vec<_> = cases.iter().map(output::case_search_json).collect();
+    let session_record_list: Vec<_> = session_records
+        .iter()
+        .map(|record| {
+            json!({
+                "id": record.id,
+                "seq": record.seq,
+                "case_id": record.case_id,
+                "kind": record.kind.as_str(),
+                "summary": record.summary,
+                "context": record.context,
+                "files": record.files,
+                "created_at": record.created_at,
+            })
+        })
+        .collect();
 
     Ok(json!({
         "ok": true,
         "cases": case_list,
+        "session_records": session_record_list,
         "query": query,
         "_meta": list_meta_json(options)
     }))
@@ -3238,7 +3349,7 @@ fn suggest_next(
             };
         }
         return NextAction {
-            suggested_command: "record".to_string(),
+            suggested_command: "session_record".to_string(),
             why: "capture at least one step-bound finding before advancing".to_string(),
         };
     }
@@ -3455,7 +3566,10 @@ mod tests {
             .expect("step add with start should succeed");
 
         assert_eq!(result["step"]["status"].as_str(), Some("active"));
-        assert_eq!(result["next"]["suggested_command"].as_str(), Some("record"));
+        assert_eq!(
+            result["next"]["suggested_command"].as_str(),
+            Some("session_record")
+        );
         assert_eq!(
             result["steps"]["current"]["title"].as_str(),
             Some("run verification")
@@ -3582,7 +3696,7 @@ mod tests {
         );
         assert_eq!(
             advanced["next"]["suggested_command"].as_str(),
-            Some("record")
+            Some("session_record")
         );
         if let Some(statuses) = advanced["hooks"]["statuses"].as_array() {
             assert!(statuses.len() >= 2);
@@ -3718,6 +3832,18 @@ mod tests {
         .await
         .expect("client should initialize");
 
+        cmd_record(
+            &client,
+            None,
+            "audit orphan finding outside any case",
+            "finding",
+            &[],
+            &[],
+            Some("orphan audit context"),
+        )
+        .await
+        .expect("orphan session record should succeed");
+
         let opened = cmd_open_new(
             &client,
             "stabilize inference rollout",
@@ -3752,9 +3878,18 @@ mod tests {
         let cases = recalled["cases"]
             .as_array()
             .expect("cases should be returned");
+        let session_records = recalled["session_records"]
+            .as_array()
+            .expect("session records should be returned");
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0]["id"].as_str(), Some(case_id.as_str()));
+        assert!(session_records.iter().any(|record| {
+            record["case_id"].is_null()
+                && record["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains("orphan finding"))
+        }));
         let matches = cases[0]["matches"]
             .as_array()
             .expect("recall should include match details");
@@ -5515,6 +5650,18 @@ mod tests {
         .await
         .expect("client should initialize");
 
+        cmd_record(
+            &client,
+            None,
+            "orphan vector digest finding",
+            "finding",
+            &[],
+            &[],
+            Some("repo scope orphan memory"),
+        )
+        .await
+        .expect("orphan session record should succeed");
+
         let opened_a = cmd_open_new(
             &client,
             "first case goal",
@@ -5602,6 +5749,14 @@ mod tests {
         assert!(hits
             .iter()
             .any(|hit| hit["case_id"].as_str() == Some(&case_b)));
+        assert!(hits.iter().any(|hit| {
+            hit["case_id"].is_null()
+                && hit["source"].as_str() == Some("session_record")
+                && hit["field"].as_str() == Some("summary")
+        }));
+        assert!(context["case_context"]["context"]
+            .as_str()
+            .is_some_and(|text| text.contains("Session records without case: 1")));
     }
 
     #[tokio::test]

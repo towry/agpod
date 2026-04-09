@@ -156,6 +156,7 @@ mod tests {
         let event = CaseEventEnvelope {
             event_id: "C-1:case_opened".to_string(),
             case_id: "C-1".to_string(),
+            associated_case_id: Some("C-1".to_string()),
             repo_id: "repo".to_string(),
             repo_label: "repo".to_string(),
             worktree_id: "wt".to_string(),

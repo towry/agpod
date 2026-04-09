@@ -120,15 +120,17 @@ pub enum RecordKind {
     Finding,
     Evidence,
     Blocker,
+    Issue,
     GoalConstraintUpdate,
 }
 
 impl RecordKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Note,
         Self::Finding,
         Self::Evidence,
         Self::Blocker,
+        Self::Issue,
         Self::GoalConstraintUpdate,
     ];
 
@@ -139,6 +141,7 @@ impl RecordKind {
             Self::Finding => "finding",
             Self::Evidence => "evidence",
             Self::Blocker => "blocker",
+            Self::Issue => "issue",
             Self::GoalConstraintUpdate => "goal_constraint_update",
         }
     }
@@ -170,6 +173,7 @@ impl std::str::FromStr for RecordKind {
             "finding" => Ok(Self::Finding),
             "evidence" => Ok(Self::Evidence),
             "blocker" => Ok(Self::Blocker),
+            "issue" => Ok(Self::Issue),
             "goal_constraint_update" => Ok(Self::GoalConstraintUpdate),
             _ => Err(()),
         }
@@ -238,6 +242,22 @@ pub struct Entry {
     pub step_id: Option<String>,
     pub summary: String,
     pub reason: Option<String>,
+    pub context: Option<String>,
+    pub files: Vec<String>,
+    pub artifacts: Vec<String>,
+    pub created_at: String,
+}
+
+/// A session-level record that may optionally be associated with a case.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub id: String,
+    pub repo_id: String,
+    pub worktree_id: String,
+    pub seq: u32,
+    pub case_id: Option<String>,
+    pub kind: RecordKind,
+    pub summary: String,
     pub context: Option<String>,
     pub files: Vec<String>,
     pub artifacts: Vec<String>,

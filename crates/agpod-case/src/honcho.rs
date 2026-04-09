@@ -429,7 +429,17 @@ fn honcho_message_metadata(event: &CaseEventEnvelope) -> Value {
         "event_type".to_string(),
         Value::String(event.event.event_type().to_string()),
     );
+    metadata.insert(
+        "session_id".to_string(),
+        Value::String(event.case_id.clone()),
+    );
     metadata.insert("repo_id".to_string(), Value::String(event.repo_id.clone()));
+    if let Some(case_id) = event.associated_case_id.as_ref() {
+        metadata.insert(
+            "associated_case_id".to_string(),
+            Value::String(case_id.clone()),
+        );
+    }
     if !metadata.contains_key("direction_seq") {
         if let Some(direction_seq) = event.direction_seq {
             metadata.insert("direction_seq".to_string(), json!(direction_seq));
@@ -829,6 +839,7 @@ mod tests {
         let event = CaseEventEnvelope {
             event_id: "evt-1".to_string(),
             case_id: "C-1".to_string(),
+            associated_case_id: Some("C-1".to_string()),
             repo_id: "repo-1".to_string(),
             repo_label: "github.com/example/repo".to_string(),
             worktree_id: "wt-1".to_string(),
@@ -858,7 +869,15 @@ mod tests {
             metadata.get("repo_id").and_then(Value::as_str),
             Some("repo-1")
         );
+        assert_eq!(
+            metadata.get("session_id").and_then(Value::as_str),
+            Some("C-1")
+        );
         assert_eq!(metadata.get("case_id").and_then(Value::as_str), Some("C-1"));
+        assert_eq!(
+            metadata.get("associated_case_id").and_then(Value::as_str),
+            Some("C-1")
+        );
         assert_eq!(metadata.get("entry_seq").and_then(Value::as_u64), Some(7));
         assert_eq!(
             metadata.get("kind").and_then(Value::as_str),
@@ -879,6 +898,7 @@ mod tests {
         let event = CaseEventEnvelope {
             event_id: "evt-2".to_string(),
             case_id: "C-1".to_string(),
+            associated_case_id: Some("C-1".to_string()),
             repo_id: "repo-1".to_string(),
             repo_label: "github.com/example/repo".to_string(),
             worktree_id: "wt-1".to_string(),

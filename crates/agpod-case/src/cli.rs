@@ -166,9 +166,10 @@ pub enum CaseCommand {
         state: bool,
     },
 
-    /// Record a fact, finding, evidence, or blocker
-    Record {
-        /// Case ID (defaults to the open case)
+    /// Record a session fact; may optionally associate with a case
+    #[command(name = "session_record")]
+    SessionRecord {
+        /// Case ID to associate. If omitted, uses the current open case when available.
         #[arg(long)]
         id: Option<String>,
 
@@ -286,12 +287,12 @@ pub enum CaseCommand {
         command: StepCommand,
     },
 
-    /// Search past cases
+    /// Recall historical records when you need raw matches (cases + session records)
     Recall {
-        /// Search query
+        /// Search query used for case/session-record matching
         query: String,
 
-        /// Filter by case status
+        /// Filter case results by status. Note: when set, session_record hits are omitted.
         #[arg(long, value_enum)]
         status: Option<CaseStatusArg>,
 
@@ -304,7 +305,7 @@ pub enum CaseCommand {
         recent_days: Option<u32>,
     },
 
-    /// Build semantic context for the current or chosen case
+    /// Build a context brief when you need a ready-to-use summary instead of raw match lists
     Context {
         /// Case ID (defaults to open case)
         #[arg(long)]
@@ -315,7 +316,7 @@ pub enum CaseCommand {
         #[serde(default)]
         scope: ContextScopeArg,
 
-        /// Natural language query used for semantic retrieval
+        /// Optional query used to rank and include relevant hits in the brief
         #[arg(long)]
         query: Option<String>,
 

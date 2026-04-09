@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use surrealdb::engine::local::{Db, RocksDb};
 use surrealdb::Surreal;
+use uuid::Uuid;
 
 const DB_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const DB_LOCK_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -178,6 +179,21 @@ impl CaseClient {
             DEFINE FIELD IF NOT EXISTS artifacts ON entry TYPE string;
             DEFINE FIELD IF NOT EXISTS created_at ON entry TYPE string;
             DEFINE INDEX IF NOT EXISTS idx_entry_case ON entry FIELDS case_id;
+
+            DEFINE TABLE IF NOT EXISTS session_record SCHEMAFULL;
+            DEFINE FIELD IF NOT EXISTS session_record_id ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS repo_id ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS worktree_id ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS seq ON session_record TYPE int;
+            DEFINE FIELD IF NOT EXISTS case_id ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS kind ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS summary ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS context ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS files ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS artifacts ON session_record TYPE string;
+            DEFINE FIELD IF NOT EXISTS created_at ON session_record TYPE string;
+            DEFINE INDEX IF NOT EXISTS idx_session_record_id ON session_record FIELDS session_record_id UNIQUE;
+            DEFINE INDEX IF NOT EXISTS idx_session_record_scope ON session_record FIELDS repo_id, worktree_id, seq UNIQUE;
         ";
 
         self.db
@@ -658,6 +674,105 @@ impl CaseClient {
             artifacts: artifacts.to_vec(),
             created_at: now,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_session_record(
+        &self,
+        seq: u32,
+        case_id: Option<&str>,
+        kind: RecordKind,
+        summary: &str,
+        context: Option<&str>,
+        files: &[String],
+        artifacts: &[String],
+    ) -> CaseResult<SessionRecord> {
+        let now = Utc::now().to_rfc3339();
+        let record_id = format!("SR-{}", Uuid::new_v4().simple());
+        let files_json =
+            serde_json::to_string(files).map_err(|e| CaseError::Other(e.to_string()))?;
+        let artifacts_json =
+            serde_json::to_string(artifacts).map_err(|e| CaseError::Other(e.to_string()))?;
+
+        self.query_raw(
+            "CREATE session_record SET \
+             session_record_id = $session_record_id, repo_id = $repo_id, worktree_id = $worktree_id, \
+             seq = $seq, case_id = $case_id, kind = $kind, summary = $summary, context = $context, \
+             files = $files, artifacts = $artifacts, created_at = $created_at",
+            json!({
+                "session_record_id": record_id,
+                "repo_id": self.repo_id,
+                "worktree_id": self.worktree_id,
+                "seq": seq,
+                "case_id": case_id.unwrap_or(""),
+                "kind": kind.as_str(),
+                "summary": summary,
+                "context": context.unwrap_or(""),
+                "files": files_json,
+                "artifacts": artifacts_json,
+                "created_at": now,
+            }),
+        )
+        .await?;
+
+        Ok(SessionRecord {
+            id: record_id,
+            repo_id: self.repo_id.clone(),
+            worktree_id: self.worktree_id.clone(),
+            seq,
+            case_id: case_id.map(ToOwned::to_owned),
+            kind,
+            summary: summary.to_string(),
+            context: context.map(ToOwned::to_owned),
+            files: files.to_vec(),
+            artifacts: artifacts.to_vec(),
+            created_at: now,
+        })
+    }
+
+    pub async fn get_session_record_count(&self) -> CaseResult<u32> {
+        let records = self
+            .query_raw(
+                "SELECT * FROM session_record WHERE repo_id = $repo_id AND worktree_id = $worktree_id",
+                json!({ "repo_id": self.repo_id, "worktree_id": self.worktree_id }),
+            )
+            .await?;
+        Ok(records.len() as u32)
+    }
+
+    pub async fn list_session_records(&self) -> CaseResult<Vec<SessionRecord>> {
+        let records = self
+            .query_raw(
+                "SELECT * FROM session_record WHERE repo_id = $repo_id AND worktree_id = $worktree_id ORDER BY seq DESC",
+                json!({ "repo_id": self.repo_id, "worktree_id": self.worktree_id }),
+            )
+            .await?;
+        Ok(records
+            .iter()
+            .filter_map(parse_single_session_record)
+            .collect())
+    }
+
+    pub async fn search_session_records(&self, query: &str) -> CaseResult<Vec<SessionRecord>> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut records = self.list_session_records().await?;
+        records.retain(|record| {
+            record.summary.to_lowercase().contains(&needle)
+                || record
+                    .context
+                    .as_ref()
+                    .is_some_and(|context| context.to_lowercase().contains(&needle))
+                || record.kind.as_str().contains(&needle)
+                || record
+                    .files
+                    .iter()
+                    .any(|path| path.to_lowercase().contains(&needle))
+        });
+        Ok(records)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1300,6 +1415,53 @@ fn parse_single_entry(v: &Value) -> Option<Entry> {
             .and_then(|s| s.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from),
+        files,
+        artifacts,
+        created_at: v.get("created_at")?.as_str()?.to_string(),
+    })
+}
+
+fn parse_single_session_record(v: &Value) -> Option<SessionRecord> {
+    let files: Vec<String> = v
+        .get("files")
+        .and_then(|f| {
+            if let Some(s) = f.as_str() {
+                serde_json::from_str(s).ok()
+            } else {
+                serde_json::from_value(f.clone()).ok()
+            }
+        })
+        .unwrap_or_default();
+    let artifacts: Vec<String> = v
+        .get("artifacts")
+        .and_then(|a| {
+            if let Some(s) = a.as_str() {
+                serde_json::from_str(s).ok()
+            } else {
+                serde_json::from_value(a.clone()).ok()
+            }
+        })
+        .unwrap_or_default();
+    let case_id = v
+        .get("case_id")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let kind = v.get("kind")?.as_str()?.parse::<RecordKind>().ok()?;
+
+    Some(SessionRecord {
+        id: v.get("session_record_id")?.as_str()?.to_string(),
+        repo_id: v.get("repo_id")?.as_str()?.to_string(),
+        worktree_id: v.get("worktree_id")?.as_str()?.to_string(),
+        seq: v.get("seq")?.as_u64()? as u32,
+        case_id,
+        kind,
+        summary: v.get("summary")?.as_str()?.to_string(),
+        context: v
+            .get("context")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned),
         files,
         artifacts,
         created_at: v.get("created_at")?.as_str()?.to_string(),

@@ -116,6 +116,7 @@ impl CaseContextProvider for LocalCaseContextProvider {
                 }
                 ContextScope::Repo => {
                     let mut cases = self.client.list_cases().await?;
+                    let session_records = self.client.list_session_records().await?;
                     cases.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
                     body.push(format!(
                         "Repository {} cross-session context",
@@ -158,6 +159,24 @@ impl CaseContextProvider for LocalCaseContextProvider {
                                     .map(|kind| format!("/{kind}"))
                                     .unwrap_or_default(),
                                 entry.summary
+                            ));
+                        }
+                    }
+                    let orphan_records = session_records
+                        .iter()
+                        .filter(|record| record.case_id.is_none())
+                        .collect::<Vec<_>>();
+                    if !orphan_records.is_empty() {
+                        body.push(format!(
+                            "Session records without case: {}",
+                            orphan_records.len()
+                        ));
+                        for record in orphan_records.into_iter().take(limit.max(1)) {
+                            body.push(format!(
+                                "- Session record {} [{}]: {}",
+                                record.id,
+                                record.kind.as_str(),
+                                record.summary
                             ));
                         }
                     }
