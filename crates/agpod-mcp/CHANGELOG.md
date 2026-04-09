@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.5...agpod-mcp-v0.8.0) (2026-04-09)
+
+
+### Features
+
+* **agpod-mcp:** add hive wait action and clarify tool contracts ([a743210](https://github.com/towry/agpod/commit/a743210eaec22e02fc513d0d1e71e11a313987e9))
+
+
+### Bug Fixes
+
+* refactor the tools ([2a653d0](https://github.com/towry/agpod/commit/2a653d0ac4a6d4f8752a8bd3bb0c1492a2b03fa9))
+
 ## [0.7.5](https://github.com/towry/agpod/compare/agpod-mcp-v0.7.4...agpod-mcp-v0.7.5) (2026-04-08)
 
 
