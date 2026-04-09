@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/towry/agpod/compare/agpod-case-v0.6.1...agpod-case-v0.6.2) (2026-04-09)
+
+
+### Bug Fixes
+
+* refactor the tools ([2a653d0](https://github.com/towry/agpod/commit/2a653d0ac4a6d4f8752a8bd3bb0c1492a2b03fa9))
+
 ## [0.6.1](https://github.com/towry/agpod/compare/agpod-case-v0.6.0...agpod-case-v0.6.1) (2026-04-08)
 
 
