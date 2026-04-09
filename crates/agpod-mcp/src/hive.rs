@@ -685,18 +685,18 @@ async fn mode_info(
             "default_mode_behavior": "hive defaults to `readonly` when `mode` is omitted",
             "modes": modes,
             "notes": [
-                "Use this response to inspect available mode names, including custom configured modes.",
-                "If a mode is unavailable, `run_hive_agent` fails fast instead of guessing defaults.",
-                "`run_hive_agent` defaults to `async=true` (recommended); poll with `list_agents` using `agent_id`.",
-                "Use `wait_agent` when you want blocking wait with timeout control (`timeout_ms`, default 30000).",
-                "When `agent_id` is provided to `run_hive_agent`, do not pass `mode`, `worker_name`, or `workdir`.",
-                "Set `async=false` only when the caller explicitly needs one blocking call that waits for completion.",
-                "When live agents hit the limit, hive does not auto-reuse any worker; pass `agent_id` explicitly if you want to reuse one.",
-                "`resume` is caller-controlled only; keep `resume=false` (default) unless prior conversation context is explicitly needed.",
-                "`run_hive_agent` supports `resume=true`, but only when the agent already has a saved Claude conversation session id.",
-                "`hive` tool description is the canonical contract; these notes are explanatory.",
-                "Workers inherit the parent environment, including PATH.",
-                "This response intentionally hides config paths, environment variables, and other sensitive configuration details."
+                "此回包用于查看可用 mode（含自定义 mode 名）。",
+                "mode 不可用时，`run_hive_agent` 快速失败，不猜默认。",
+                "`run_hive_agent` 默认 `async=true`（荐）；可用 `agent_id` 轮询 `list_agents`。",
+                "需阻塞等待时，用 `wait_agent` 并设 `timeout_ms`（默认 30000）。",
+                "`run_hive_agent` 传 `agent_id` 时，不得再传 `mode`、`worker_name`、`workdir`。",
+                "仅当调用方明需单次阻塞，方设 `async=false`。",
+                "达 live limit 时不自动复用；欲复用须显式给 `agent_id`。",
+                "`resume` 仅调用者显式控制；默认 `resume=false` 以避上下文膨胀。",
+                "`resume=true` 仅在该 agent 已存会话 id 时可用。",
+                "`hive` tool description 为契约正本；此 notes 仅释义。",
+                "worker 继承父进程环境（含 PATH）。",
+                "此回包故意隐藏配置路径、环境变量与其他敏感细节。"
             ]
         }),
     );

@@ -1354,11 +1354,13 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
             let opened_case = client.get_case(&case_id).await?;
             let steps = client.get_steps(&case_id, 1).await?;
             let (current_step, pending_steps) = split_steps(&steps);
+            let entries_for_next: Vec<Entry> = Vec::new();
             let next = suggest_next(
                 &opened_case,
                 current_step.as_ref(),
                 &pending_steps,
                 &Health::OnTrack,
+                &entries_for_next,
             );
             let startup_context = build_startup_context(
                 client,
@@ -1430,6 +1432,7 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                     .cloned()
                     .collect::<Vec<_>>(),
                 &Health::OnTrack,
+                &client.get_entries(case_id).await?,
             );
 
             let next_entry_seq = client
@@ -1601,7 +1604,13 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
     }
 
     // Suggest next action
-    let next = suggest_next(&case, current_step.as_ref(), &pending_steps, &health.0);
+    let next = suggest_next(
+        &case,
+        current_step.as_ref(),
+        &pending_steps,
+        &health.0,
+        &entries,
+    );
     result["next"] = output::next_json(&next);
 
     Ok(result)
@@ -1649,6 +1658,16 @@ async fn cmd_record(
         case.goal_constraints = merged;
     }
 
+    let steps = client
+        .get_steps(case_id, case.current_direction_seq)
+        .await?;
+    let (current_step, pending_steps) = split_steps(&steps);
+    let record_step_id = if record_kind == RecordKind::GoalConstraintUpdate {
+        None
+    } else {
+        current_step.as_ref().map(|step| step.id.as_str())
+    };
+
     let seq = next_entry_seq(client, case_id).await?;
     let artifacts = if record_kind == RecordKind::GoalConstraintUpdate {
         goal_constraints
@@ -1665,7 +1684,7 @@ async fn cmd_record(
             seq,
             EntryType::Record,
             Some(kind),
-            None,
+            record_step_id,
             summary,
             None,
             context,
@@ -1681,16 +1700,14 @@ async fn cmd_record(
         },
     )
     .await;
-
-    let steps = client
-        .get_steps(case_id, case.current_direction_seq)
-        .await?;
-    let (current_step, _) = split_steps(&steps);
-
-    let next = NextAction {
-        suggested_command: "record".to_string(),
-        why: "the scan step is still gathering evidence".to_string(),
-    };
+    let entries = client.get_entries(case_id).await?;
+    let next = suggest_next(
+        &case,
+        current_step.as_ref(),
+        &pending_steps,
+        &Health::OnTrack,
+        &entries,
+    );
 
     let mut result = json!({
         "ok": true,
@@ -1699,6 +1716,7 @@ async fn cmd_record(
             "seq": entry.seq,
             "entry_type": "record",
             "kind": kind,
+            "step_id": entry.step_id,
             "summary": summary,
             "files": files
         },
@@ -3197,6 +3215,7 @@ fn suggest_next(
     current_step: Option<&Step>,
     pending_steps: &[Step],
     health: &Health,
+    entries: &[Entry],
 ) -> NextAction {
     if *health == Health::Looping {
         return NextAction {
@@ -3205,10 +3224,22 @@ fn suggest_next(
         };
     }
 
-    if current_step.is_some() {
+    if let Some(step) = current_step {
+        let has_step_bound_record = entries.iter().rev().any(|entry| {
+            entry.entry_type == EntryType::Record
+                && entry.step_id.as_deref() == Some(step.id.as_str())
+                && !entry.summary.trim().is_empty()
+        });
+        if has_step_bound_record {
+            return NextAction {
+                suggested_command: "step done".to_string(),
+                why: "the active step already has recorded findings; advance it when complete"
+                    .to_string(),
+            };
+        }
         return NextAction {
             suggested_command: "record".to_string(),
-            why: "the active step is collecting evidence".to_string(),
+            why: "capture at least one step-bound finding before advancing".to_string(),
         };
     }
 
@@ -3428,6 +3459,54 @@ mod tests {
         assert_eq!(
             result["steps"]["current"]["title"].as_str(),
             Some("run verification")
+        );
+    }
+
+    #[tokio::test]
+    async fn current_suggests_step_done_after_active_step_has_record() {
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let config = temp_db_config(&temp_dir);
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let opened = cmd_open_new(&client, "goal", "direction", &[], &[], None, None)
+            .await
+            .expect("case should open");
+        let case_id = opened["case"]["id"]
+            .as_str()
+            .expect("case id should exist")
+            .to_string();
+
+        cmd_step_add(&client, Some(&case_id), "run verification", None, true)
+            .await
+            .expect("step add with start should succeed");
+        cmd_record(
+            &client,
+            Some(&case_id),
+            "captured smoke evidence",
+            "evidence",
+            &[],
+            &[],
+            Some("smoke run"),
+        )
+        .await
+        .expect("record should succeed");
+
+        let current = cmd_current(&client, false)
+            .await
+            .expect("current should succeed");
+        assert_eq!(
+            current["next"]["suggested_command"].as_str(),
+            Some("step done")
         );
     }
 

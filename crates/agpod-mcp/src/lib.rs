@@ -368,9 +368,9 @@ fn case_tool_output_schema() -> Arc<JsonObject> {
 impl ServerHandler for AgpodMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.readonly {
-            "agpod case MCP (read-only mode). `case_current`, `case_show`, `case_list`, and `case_recall` are available. Prefer `case_recall` in `mode=context` before `mode=find`: repo context recall is independent and does not require an open case. Do not create or open a case just to call `case_recall`; only `context_scope=case` needs an explicit `context_id`. `hive` is not available in read-only mode. They never mutate case state. No tool in this server can open a case, append records, change steps, redirect, finish, or otherwise mutate case state."
+            "agpod case MCP（只读）。仅可用 `case_current`、`case_show`、`case_list`、`case_recall`。检索先 `case_recall`：先 `mode=context`，后 `mode=find`。勿为调用 `case_recall` 而开案；惟 `context_scope=case` 须给 `context_id`。只读态无 `hive`。此态诸工具皆不改 case 状态：不可开案、记事实、改步骤、改方向、结案。"
         } else {
-            "agpod case MCP. One open case per repo. First evaluate whether the current task actually needs case tracking; do not call `case_current` or `case_open` by default for trivial or one-off work (for example, one-shot read/query tasks without cross-step tracking). Use `case_recall` before creating a case whenever retrieval is enough: prefer `mode=context` first because repo context recall is independent, defaults to `context_scope=repo`, and does not require an open case. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call `case_recall`; only `mode=context` with `context_scope=case` needs an explicit `context_id`. Once you decide the task should use case tracking, call `case_current` to inspect active state (it also serves as the resume entry point, returning direction, steps, last decision, last evidence, health, and next action); use `case_show` only when you need full case tree and step history details. If there is no open case and the task merits one, use `case_open` with `mode=new` to create one, or `mode=reopen` plus `case_id` to reopen a closed or abandoned case. In `mode=new`, `needed_context_query` is optional startup memory input and `steps` is an optional initial step queue; they may be used together, `steps` may contain at most one item with `start=true`, and `startup_context` may return status `ok`, `empty`, or `degraded` while open still succeeds. Use `case_steps_add` to add more steps later, `case_step_advance` to complete the active step and optionally start the next one, `case_step_mark_as` only to start or block a step, and `case_step_move` to reorder steps. In `case_step_advance`, `record` must be an object payload; plain string shorthand is rejected. Use `case_record` only for factual notes, evidence, blockers, or goal-constraint updates; use `case_decide` for decisions that require a reason; use `case_redirect` only when the goal is still the same. Use `case_recall` as the unified retrieval entrypoint: use `mode=find` with `query`, `find_status`, `find_limit`, and `find_recent_days` to discover past cases, or `mode=context` with `context_scope=case|repo`, `context_id`, `query`, `context_shortcut`, and `context_token_limit` to get semantic context. In `mode=context`, `query` states the retrieval focus; omit `query` only when `context_shortcut=recent_work`. When `context_scope=case`, `context_id` is required. `context_shortcut=recent_work` is the built-in shortcut for recent repository work. Use `case_finish` to complete or abandon a case in a single call. `hive` manages reusable worker agents in a repo-scoped default session, or an explicit `session_id` when provided. Use `mode_info`, `run_hive_agent`, `wait_agent`, `list_agents`, `close_agent`, and `close_session`. `mode_info` takes no `mode` parameter and returns all currently available mode names, including custom configured modes. `run_hive_agent` creates one worker when `agent_id` is omitted, or targets an existing live worker when `agent_id` is provided; when `agent_id` is provided, do not pass `mode`, `worker_name`, or `workdir`. `wait_agent` blocks for one agent and waits up to `timeout_ms` (default 30000) before returning, and returns the latest agent payload so callers usually do not need an extra follow-up query. `run_hive_agent` defaults to `async=true` (recommended); when async, poll `list_agents` with `agent_id` for snapshots or call `wait_agent` for bounded blocking waits. Set `async=false` only when the caller explicitly needs one blocking call that waits for completion. When live agents hit the limit and no `agent_id` is provided, hive returns actionable close suggestions instead of auto-reusing any worker. Reuse and resume are caller-controlled: pass `agent_id` explicitly to reuse a worker, and keep `resume=false` (default) unless prior conversation context is explicitly needed. When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list; if `mode` is omitted, hive defaults to `readonly`. `resume=true` requires a previously saved conversation for that worker and fails fast if none is available. The `hive` tool description is the canonical contract; `mode_info` notes are explanatory. Tool results return structured JSON aligned with `agpod case --json`; prefer stable fields like `result.kind`, `result.case_id`, `result.state`, and `result.raw` when chaining tools."
+            "agpod case MCP。每仓同刻仅一 open case。先判任务是否真需 case 追踪；一锤子读查（无跨步追踪）默认勿调 `case_current` / `case_open`。检索优先 `case_recall`：先 `mode=context`（默认 `context_scope=repo`，不须 open case），后 `mode=find`。勿仅为 recall 而开案；仅 `context_scope=case` 须 `context_id`。若确需追踪：先 `case_current`，需全树与历史再 `case_show`。无开案时，`case_open` 用 `mode=new` 新建，或 `mode=reopen` + `case_id` 重开。`mode=new` 可带 `needed_context_query` 与 `steps`；`steps` 最多一项 `start=true`；`startup_context` 可为 `ok|empty|degraded` 而开案仍可成。步骤流：`case_steps_add` 增步，`case_step_mark_as` 仅 start/block，`case_step_advance` 结步并可附一条事实及启后续，`case_step_move` 调序。`case_step_advance.record` 必为对象，字符串不受理。事实仅用 `case_record`；决策用 `case_decide`；目标不变而改向用 `case_redirect`；结案用 `case_finish`（`completed|abandoned`）。`case_recall` 亦可 `mode=find`（`query/find_status/find_limit/find_recent_days`）或 `mode=context`（`context_scope/context_id/query/context_shortcut/context_token_limit`）；`mode=context` 下，惟 `context_shortcut=recent_work` 时可省 `query`。`hive` 管复用 worker：动作 `mode_info/run_hive_agent/wait_agent/list_agents/close_agent/close_session`。`run_hive_agent` 无 `agent_id` 则建 worker；有 `agent_id` 则复用该 live worker，且不得再传 `mode`、`worker_name`、`workdir`。默认 `async=true`（荐）；异步可 `list_agents` 取快照，或 `wait_agent` 以 `timeout_ms`（默认 30000）阻塞等候并返最新 payload。仅当调用方明需单次阻塞，方设 `async=false`。达 live limit 且未给 `agent_id` 时，不自动复用，只返可执行关闭建议。`resume` 仅调用者显式控制；默认 `resume=false`；`resume=true` 需已存会话 id。需非常规 mode，先调 `mode_info`；省 `mode` 则用 `readonly`。`hive` tool description 为契约正本，`mode_info` notes 仅释义。工具结果皆为结构化 JSON；链式调用宜依稳定字段 `result.kind/result.case_id/result.state/result.raw`。"
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -391,7 +391,7 @@ impl ServerHandler for AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "hive",
-        description = "Manage reusable worker agents in a repo-scoped default session, or an explicit `session_id` when provided. Use `mode_info`, `run_hive_agent`, `wait_agent`, `list_agents`, `close_agent`, or `close_session`. `mode_info` takes no `mode` parameter and returns all currently available mode names, including custom configured modes. `run_hive_agent` creates one worker when `agent_id` is omitted, or targets an existing live worker when `agent_id` is provided; when `agent_id` is provided, do not pass `mode`, `worker_name`, or `workdir`. `wait_agent` blocks for one agent and waits up to `timeout_ms` (default 30000) before returning, and returns the latest agent payload (`current_run`/`last_run` with output excerpts) so callers usually do not need an extra query. `list_agents` reports session or agent state, `close_agent` closes one worker, and `close_session` closes the whole hive session. `run_hive_agent` defaults to `async=true` (recommended); when async, poll `list_agents` with `agent_id` for snapshots or call `wait_agent` for bounded blocking waits. Set `async=false` only when the caller explicitly needs one blocking call that waits for completion. When live agents hit the limit and no `agent_id` is provided, hive returns actionable close suggestions instead of auto-reusing any worker. Reuse and resume are caller-controlled: pass `agent_id` explicitly to reuse a worker, and keep `resume=false` (default) unless prior conversation context is explicitly needed. When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list; if `mode` is omitted, hive defaults to `readonly`. `resume=true` requires a previously saved conversation for that worker and fails fast if none is available.",
+        description = "管 repo 级 hive worker（默认 session 或显式 `session_id`）。动作：`mode_info`、`run_hive_agent`、`wait_agent`、`list_agents`、`close_agent`、`close_session`。`run_hive_agent`：无 `agent_id` 则建 worker；有 `agent_id` 则复用该 live worker，且不得再传 `mode`、`worker_name`、`workdir`。`wait_agent`：按 `agent_id` 阻塞等候，`timeout_ms` 默认 30000；返回最新 agent payload（含 `current_run/last_run` 与输出摘录），通常毋须再查。`run_hive_agent` 默认 `async=true`（荐）；异步时可轮询 `list_agents`，或调 `wait_agent` 做有界阻塞。仅明需单次阻塞时设 `async=false`。达 live limit 且未给 `agent_id`，不自动复用，只返关闭建议。复用与 `resume` 皆由调用者显式决：默认 `resume=false`；`resume=true` 需既存会话 id，否则即错。需自定义 mode，先看 `mode_info`；省 `mode` 用 `readonly`。",
         output_schema = hive_tool_output_schema()
     )]
     async fn hive(
@@ -403,7 +403,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_current",
-        description = "Read active case state for the current open case in this repository. Also serves as the resume entry point: returns direction, steps, last fact, last decision, last evidence, health, and next action in a single call.",
+        description = "读当前 open case 之活动状态，亦作续接入口：一次返回 direction、steps、最近事实/决策/证据、health 与 next action。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_current(
@@ -416,7 +416,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_open",
-        description = "Open a case only after you have decided the task merits case tracking. Use `mode=new` to create a fresh case when `case_current` shows none is open. Use `mode=reopen` with `case_id` to reopen a previously closed or abandoned case. Never call this if another case is already open for the repo.",
+        description = "仅当任务确需 case 追踪时开案。`mode=new` 于无 open case 时新建；`mode=reopen` + `case_id` 重开已 closed/abandoned 之案。若仓内已有 open case，则勿调此工具。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_open(
@@ -479,7 +479,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_record",
-        description = "Append a fact to an open case. Not for decisions or redirects.",
+        description = "向 open case 追加事实；不得用于决策或改向。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_record(
@@ -506,7 +506,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_decide",
-        description = "Record an in-direction decision on an open case.",
+        description = "于 open case 记录方向内决策。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_decide(
@@ -527,7 +527,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_redirect",
-        description = "Change direction on an open case only when the work still fits the same immutable goal. If the work has drifted from the goal, set `is_drift_from_goal` to `yes` and open a new case instead of redirecting.",
+        description = "仅在目标仍同一且不变时改方向。若已偏离原目标，设 `is_drift_from_goal=yes`，并改开新案，不可 redirect。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_redirect(
@@ -556,7 +556,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_show",
-        description = "Show full case tree and step history. Call `case_current` first; use this when detailed history is required.",
+        description = "示 case 全树与步骤史。宜先调 `case_current`；仅在需详史时用此。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_show(
@@ -569,7 +569,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_finish",
-        description = "End an open case in a single call. Use outcome \"completed\" when the goal is met, or \"abandoned\" when no longer worth pursuing.",
+        description = "一调用结 open case。达目标用 `completed`；不复值追用 `abandoned`。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_finish(
@@ -581,7 +581,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_list",
-        description = "List repo cases with optional status, recency, and limit filters. Read-only discovery call; it does not mutate case state.",
+        description = "列仓内 case，可按 status/recent_days/limit 过滤。此为只读发现调用，不改 case 状态。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_list(
@@ -593,7 +593,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_recall",
-        description = "Unified case retrieval entrypoint. Prefer `mode=context` first: it defaults to repo scope, works without an open case, and supports `context_shortcut=recent_work`. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call this tool. When `context_scope=case`, `context_id` is required.",
+        description = "统一检索入口。先用 `mode=context`（默认 repo 范围、无 open case 亦可、支持 `context_shortcut=recent_work`）；需按 query/status 找旧案时用 `mode=find`。勿仅为调用此工具而开案。若 `context_scope=case`，则 `context_id` 必填。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_recall(
@@ -605,7 +605,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_steps_add",
-        description = "Add one or more steps to the current direction. Use after `case_open` or `case_redirect`. This batch call may partially succeed; inspect `created_steps`, `created_count`, and any failure details before retrying.",
+        description = "向当前方向增一步或多步。常用于 `case_open` 或 `case_redirect` 后。批量调用可部分成功；重试前须查 `created_steps`、`created_count` 与失败细节。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_steps_add(
@@ -670,7 +670,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_step_mark_as",
-        description = "Start or block a step. To complete the active step, use `case_step_advance` instead. When `status=blocked`, provide a non-empty `reason`.",
+        description = "将步骤标为 started 或 blocked。结当前活动步骤请用 `case_step_advance`。当 `status=blocked` 时，`reason` 必填且非空。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_step_mark_as(
@@ -694,7 +694,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_step_advance",
-        description = "Complete the current active step, optionally append one factual record, and optionally start the next step in one call. `record` must be an object payload (plain string is not supported).",
+        description = "完成当前活动步骤；可同次附一条事实记录，亦可启下一步。`record` 必为对象载荷，字符串不受理。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_step_advance(
@@ -744,7 +744,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_step_move",
-        description = "Reorder steps within the current direction.",
+        description = "重排当前方向之步骤顺序。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_step_move(
@@ -770,7 +770,7 @@ impl AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "case_current",
-        description = "Read active case state for the current open case in this repository.",
+        description = "读当前仓 open case 之活动状态。",
         output_schema = case_tool_output_schema()
     )]
     async fn readonly_case_current(
@@ -783,7 +783,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_show",
-        description = "Show detailed history for the current open case only.",
+        description = "仅示当前 open case 之详史。",
         output_schema = case_tool_output_schema()
     )]
     async fn readonly_case_show(
@@ -796,7 +796,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_list",
-        description = "List repo cases with optional status, recency, and limit filters. Read-only discovery call; it does not mutate case state.",
+        description = "列仓内 case，可按 status/recent_days/limit 过滤。此为只读发现调用，不改 case 状态。",
         output_schema = case_tool_output_schema()
     )]
     async fn readonly_case_list(
@@ -808,7 +808,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_recall",
-        description = "Unified case retrieval entrypoint. Prefer `mode=context` first: it defaults to repo scope, works without an open case, and supports `context_shortcut=recent_work`. Use `mode=find` when you need to discover past cases by query or status. Do not create or open a case just to call this tool. When `context_scope=case`, `context_id` is required.",
+        description = "统一检索入口。先用 `mode=context`（默认 repo 范围、无 open case 亦可、支持 `context_shortcut=recent_work`）；需按 query/status 找旧案时用 `mode=find`。勿仅为调用此工具而开案。若 `context_scope=case`，则 `context_id` 必填。",
         output_schema = case_tool_output_schema()
     )]
     async fn readonly_case_recall(
@@ -1612,27 +1612,20 @@ mod tests {
         assert!(instructions.contains("case_current"));
         assert!(!instructions.contains("case_resume"));
         assert!(instructions.contains("mode=context"));
-        assert!(instructions
-            .contains("Use `case_recall` before creating a case whenever retrieval is enough"));
-        assert!(instructions.contains("prefer `mode=context` first"));
-        assert!(instructions.contains("Do not create or open a case just to call `case_recall`"));
+        assert!(instructions.contains("case_recall"));
+        assert!(instructions.contains("勿仅为 recall 而开案"));
         assert!(instructions.contains("find_status"));
         assert!(instructions.contains("context_scope"));
         assert!(instructions.contains("context_shortcut"));
         assert!(instructions.contains("needed_context_query"));
-        assert!(instructions.contains("`steps` is an optional initial step queue"));
+        assert!(instructions.contains("`steps`"));
         assert!(instructions.contains("startup_context"));
-        assert!(instructions.contains("omit `query` only when `context_shortcut=recent_work`"));
-        assert!(instructions.contains("When `context_scope=case`, `context_id` is required"));
-        assert!(instructions.contains(
-            "`mode_info` takes no `mode` parameter and returns all currently available mode names"
-        ));
-        assert!(instructions.contains(
-            "When you need a non-default or custom mode, call `mode_info` first to inspect the full mode list"
-        ));
-        assert!(instructions.contains("poll `list_agents` with `agent_id`"));
-        assert!(instructions
-            .contains("`resume=true` requires a previously saved conversation for that worker"));
+        assert!(instructions.contains("`context_scope=case`"));
+        assert!(instructions.contains("`context_id`"));
+        assert!(instructions.contains("mode_info"));
+        assert!(instructions.contains("wait_agent"));
+        assert!(instructions.contains("list_agents"));
+        assert!(instructions.contains("`resume=true`"));
     }
 
     #[test]
@@ -1658,11 +1651,11 @@ mod tests {
 
         let info = server.get_info();
         let instructions = info.instructions.expect("instructions should exist");
-        assert!(instructions
-            .contains("`case_current`, `case_show`, `case_list`, and `case_recall` are available"));
-        assert!(instructions.contains("Prefer `case_recall` in `mode=context` before `mode=find`"));
-        assert!(instructions.contains("Do not create or open a case just to call `case_recall`"));
-        assert!(instructions.contains("No tool in this server can open a case"));
+        assert!(instructions.contains("只读"));
+        assert!(instructions.contains("case_current"));
+        assert!(instructions.contains("mode=context"));
+        assert!(instructions.contains("勿为调用 `case_recall` 而开案"));
+        assert!(instructions.contains("不可开案"));
     }
 
     #[test]
