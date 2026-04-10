@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.1...agpod-mcp-v0.8.2) (2026-04-10)
+
+
+### Bug Fixes
+
+* agent hive output ([0313487](https://github.com/towry/agpod/commit/0313487d3b026880a7105276852b2e2ded7c8248))
+* tests ([88d3ffd](https://github.com/towry/agpod/commit/88d3ffd74ac6afb3fde01711f3e05f2dbc036005))
+
 ## [0.8.1](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.0...agpod-mcp-v0.8.1) (2026-04-09)
 
 
