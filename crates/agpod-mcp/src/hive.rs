@@ -1261,6 +1261,7 @@ async fn start_agent_run(
         &prompt_path,
         &output_path,
         &result_path,
+        &run_id,
         &run_dir,
         conversation_session_id.as_deref(),
         resume,
@@ -1872,6 +1873,7 @@ fn build_claude_exec_command(
     prompt_path: &Path,
     output_path: &Path,
     result_path: &Path,
+    run_id: &str,
     run_dir: &Path,
     resume_session_id: Option<&str>,
     resume: bool,
@@ -1926,6 +1928,7 @@ fn build_claude_exec_command(
         command_parts.push(shell_escape(arg));
     }
 
+    let active_run_path = run_dir.join("active-run.txt");
     let mut script = String::from("set -euo pipefail\n");
     script.push_str(&format!(
         "cd {}\n",
@@ -1952,6 +1955,18 @@ fn build_claude_exec_command(
     script.push_str(&format!(
         "PROMPT=$(cat {})\n",
         shell_escape(&prompt_path.display().to_string())
+    ));
+    script.push_str(&format!(
+        "ACTIVE_RUN_PATH={}\n",
+        shell_escape(&active_run_path.display().to_string())
+    ));
+    script.push_str("cleanup() {\n");
+    script.push_str("  rm -f \"$ACTIVE_RUN_PATH\"\n");
+    script.push_str("}\n");
+    script.push_str("trap cleanup EXIT\n");
+    script.push_str(&format!(
+        "printf 'run_id=%s\\npid=%s\\n' {} \"$$\" >\"$ACTIVE_RUN_PATH\"\n",
+        shell_escape(run_id)
     ));
     script.push_str(
         "STARTED_AT_MS=$(python3 - <<'PY'\nimport time\nprint(int(time.time() * 1000))\nPY\n)\n",
@@ -2087,6 +2102,9 @@ async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
     if !process_is_alive(pid).await? {
         return Ok(RunProcessState::FinishedOrMissing);
     }
+    if active_run_marker_matches(run, pid) {
+        return Ok(RunProcessState::LiveOwned);
+    }
     if !process_matches_run(pid, &run.run_id, &run.launcher_path).await? {
         return Ok(RunProcessState::IdentityMismatch);
     }
@@ -2102,6 +2120,33 @@ fn persisted_run_result_exists(run: &HiveRunState) -> bool {
         .ok()
         .and_then(|raw| serde_json::from_str::<HiveRunResultFile>(&raw).ok())
         .is_some()
+}
+
+fn active_run_marker_matches(run: &HiveRunState, pid: u32) -> bool {
+    let Some(path) = active_run_marker_path(run) else {
+        return false;
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return false;
+    };
+
+    let mut marker_run_id = None;
+    let mut marker_pid = None;
+    for line in raw.lines() {
+        if let Some(value) = line.strip_prefix("run_id=") {
+            marker_run_id = Some(value);
+        } else if let Some(value) = line.strip_prefix("pid=") {
+            marker_pid = value.parse::<u32>().ok();
+        }
+    }
+
+    marker_run_id == Some(run.run_id.as_str()) && marker_pid == Some(pid)
+}
+
+fn active_run_marker_path(run: &HiveRunState) -> Option<PathBuf> {
+    Path::new(&run.launcher_path)
+        .parent()
+        .map(|dir| dir.join("active-run.txt"))
 }
 
 async fn kill_process_group(pid: u32, signal: &str) -> Result<()> {
@@ -2126,22 +2171,27 @@ async fn terminate_run_process_if_owned(run: &HiveRunState) -> Result<TerminateR
     let Some(pid) = run.process_pid else {
         return Ok(TerminateRunResult::NotRunning);
     };
-    match run_process_state(run).await? {
-        RunProcessState::FinishedOrMissing => Ok(TerminateRunResult::NotRunning),
-        RunProcessState::IdentityMismatch => Ok(TerminateRunResult::IdentityMismatch),
-        RunProcessState::LiveOwned => {
-            kill_process_group(pid, "-TERM").await?;
-            sleep(Duration::from_millis(100)).await;
-            if run_process_state(run).await? == RunProcessState::LiveOwned {
-                kill_process_group(pid, "-KILL").await?;
-                sleep(Duration::from_millis(50)).await;
-                if run_process_state(run).await? == RunProcessState::LiveOwned {
-                    return Err(anyhow!("failed to force terminate process group `{pid}`"));
-                }
-            }
-            Ok(TerminateRunResult::Terminated)
+    if persisted_run_result_exists(run) || !process_is_alive(pid).await? {
+        return Ok(TerminateRunResult::NotRunning);
+    }
+    if !process_matches_run(pid, &run.run_id, &run.launcher_path).await? {
+        return Ok(TerminateRunResult::IdentityMismatch);
+    }
+
+    kill_process_group(pid, "-TERM").await?;
+    sleep(Duration::from_millis(100)).await;
+    if process_is_alive(pid).await?
+        && process_matches_run(pid, &run.run_id, &run.launcher_path).await?
+    {
+        kill_process_group(pid, "-KILL").await?;
+        sleep(Duration::from_millis(50)).await;
+        if process_is_alive(pid).await?
+            && process_matches_run(pid, &run.run_id, &run.launcher_path).await?
+        {
+            return Err(anyhow!("failed to force terminate process group `{pid}`"));
         }
     }
+    Ok(TerminateRunResult::Terminated)
 }
 
 async fn terminate_process_group_if_owned(
@@ -3375,6 +3425,7 @@ mod tests {
             Path::new("/tmp/prompt.txt"),
             Path::new("/tmp/output.log"),
             Path::new("/tmp/result.json"),
+            "run-1",
             &run_dir,
             Some("claude-session-1"),
             true,
@@ -3405,6 +3456,7 @@ mod tests {
             Path::new("/tmp/prompt.txt"),
             Path::new("/tmp/output.log"),
             Path::new("/tmp/result.json"),
+            "run-1",
             &run_dir,
             None,
             false,
@@ -3437,6 +3489,7 @@ mod tests {
             Path::new("/tmp/prompt.txt"),
             Path::new("/tmp/output.log"),
             Path::new("/tmp/result.json"),
+            "run-1",
             &run_dir,
             None,
             false,
@@ -3482,6 +3535,7 @@ mod tests {
             Path::new("/tmp/prompt.txt"),
             Path::new("/tmp/output.log"),
             Path::new("/tmp/result.json"),
+            "run-1",
             &run_dir,
             None,
             false,
@@ -3598,6 +3652,76 @@ mod tests {
             .await
             .expect("state probe should succeed");
         assert_eq!(state, RunProcessState::FinishedOrMissing);
+    }
+
+    #[tokio::test]
+    async fn run_process_state_accepts_matching_active_marker_when_command_differs() {
+        let temp = tempdir().expect("temp dir");
+        let run_dir = temp.path().join("run-1");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            run_dir.join("active-run.txt"),
+            format!("run_id=run-1\npid={}\n", std::process::id()),
+        )
+        .expect("write active marker");
+
+        let run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
+            output_path: run_dir.join("output.log").display().to_string(),
+            prompt_path: run_dir.join("prompt.txt").display().to_string(),
+            result_path: run_dir.join("result.json").display().to_string(),
+            launcher_path: run_dir.join("launcher.sh").display().to_string(),
+            process_pid: Some(std::process::id()),
+            resume_requested: false,
+            provider_session_id: None,
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+            provider_output: None,
+        };
+
+        let state = run_process_state(&run)
+            .await
+            .expect("state probe should succeed");
+        assert_eq!(state, RunProcessState::LiveOwned);
+    }
+
+    #[tokio::test]
+    async fn terminate_run_process_refuses_active_marker_without_identity_match() {
+        let temp = tempdir().expect("temp dir");
+        let run_dir = temp.path().join("run-1");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            run_dir.join("active-run.txt"),
+            format!("run_id=run-1\npid={}\n", std::process::id()),
+        )
+        .expect("write active marker");
+
+        let run = HiveRunState {
+            run_id: "run-1".to_string(),
+            prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
+            output_path: run_dir.join("output.log").display().to_string(),
+            prompt_path: run_dir.join("prompt.txt").display().to_string(),
+            result_path: run_dir.join("result.json").display().to_string(),
+            launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
+            process_pid: Some(std::process::id()),
+            resume_requested: false,
+            provider_session_id: None,
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+            provider_output: None,
+        };
+
+        let state = terminate_run_process_if_owned(&run)
+            .await
+            .expect("termination probe should succeed");
+        assert_eq!(state, TerminateRunResult::IdentityMismatch);
     }
 
     #[tokio::test]
