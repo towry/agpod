@@ -2167,6 +2167,21 @@ async fn process_is_alive(pid: u32) -> Result<bool> {
     Ok(status.success())
 }
 
+async fn process_is_zombie(pid: u32) -> Result<bool> {
+    let output = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .await
+        .with_context(|| format!("failed to inspect process `{pid}` status"))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let status = String::from_utf8_lossy(&output.stdout);
+    Ok(status
+        .split_whitespace()
+        .any(|field| field.chars().any(|ch| ch == 'Z')))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunProcessState {
     LiveOwned,
@@ -2209,6 +2224,9 @@ async fn run_process_state(run: &HiveRunState) -> Result<RunProcessState> {
         return Ok(RunProcessState::FinishedOrMissing);
     };
     if !process_is_alive(pid).await? {
+        return Ok(RunProcessState::FinishedOrMissing);
+    }
+    if process_is_zombie(pid).await? {
         return Ok(RunProcessState::FinishedOrMissing);
     }
     if active_run_marker_matches(run, pid) {
@@ -2280,7 +2298,10 @@ async fn terminate_run_process_if_owned(run: &HiveRunState) -> Result<TerminateR
     let Some(pid) = run.process_pid else {
         return Ok(TerminateRunResult::NotRunning);
     };
-    if persisted_run_result_exists(run) || !process_is_alive(pid).await? {
+    if persisted_run_result_exists(run)
+        || !process_is_alive(pid).await?
+        || process_is_zombie(pid).await?
+    {
         return Ok(TerminateRunResult::NotRunning);
     }
     if !process_matches_run(pid, &run.run_id, &run.launcher_path).await? {
@@ -3963,6 +3984,42 @@ mod tests {
             .await
             .expect("state probe should succeed");
         assert_eq!(state, RunProcessState::LiveOwned);
+    }
+
+    #[tokio::test]
+    async fn run_process_state_treats_zombie_process_as_finished_or_missing() {
+        let temp = tempdir().expect("temp dir");
+        let mut child = StdCommand::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn child");
+        let pid = child.id();
+        sleep(Duration::from_millis(100)).await;
+
+        let run = HiveRunState {
+            run_id: "run-zombie".to_string(),
+            prompt_preview: "hello".to_string(),
+            provider: "claude".to_string(),
+            output_path: temp.path().join("output.log").display().to_string(),
+            prompt_path: temp.path().join("prompt.txt").display().to_string(),
+            result_path: temp.path().join("result.json").display().to_string(),
+            launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
+            process_pid: Some(pid),
+            resume_requested: false,
+            provider_session_id: None,
+            started_at_ms: 1,
+            finished_at_ms: None,
+            exit_code: None,
+            termination_reason: None,
+            provider_output: None,
+        };
+
+        let state = run_process_state(&run)
+            .await
+            .expect("state probe should succeed");
+        assert_eq!(state, RunProcessState::FinishedOrMissing);
+
+        let _ = child.wait();
     }
 
     #[tokio::test]
