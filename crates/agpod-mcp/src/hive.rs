@@ -47,6 +47,7 @@ pub enum HiveActionInput {
     RunHiveAgent,
     WaitAgent,
     CloseAgent,
+    ClearIdleAgents,
     CloseSession,
 }
 
@@ -649,6 +650,7 @@ pub async fn run_hive_request(req: HiveRequest) -> Result<Map<String, Value>, Er
         HiveActionInput::RunHiveAgent => run_hive_agent(&runtime, req).await,
         HiveActionInput::WaitAgent => wait_agent(&runtime, req).await,
         HiveActionInput::CloseAgent => close_agent(&runtime, req).await,
+        HiveActionInput::ClearIdleAgents => clear_idle_agents(&runtime).await,
         HiveActionInput::CloseSession => close_session(&runtime).await,
     }
 }
@@ -692,9 +694,10 @@ async fn mode_info(
                 "mode 不可用时，`run_hive_agent` 快速失败，不猜默认。",
                 "`run_hive_agent` 默认 `async=true`（荐）；可用 `agent_id` 轮询 `list_agents`。",
                 "需阻塞等待时，用 `wait_agent` 并设 `timeout_ms`（默认 30000）。",
-                "`run_hive_agent` 传 `agent_id` 时，不得再传 `mode`、`worker_name`、`workdir`。",
+                "`run_hive_agent` 传 `agent_id` 时即复用既存 worker；`mode`、`worker_name`、`workdir` 可省，若传则须与既存值一致。",
                 "仅当调用方明需单次阻塞，方设 `async=false`。",
                 "达 live limit 时不自动复用；欲复用须显式给 `agent_id`。",
+                "为免触发 live limit，任务完成后宜及时 `close_agent`；若只想清空空闲 worker，可用 `clear_idle_agents`。",
                 "`resume` 仅调用者显式控制；默认 `resume=false` 以避上下文膨胀。",
                 "`resume=true` 仅在该 agent 已存会话 id 时可用。",
                 "`hive` tool description 为契约正本；此 notes 仅释义。",
@@ -970,6 +973,65 @@ async fn close_agent(
     ))
 }
 
+async fn clear_idle_agents(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
+    let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
+    let mut state = runtime
+        .load_state()
+        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+    sync_state_with_processes(&mut state)
+        .await
+        .map_err(internal_error)?;
+
+    let idle_indexes = state
+        .agents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, agent)| (agent.status == HiveAgentStatus::Idle).then_some(index))
+        .collect::<Vec<_>>();
+    if idle_indexes.is_empty() {
+        return Ok(build_error_response(
+            "no_idle_agents",
+            "no idle hive agents to clear; reuse an idle `agent_id`, wait for a running worker, or close a specific agent when safe",
+            &state,
+            None,
+            HiveResponseShape::Summary,
+        ));
+    }
+
+    let cleared_agent_ids = idle_indexes
+        .iter()
+        .map(|index| state.agents[*index].agent_id.clone())
+        .collect::<Vec<_>>();
+    let now = now_ms();
+    for index in idle_indexes {
+        let agent = &mut state.agents[index];
+        if agent.current_run.is_some() {
+            agent.last_run = agent.current_run.take();
+        }
+        agent.status = HiveAgentStatus::Closed;
+        agent.last_used_at_ms = Some(now);
+    }
+    state.updated_at_ms = now;
+    runtime.save_state(&state).map_err(internal_error)?;
+
+    let mut raw = build_session_response(
+        "cleared_idle_agents",
+        format!(
+            "cleared {} idle hive agent(s): {}",
+            cleared_agent_ids.len(),
+            cleared_agent_ids.join(", ")
+        ),
+        &state,
+        None,
+        HiveResponseShape::Summary,
+    );
+    raw.insert(
+        "cleared_agent_ids".to_string(),
+        serde_json::json!(cleared_agent_ids),
+    );
+    Ok(raw)
+}
+
 async fn close_session(runtime: &HiveRuntime) -> Result<Map<String, Value>, ErrorData> {
     let _lock = runtime.acquire_lock().await.map_err(internal_error)?;
     let mut state = runtime
@@ -1037,13 +1099,7 @@ fn ensure_run_hive_agent_target(
     req: &HiveRequest,
 ) -> Result<usize, ErrorData> {
     if let Some(agent_id) = req.agent_id.as_deref() {
-        if req.mode.is_some() || req.worker_name.is_some() || req.workdir.is_some() {
-            return Err(ErrorData::invalid_params(
-                "`mode`, `worker_name`, and `workdir` are only allowed when `agent_id` is omitted for action=`run_hive_agent`",
-                None,
-            ));
-        }
-        return state
+        let agent_index = state
             .agents
             .iter()
             .position(|agent| agent.agent_id == agent_id && agent.status != HiveAgentStatus::Closed)
@@ -1055,7 +1111,9 @@ fn ensure_run_hive_agent_target(
                     ),
                     None,
                 )
-            });
+            })?;
+        validate_reused_agent_request(runtime, &state.agents[agent_index], req)?;
+        return Ok(agent_index);
     }
 
     let live_count = state
@@ -1101,6 +1159,57 @@ fn ensure_run_hive_agent_target(
         last_used_at_ms: None,
     });
     Ok(state.agents.len() - 1)
+}
+
+fn validate_reused_agent_request(
+    runtime: &HiveRuntime,
+    agent: &HiveAgentState,
+    req: &HiveRequest,
+) -> Result<(), ErrorData> {
+    let mut mismatches = Vec::new();
+
+    if let Some(requested_mode) = req.mode.as_deref() {
+        let requested_mode = runtime.resolve_mode_name(Some(requested_mode));
+        if requested_mode != agent.mode {
+            mismatches.push(format!(
+                "`mode` requested `{requested_mode}` but worker uses `{}`",
+                agent.mode
+            ));
+        }
+    }
+
+    if let Some(requested_worker_name) = req.worker_name.as_ref().map(|value| value.trim()) {
+        if !requested_worker_name.is_empty() && requested_worker_name != agent.worker_name {
+            mismatches.push(format!(
+                "`worker_name` requested `{requested_worker_name}` but worker uses `{}`",
+                agent.worker_name
+            ));
+        }
+    }
+
+    if let Some(requested_workdir) = req.workdir.as_deref() {
+        let requested_workdir = resolve_workdir(Some(requested_workdir), runtime);
+        if requested_workdir != Path::new(&agent.workdir) {
+            mismatches.push(format!(
+                "`workdir` requested `{}` but worker uses `{}`",
+                requested_workdir.display(),
+                agent.workdir
+            ));
+        }
+    }
+
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+
+    Err(ErrorData::invalid_params(
+        format!(
+            "action=`run_hive_agent` with `agent_id` reuses existing worker settings for `{}`; {}. Omit these fields or pass the existing values shown by action=`list_agents`.",
+            agent.agent_id,
+            mismatches.join("; ")
+        ),
+        None,
+    ))
 }
 
 fn suggest_agents_to_close(state: &HiveSessionState, max_count: usize) -> Vec<String> {
@@ -1152,20 +1261,20 @@ fn build_hive_agent_limit_message(state: &HiveSessionState) -> String {
 
     let mut message = format!("hive agent limit reached: maximum {HIVE_AGENT_LIMIT} live agents.");
     if reusable_ids.is_empty() {
-        message.push_str(" No idle agents are currently reusable.");
+        message.push_str(" No idle agents are currently reusable or clearable.");
     } else {
         message.push_str(&format!(
-            " Idle agents are reusable only with explicit `agent_id` (reusable: {}).",
+            " Idle agents should be handled first: reuse one with explicit `agent_id` or call action=`clear_idle_agents` to close only idle workers (idle: {}).",
             reusable_ids.join(", ")
         ));
         message.push_str(" `resume` is caller-controlled only; keep `resume=false` (default) to avoid context bloat.");
     }
     let close_candidates = suggest_agents_to_close(state, 3);
     if close_candidates.is_empty() {
-        message.push_str(" Suggested next step: call action=`close_session` to reset the session.");
+        message.push_str(" Last resort: call action=`close_session` to reset all workers, including active runs.");
     } else {
         message.push_str(&format!(
-            " Suggested next steps: call action=`close_agent` for one of [{}], or action=`close_session` to reset all workers.",
+            " If you still need a free slot, call action=`close_agent` for one of [{}] after confirming it is safe; last resort is action=`close_session`, which resets all workers including active runs.",
             close_candidates.join(", ")
         ));
     }
@@ -2620,7 +2729,8 @@ mod tests {
         let message = build_hive_agent_limit_message(&state);
         assert!(message.contains("maximum 5 live agents"));
         assert!(message.contains("explicit `agent_id`"));
-        assert!(message.contains("reusable: agent-01"));
+        assert!(message.contains("action=`clear_idle_agents`"));
+        assert!(message.contains("idle: agent-01"));
         assert!(message.contains("resume=false"));
         assert!(message.contains("action=`close_agent`"));
         assert!(message.contains("action=`close_session`"));
@@ -2662,9 +2772,95 @@ mod tests {
         };
 
         let message = build_hive_agent_limit_message(&state);
-        assert!(message.contains("No idle agents are currently reusable"));
+        assert!(message.contains("No idle agents are currently reusable or clearable"));
         assert!(message.contains("action=`close_agent`"));
         assert!(message.contains("action=`list_agents`"));
+    }
+
+    #[test]
+    fn ensure_run_hive_agent_target_allows_matching_reuse_fields() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let mut state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: runtime.session_id.clone(),
+            session_name: runtime.session_name.clone(),
+            repo_root: runtime.repo_root.display().to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: vec![HiveAgentState {
+                agent_id: "agent-01".to_string(),
+                worker_name: "analysis".to_string(),
+                mode: "readonly".to_string(),
+                workdir: runtime.repo_root.display().to_string(),
+                conversation_session_id: None,
+                status: HiveAgentStatus::Idle,
+                current_run: None,
+                last_run: None,
+                last_used_at_ms: None,
+            }],
+        };
+        let req = HiveRequest {
+            action: HiveActionInput::RunHiveAgent,
+            session_id: None,
+            agent_id: Some("agent-01".to_string()),
+            mode: Some("readonly".to_string()),
+            worker_name: Some("analysis".to_string()),
+            workdir: Some(".".to_string()),
+            prompt: Some("hello".to_string()),
+            resume: None,
+            async_: true,
+            timeout_ms: None,
+        };
+
+        let agent_index = ensure_run_hive_agent_target(&runtime, &mut state, &req)
+            .expect("matching reuse fields should be allowed");
+        assert_eq!(agent_index, 0);
+    }
+
+    #[test]
+    fn ensure_run_hive_agent_target_rejects_mismatched_reuse_fields() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let mut state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: runtime.session_id.clone(),
+            session_name: runtime.session_name.clone(),
+            repo_root: runtime.repo_root.display().to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: vec![HiveAgentState {
+                agent_id: "agent-01".to_string(),
+                worker_name: "analysis".to_string(),
+                mode: "readonly".to_string(),
+                workdir: runtime.repo_root.display().to_string(),
+                conversation_session_id: None,
+                status: HiveAgentStatus::Idle,
+                current_run: None,
+                last_run: None,
+                last_used_at_ms: None,
+            }],
+        };
+        let req = HiveRequest {
+            action: HiveActionInput::RunHiveAgent,
+            session_id: None,
+            agent_id: Some("agent-01".to_string()),
+            mode: Some("full".to_string()),
+            worker_name: Some("writer".to_string()),
+            workdir: Some("subdir".to_string()),
+            prompt: Some("hello".to_string()),
+            resume: None,
+            async_: true,
+            timeout_ms: None,
+        };
+
+        let err = ensure_run_hive_agent_target(&runtime, &mut state, &req)
+            .expect_err("mismatched reuse fields should fail");
+        assert!(err.message.contains("reuses existing worker settings"));
+        assert!(err.message.contains("`mode` requested `full`"));
+        assert!(err.message.contains("`worker_name` requested `writer`"));
+        assert!(err.message.contains("`workdir` requested"));
+        assert!(err.message.contains("action=`list_agents`"));
     }
 
     #[test]
@@ -2752,9 +2948,89 @@ mod tests {
         let err = ensure_run_hive_agent_target(&runtime, &mut state, &req)
             .expect_err("limit should require explicit agent selection");
         assert!(err.message.contains("explicit `agent_id`"));
+        assert!(err.message.contains("action=`clear_idle_agents`"));
         assert!(err.message.contains("resume=false"));
         assert!(err.message.contains("action=`close_agent`"));
         assert!(err.message.contains("action=`close_session`"));
+    }
+
+    #[tokio::test]
+    async fn clear_idle_agents_closes_only_idle_workers() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let run_dir = temp.path().join("run-1");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(
+            run_dir.join("active-run.txt"),
+            format!("run_id=run-1\npid={}\n", std::process::id()),
+        )
+        .expect("write active marker");
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: runtime.session_id.clone(),
+            session_name: runtime.session_name.clone(),
+            repo_root: runtime.repo_root.display().to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: vec![
+                HiveAgentState {
+                    agent_id: "agent-01".to_string(),
+                    worker_name: "idle".to_string(),
+                    mode: "readonly".to_string(),
+                    workdir: runtime.repo_root.display().to_string(),
+                    conversation_session_id: None,
+                    status: HiveAgentStatus::Idle,
+                    current_run: None,
+                    last_run: None,
+                    last_used_at_ms: None,
+                },
+                HiveAgentState {
+                    agent_id: "agent-02".to_string(),
+                    worker_name: "running".to_string(),
+                    mode: "readonly".to_string(),
+                    workdir: runtime.repo_root.display().to_string(),
+                    conversation_session_id: None,
+                    status: HiveAgentStatus::Running,
+                    current_run: Some(HiveRunState {
+                        run_id: "run-1".to_string(),
+                        prompt_preview: "hello".to_string(),
+                        provider: "claude".to_string(),
+                        output_path: run_dir.join("output.log").display().to_string(),
+                        prompt_path: run_dir.join("prompt.txt").display().to_string(),
+                        result_path: run_dir.join("result.json").display().to_string(),
+                        launcher_path: run_dir.join("launcher.sh").display().to_string(),
+                        process_pid: Some(std::process::id()),
+                        resume_requested: false,
+                        provider_session_id: None,
+                        started_at_ms: 2,
+                        finished_at_ms: None,
+                        exit_code: None,
+                        termination_reason: None,
+                        provider_output: None,
+                    }),
+                    last_run: None,
+                    last_used_at_ms: Some(2),
+                },
+            ],
+        };
+        runtime.save_state(&state).expect("seed state");
+
+        let raw = clear_idle_agents(&runtime)
+            .await
+            .expect("clear idle agents should succeed");
+
+        assert_eq!(
+            raw.get("state").and_then(Value::as_str),
+            Some("cleared_idle_agents")
+        );
+        assert_eq!(
+            raw.get("cleared_agent_ids").and_then(Value::as_array),
+            Some(&vec![Value::String("agent-01".to_string())])
+        );
+
+        let persisted = runtime.load_state().expect("load state");
+        assert_eq!(persisted.agents[0].status, HiveAgentStatus::Closed);
+        assert_eq!(persisted.agents[1].status, HiveAgentStatus::Running);
     }
 
     #[tokio::test]

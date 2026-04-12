@@ -10,6 +10,8 @@
 - 缺省 `async=true`（推荐）；即返后可用 `wait_agent(agent_id=..., timeout_ms=...)` 阻塞等候，或以 `list_agents(agent_id=...)` 取快照
 - `wait_agent` 缺省等待上限 `timeout_ms=30000`；超时则返“仍运行”，便于 caller 继续轮询
 - 达 live limit 且未指 `agent_id` 时，不自动复用；直接报可执行建议（显式复用某 `agent_id`，或 `close_agent` / `close_session`）
+- 若只想腾挪名额，不伤运行中 worker，可用 `clear_idle_agents`；此动作仅清空 idle worker
+- 任务既毕宜及时 `close_agent`，免 live agent 积累后触发 limit
 - 复用不等于续聊：`resume=false`（缺省）即新上下文；仅确需沿用既有对话时设 `resume=true`
 - `resume` 由 caller 明定；缺已存 Claude session id 而强求 `resume=true`，径失败
 - `settings`、`mcp_config` 若以 `~` 起首，运行时自动展为家目录
@@ -97,7 +99,9 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 ## 生命周期
 
 - `run_hive_agent`：建或复用 worker，写 `prompt.txt`，生成 `launcher.sh`，再起 child process
+- `run_hive_agent` 传 `agent_id` 时即复用既存 worker；`mode`、`worker_name`、`workdir` 可省，若传则须与既存值一致
 - `wait_agent`：对指定 `agent_id` 阻塞等待至完成或超时；适合异步后之有界等待
+- `clear_idle_agents`：仅关闭 idle worker；不碰 running worker
 - Claude 运行时，流式输出入 `output.log`
 - 运行止后，`result.json` 记 `provider`、`exit_code`、起止时刻；会话 id 自 `output.log` 解析入统一封装
 - `list_agents` 会依 pid 与 `result.json` 同步状态，并将所得 `provider_session_id` 回写为 agent 之 `conversation_session_id`
@@ -139,6 +143,7 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 - 若 `run_hive_agent` 指定 `resume=true`，`hive` 必取该 agent 先前保存之 `conversation_session_id`
 - 若无已存会话 id，直接报错，不暗中新开
 - 若 `resume=false`，即起新 Claude 会话
+- 若传 `agent_id` 且又给 `mode`、`worker_name`、`workdir`，则仅当诸值与既存 worker 一致时方放行；不一致径报错，免 caller 误判已切换 worker 设定
 
 ## Wait 契约
 
@@ -154,3 +159,4 @@ system prompt 之交付由 provider 能力层抽象，非硬编码于 Claude：
 - 若外部手动杀死子进程，`list_agents` 会将该 run 以 `process_missing_without_result` 收尾
 - 默认 repo session id 现取稳定哈希；若仅存唯一旧默认 state，`hive` 会续用旧 session id；若旧默认态多于一，则弃旧取新，免误接他会话
 - 运行机须有 `python3`，因 `launcher.sh` 借之写毫秒时间；provider 输出之解析则在 Rust 侧收束
+- 达 limit 时，宜先 `list_agents` 察 idle worker；能复用则复用，欲一键腾位则 `clear_idle_agents`，`close_session` 仅作重置全会话之末手

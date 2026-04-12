@@ -371,7 +371,7 @@ impl ServerHandler for AgpodMcpServer {
         let instructions = if self.readonly {
             "agpod case MCP（只读）。仅可用 `case_current`、`case_show`、`case_list`、`case_recall`。择用法：要原始命中清单（案卷+session_record）用 `case_recall mode=find`；要可直接续工之上下文简报用 `case_recall mode=context`。检索先 `mode=context`，后 `mode=find`。勿为调用 `case_recall` 而开案；惟 `context_scope=case` 须给 `context_id`。只读态无 `hive`。此态诸工具皆不改 case 状态：不可开案、记事实、改步骤、改方向、结案。"
         } else {
-            "agpod case MCP。每仓同刻仅一 open case。先判任务是否真需 case 追踪；一锤子读查（无跨步追踪）默认勿调 `case_current` / `case_open`。检索优先 `case_recall`：先 `mode=context`（默认 `context_scope=repo`，不须 open case），后 `mode=find`。择用法：`mode=find` 给原始命中清单（案卷+session_record）；`mode=context` 给汇编简报（可直接续工）。勿仅为 recall 而开案；仅 `context_scope=case` 须 `context_id`。若确需追踪：先 `case_current`，需全树与历史再 `case_show`。无开案时，`case_open` 用 `mode=new` 新建，或 `mode=reopen` + `case_id` 重开。`mode=new` 可带 `needed_context_query` 与 `steps`；`steps` 最多一项 `start=true`；`startup_context` 可为 `ok|empty|degraded` 而开案仍可成。步骤流：`case_steps_add` 增步，`case_step_mark_as` 仅 start/block，`case_step_advance` 结步并可附一条事实及启后续，`case_step_move` 调序。`case_step_advance.record` 必为对象，字符串不受理。事实仅用 `session_record`；决策用 `case_decide`；目标不变而改向用 `case_redirect`；结案用 `case_finish`（`completed|abandoned`）。`case_recall` 亦可 `mode=find`（`query/find_status/find_limit/find_recent_days`）或 `mode=context`（`context_scope/context_id/query/context_shortcut/context_token_limit`）；`mode=context` 下，惟 `context_shortcut=recent_work` 时可省 `query`。`hive` 管复用 worker：动作 `mode_info/run_hive_agent/wait_agent/list_agents/close_agent/close_session`。`run_hive_agent` 无 `agent_id` 则建 worker；有 `agent_id` 则复用该 live worker，且不得再传 `mode`、`worker_name`、`workdir`。默认 `async=true`（荐）；异步可 `list_agents` 取快照，或 `wait_agent` 以 `timeout_ms`（默认 30000）阻塞等候并返最新 payload。仅当调用方明需单次阻塞，方设 `async=false`。达 live limit 且未给 `agent_id` 时，不自动复用，只返可执行关闭建议。`resume` 仅调用者显式控制；默认 `resume=false`；`resume=true` 需已存会话 id。需非常规 mode，先调 `mode_info`；省 `mode` 则用 `readonly`。`hive` tool description 为契约正本，`mode_info` notes 仅释义。工具结果皆为结构化 JSON；链式调用宜依稳定字段 `result.kind/result.case_id/result.state/result.raw`。"
+            "agpod case MCP。每仓同刻仅一 open case。先判任务是否真需 case 追踪；一锤子读查（无跨步追踪）默认勿调 `case_current` / `case_open`。检索优先 `case_recall`：先 `mode=context`（默认 `context_scope=repo`，不须 open case），后 `mode=find`。择用法：`mode=find` 给原始命中清单（案卷+session_record）；`mode=context` 给汇编简报（可直接续工）。勿仅为 recall 而开案；仅 `context_scope=case` 须 `context_id`。若确需追踪：先 `case_current`，需全树与历史再 `case_show`。无开案时，`case_open` 用 `mode=new` 新建，或 `mode=reopen` + `case_id` 重开。`mode=new` 可带 `needed_context_query` 与 `steps`；`steps` 最多一项 `start=true`；`startup_context` 可为 `ok|empty|degraded` 而开案仍可成。步骤流：`case_steps_add` 增步，`case_step_mark_as` 仅 start/block，`case_step_advance` 结步并可附一条事实及启后续，`case_step_move` 调序。`case_step_advance.record` 必为对象，字符串不受理。事实仅用 `session_record`；决策用 `case_decide`；目标不变而改向用 `case_redirect`；结案用 `case_finish`（`completed|abandoned`）。`case_recall` 亦可 `mode=find`（`query/find_status/find_limit/find_recent_days`）或 `mode=context`（`context_scope/context_id/query/context_shortcut/context_token_limit`）；`mode=context` 下，惟 `context_shortcut=recent_work` 时可省 `query`。`hive` 管复用 worker：动作 `mode_info/run_hive_agent/wait_agent/list_agents/close_agent/clear_idle_agents/close_session`。`run_hive_agent` 无 `agent_id` 则建 worker；有 `agent_id` 则复用该 live worker，`mode`、`worker_name`、`workdir` 可省，若传则须与既存值一致。默认 `async=true`（荐）；异步可 `list_agents` 取快照，或 `wait_agent` 以 `timeout_ms`（默认 30000）阻塞等候并返最新 payload。仅当调用方明需单次阻塞，方设 `async=false`。达 live limit 且未给 `agent_id` 时，不自动复用；优先复用 idle worker 或调用 `clear_idle_agents` 仅清空空闲 worker。任务既毕，宜及时 `close_agent`，以免触发 live limit。`resume` 仅调用者显式控制；默认 `resume=false`；`resume=true` 需已存会话 id。需非常规 mode，先调 `mode_info`；省 `mode` 则用 `readonly`。`hive` tool description 为契约正本，`mode_info` notes 仅释义。工具结果皆为结构化 JSON；链式调用宜依稳定字段 `result.kind/result.case_id/result.state/result.raw`。"
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -392,7 +392,7 @@ impl ServerHandler for AgpodMcpServer {
 impl AgpodMcpServer {
     #[tool(
         name = "hive",
-        description = "管 repo 级 hive worker（默认 session 或显式 `session_id`）。动作：`mode_info`、`run_hive_agent`、`wait_agent`、`list_agents`、`close_agent`、`close_session`。`run_hive_agent`：无 `agent_id` 则建 worker；有 `agent_id` 则复用该 live worker，且不得再传 `mode`、`worker_name`、`workdir`。`wait_agent`：按 `agent_id` 阻塞等候，`timeout_ms` 默认 30000；返回最新 agent payload（含 `current_run/last_run` 与输出摘录），通常毋须再查。`run_hive_agent` 默认 `async=true`（荐）；异步时可轮询 `list_agents`，或调 `wait_agent` 做有界阻塞。仅明需单次阻塞时设 `async=false`。达 live limit 且未给 `agent_id`，不自动复用，只返关闭建议。复用与 `resume` 皆由调用者显式决：默认 `resume=false`；`resume=true` 需既存会话 id，否则即错。需自定义 mode，先看 `mode_info`；省 `mode` 用 `readonly`。",
+        description = "管 repo 级 hive worker（默认 session 或显式 `session_id`）。动作：`mode_info`、`run_hive_agent`、`wait_agent`、`list_agents`、`close_agent`、`clear_idle_agents`、`close_session`。`run_hive_agent`：无 `agent_id` 则建 worker；有 `agent_id` 则复用该 live worker，`mode`、`worker_name`、`workdir` 可省，若传则须与既存值一致。`wait_agent`：按 `agent_id` 阻塞等候，`timeout_ms` 默认 30000；返回最新 agent payload（含 `current_run/last_run` 与输出摘录），通常毋须再查。`run_hive_agent` 默认 `async=true`（荐）；异步时可轮询 `list_agents`，或调 `wait_agent` 做有界阻塞。仅明需单次阻塞时设 `async=false`。达 live limit 且未给 `agent_id`，不自动复用；优先复用 idle worker 或调用 `clear_idle_agents` 仅清空空闲 worker。任务既毕，宜及时 `close_agent`，以免触发 live limit。复用与 `resume` 皆由调用者显式决：默认 `resume=false`；`resume=true` 需既存会话 id，否则即错。需自定义 mode，先看 `mode_info`；省 `mode` 用 `readonly`。",
         output_schema = hive_tool_output_schema()
     )]
     async fn hive(
@@ -417,7 +417,7 @@ impl AgpodMcpServer {
 
     #[tool(
         name = "case_open",
-        description = "仅当任务确需 case 追踪时开案。`mode=new` 于无 open case 时新建；`mode=reopen` + `case_id` 重开已 closed/abandoned 之案。若仓内已有 open case，则勿调此工具。",
+        description = "仅当任务确需 case 追踪时开案。`mode=new` 于无 open case 时新建；`mode=reopen` + `case_id` 重开已 closed/abandoned 之案。若仓内已有 open case，则勿调此工具。若给 `needed_context_query`，须传 topic object，如 `{\"how_to\":[...],\"doc_about\":[...],\"pitfalls_about\":[...],\"known_patterns_for\":[...]}`，不可传单条字符串。",
         output_schema = case_tool_output_schema()
     )]
     async fn case_open(
@@ -1068,6 +1068,25 @@ fn describe_case_open_request_schema(_schema: &mut schemars::Schema) {
     // combined with normal open fields in mode=new.
 }
 
+fn describe_needed_context_query_schema(schema: &mut schemars::Schema) {
+    schema.ensure_object().insert(
+        "description".to_string(),
+        Value::String(
+            "Structured startup-context topics object. Not a free-form string. Provide any of `how_to`, `doc_about`, `pitfalls_about`, and `known_patterns_for` as string arrays."
+                .to_string(),
+        ),
+    );
+    schema.ensure_object().insert(
+        "examples".to_string(),
+        Value::Array(vec![serde_json::json!({
+            "how_to": ["run hosted smoke"],
+            "doc_about": ["honcho integration"],
+            "pitfalls_about": ["empty recall result"],
+            "known_patterns_for": ["smoke testing"]
+        })]),
+    );
+}
+
 fn describe_session_record_request_schema(_schema: &mut schemars::Schema) {
     // Conditional validation (kind=goal_constraint_update requires non-empty
     // goal_constraints) is enforced server-side. Schema-level allOf/if-then
@@ -1136,6 +1155,30 @@ where
     }
 }
 
+fn deserialize_optional_needed_context_query<'de, D>(
+    deserializer: D,
+) -> Result<Option<NeededContextQueryInput>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(Value::Object(obj)) => {
+            serde_json::from_value::<NeededContextQueryInput>(Value::Object(obj))
+                .map(Some)
+                .map_err(|err| {
+                    D::Error::custom(format!(
+                        "`needed_context_query` must be an object with optional arrays `how_to`, `doc_about`, `pitfalls_about`, and `known_patterns_for`; parse error: {err}"
+                    ))
+                })
+        }
+        Some(_) => Err(D::Error::custom(
+            "`needed_context_query` must be an object like {\"how_to\":[...],\"doc_about\":[...],\"pitfalls_about\":[...],\"known_patterns_for\":[...]}; plain string is not supported",
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct CaseCurrentRequest {}
 
@@ -1161,7 +1204,11 @@ pub struct CaseOpenRequest {
     pub success_condition: Option<String>,
     /// Condition for aborting this direction.
     pub abort_condition: Option<String>,
-    /// Startup memory query requested by the opening agent.
+    /// Structured startup-context topics object for opening memory recall. Must be an object payload; plain strings are rejected.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_needed_context_query"
+    )]
     pub needed_context_query: Option<NeededContextQueryInput>,
     /// Optional initial step queue created during `mode=new`. Accepts either plain strings or objects like `{"title":"审阅报表","reason":"补证","start":true}`; at most one item may set `start=true`.
     #[serde(default)]
@@ -1169,6 +1216,7 @@ pub struct CaseOpenRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
+#[schemars(transform = describe_needed_context_query_schema)]
 pub struct NeededContextQueryInput {
     /// How-to topics the new case should know at startup.
     #[serde(default)]
@@ -1626,6 +1674,7 @@ mod tests {
         assert!(instructions.contains("mode_info"));
         assert!(instructions.contains("wait_agent"));
         assert!(instructions.contains("list_agents"));
+        assert!(instructions.contains("clear_idle_agents"));
         assert!(instructions.contains("`resume=true`"));
     }
 
@@ -1723,6 +1772,7 @@ mod tests {
         assert!(hive_schema.to_string().contains("\"mode_info\""));
         assert!(hive_schema.to_string().contains("\"run_hive_agent\""));
         assert!(hive_schema.to_string().contains("\"close_agent\""));
+        assert!(hive_schema.to_string().contains("\"clear_idle_agents\""));
         assert!(hive_schema.to_string().contains("\"close_session\""));
         assert!(hive_schema.to_string().contains("\"async\""));
         assert!(hive_schema.to_string().contains("\"mode\""));
@@ -1737,6 +1787,12 @@ mod tests {
         assert!(open_schema.to_string().contains("\"success_condition\""));
         assert!(open_schema.to_string().contains("\"abort_condition\""));
         assert!(open_schema.to_string().contains("needed_context_query"));
+        assert!(open_schema
+            .to_string()
+            .contains("Structured startup-context topics object"));
+        assert!(open_schema
+            .to_string()
+            .contains("plain strings are rejected"));
         assert!(open_schema.to_string().contains("\"steps\""));
         assert!(open_schema.to_string().contains("how_to"));
         assert!(open_schema.to_string().contains("doc_about"));
@@ -2155,6 +2211,22 @@ mod tests {
         assert_eq!(query.doc_about, vec!["honcho integration"]);
         assert_eq!(query.pitfalls_about, vec!["empty recall result"]);
         assert_eq!(query.known_patterns_for, vec!["smoke testing"]);
+    }
+
+    #[test]
+    fn case_open_request_rejects_string_needed_context_query_with_helpful_error() {
+        let err = serde_json::from_value::<CaseOpenRequest>(serde_json::json!({
+            "goal": "improve case open startup memory",
+            "direction": "wire startup context into case_open",
+            "needed_context_query": "run hosted smoke"
+        }))
+        .expect_err("string needed_context_query should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("`needed_context_query` must be an object"));
+        assert!(err.to_string().contains("plain string is not supported"));
+        assert!(err.to_string().contains("how_to"));
     }
 
     #[tokio::test]
