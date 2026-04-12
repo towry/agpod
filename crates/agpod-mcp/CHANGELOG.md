@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.3](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.2...agpod-mcp-v0.8.3) (2026-04-12)
+
+
+### Bug Fixes
+
+* **agpod-mcp:** tighten MCP tool contracts ([04d67ae](https://github.com/towry/agpod/commit/04d67aef9d48f3710fdb8eaacff98c330408a47d))
+* **agpod-mcp:** treat zombie hive runs as finished ([8fa2e09](https://github.com/towry/agpod/commit/8fa2e09e6ebe615890dc96a0d5e02905fdd3cf4f))
+
 ## [0.8.2](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.1...agpod-mcp-v0.8.2) (2026-04-10)
 
 
