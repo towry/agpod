@@ -1338,15 +1338,13 @@ async fn build_startup_context(
                 }
             }
             match hit.kind.as_deref() {
-                Some("blocker") => {
-                    if !known_pitfalls.contains(&hit.excerpt) {
-                        known_pitfalls.push(hit.excerpt.clone());
-                    }
+                Some("blocker") if !known_pitfalls.contains(&hit.excerpt) => {
+                    known_pitfalls.push(hit.excerpt.clone());
                 }
-                Some("finding") | Some("evidence") | Some("note") | None => {
-                    if !known_working_patterns.contains(&hit.excerpt) {
-                        known_working_patterns.push(hit.excerpt.clone());
-                    }
+                Some("finding") | Some("evidence") | Some("note") | None
+                    if !known_working_patterns.contains(&hit.excerpt) =>
+                {
+                    known_working_patterns.push(hit.excerpt.clone());
                 }
                 _ => {}
             }
