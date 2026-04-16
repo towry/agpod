@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.8.4](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.3...agpod-mcp-v0.8.4) (2026-04-16)
+
 ## [0.8.3](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.2...agpod-mcp-v0.8.3) (2026-04-12)
 
 
