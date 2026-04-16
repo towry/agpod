@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.4](https://github.com/towry/agpod/compare/agpod-case-v0.6.3...agpod-case-v0.6.4) (2026-04-16)
+
+
+### Bug Fixes
+
+* clippy ([cf0a889](https://github.com/towry/agpod/commit/cf0a88986b7715481a2a0dc382872a4ea9cb04e1))
+* stuck issue ([8bdeff7](https://github.com/towry/agpod/commit/8bdeff777de9b3b9a1a3fd8ebd7b654ce5986271))
+
 ## [0.6.3](https://github.com/towry/agpod/compare/agpod-case-v0.6.2...agpod-case-v0.6.3) (2026-04-09)
 
 
