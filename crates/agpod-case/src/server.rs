@@ -6,13 +6,18 @@ use crate::client::CaseClient;
 use crate::commands::execute_command_json;
 use crate::config::CaseConfig;
 use crate::error::{CaseError, CaseResult};
+use crate::output;
 use crate::repo_id::RepoIdentity;
 use crate::rpc::{CaseRequest, CaseResponse};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration, Instant};
 use tracing::{debug, info, warn};
+
+const SLOW_SERVER_WAIT_WARN_MS: u128 = 1_000;
+const SLOW_SERVER_EXEC_WARN_MS: u128 = 1_000;
 
 #[derive(Clone)]
 pub struct CaseServer {
@@ -81,11 +86,52 @@ impl CaseServer {
     }
 
     async fn handle_request(&self, request: CaseRequest) -> CaseResponse {
+        self.handle_request_with_timeout(request, crate::CASE_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn handle_request_with_timeout(
+        &self,
+        request: CaseRequest,
+        timeout_limit: Duration,
+    ) -> CaseResponse {
         let identity: RepoIdentity = request.repo.into();
         debug!(repo_id = %identity.repo_id, "handling case-server request");
-        let _guard = self.db_gate.lock().await;
+        let queued_at = Instant::now();
+        let command_debug = format!("{:?}", request.command);
+        let _guard = match timeout(timeout_limit, self.db_gate.lock()).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                warn!(
+                    repo_id = %identity.repo_id,
+                    wait_ms = timeout_limit.as_millis(),
+                    command = %command_debug,
+                    "case-server request timed out waiting on db gate"
+                );
+                return CaseResponse {
+                    result: output::error_json(
+                        "error",
+                        &format!(
+                            "case-server request timed out waiting for execution slot after {} ms",
+                            timeout_limit.as_millis()
+                        ),
+                        None,
+                    ),
+                };
+            }
+        };
+        let wait_elapsed = queued_at.elapsed();
+        if wait_elapsed.as_millis() >= SLOW_SERVER_WAIT_WARN_MS {
+            warn!(
+                repo_id = %identity.repo_id,
+                wait_ms = wait_elapsed.as_millis(),
+                command = %command_debug,
+                "case-server request waited on db gate"
+            );
+        }
         let client = self.base_client.clone_with_identity(identity);
 
+        let exec_started = Instant::now();
         let result = crate::commands::finish_json_value(
             execute_command_json(&client, &request.command).await,
             &client,
@@ -93,6 +139,15 @@ impl CaseServer {
             true,
         )
         .await;
+        let exec_elapsed = exec_started.elapsed();
+        if exec_elapsed.as_millis() >= SLOW_SERVER_EXEC_WARN_MS {
+            warn!(
+                repo_id = %client.repo_id(),
+                elapsed_ms = exec_elapsed.as_millis(),
+                command = %command_debug,
+                "case-server request executed slowly"
+            );
+        }
 
         if result.get("ok").and_then(|value| value.as_bool()) == Some(false) {
             if let Some(message) = result.get("message").and_then(|value| value.as_str()) {
@@ -116,6 +171,7 @@ mod tests {
     use crate::rpc::RepoIdentityPayload;
     use serde_json::json;
     use tempfile::TempDir;
+    use tokio::time::Duration;
 
     fn temp_config(temp_dir: &TempDir) -> CaseConfig {
         CaseConfig::load(CaseOverrides {
@@ -221,8 +277,14 @@ mod tests {
             },
         };
 
-        let result_a = server.handle_request(repo_a).await.result;
-        let result_b = server.handle_request(repo_b).await.result;
+        let result_a = server
+            .handle_request_with_timeout(repo_a, Duration::from_secs(15))
+            .await
+            .result;
+        let result_b = server
+            .handle_request_with_timeout(repo_b, Duration::from_secs(15))
+            .await
+            .result;
 
         assert_eq!(result_a["ok"].as_bool(), Some(true));
         assert_eq!(result_b["ok"].as_bool(), Some(true));
@@ -273,11 +335,38 @@ mod tests {
             },
         };
 
-        let (result_a, result_b) =
-            tokio::join!(server.handle_request(repo_a), server.handle_request(repo_b),);
+        let (result_a, result_b) = tokio::join!(
+            server.handle_request_with_timeout(repo_a, Duration::from_secs(15)),
+            server.handle_request_with_timeout(repo_b, Duration::from_secs(15)),
+        );
 
         assert_eq!(result_a.result["ok"].as_bool(), Some(true));
         assert_eq!(result_b.result["ok"].as_bool(), Some(true));
         assert_ne!(result_a.result["case"]["id"], result_b.result["case"]["id"]);
+    }
+
+    #[tokio::test]
+    async fn server_times_out_when_db_gate_is_held_too_long() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let server = CaseServer::new(temp_config(&temp_dir))
+            .await
+            .expect("server should initialize");
+        let _guard = server.db_gate.lock().await;
+
+        let request = CaseRequest {
+            repo: repo_payload("repo-a", "/tmp/repo-a"),
+            command: CaseCommand::Current { state: false },
+        };
+
+        let started = Instant::now();
+        let response = server
+            .handle_request_with_timeout(request, Duration::from_millis(5))
+            .await;
+
+        assert_eq!(response.result["ok"].as_bool(), Some(false));
+        assert!(response.result["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("timed out waiting for execution slot")));
+        assert!(started.elapsed() >= Duration::from_millis(5));
     }
 }

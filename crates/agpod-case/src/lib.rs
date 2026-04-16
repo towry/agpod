@@ -15,6 +15,8 @@ mod server;
 mod server_client;
 mod types;
 
+use std::time::Duration;
+
 pub use cli::{
     CaseArgs, CaseCommand, CaseStatusArg, ContextScopeArg, GoalDriftFlag, OpenModeArg,
     RecallModeArg, StepCommand,
@@ -25,6 +27,8 @@ pub use types::{CaseContextHit, CaseContextResult, RecordKind};
 
 use anyhow::Result;
 use serde_json::Value;
+
+pub(crate) const CASE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(args: CaseArgs) -> Result<()> {
     commands::execute(args).await

@@ -11,44 +11,70 @@ use serde_json::Value;
 use std::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{sleep, timeout, Duration, Instant};
 use tracing::{debug, info, warn};
 
 const SERVER_START_TIMEOUT: Duration = Duration::from_secs(3);
 const SERVER_START_RETRY_DELAY: Duration = Duration::from_millis(100);
+const SLOW_SERVER_RPC_WARN_THRESHOLD: Duration = Duration::from_secs(1);
 
 pub async fn execute_via_server(
     config: &CaseConfig,
     identity: RepoIdentity,
     command: CaseCommand,
 ) -> CaseResult<Value> {
+    let repo_id = identity.repo_id.clone();
+    let command_debug = format!("{command:?}");
     debug!(
         server_addr = %config.server_addr,
-        repo_id = %identity.repo_id,
+        repo_id = %repo_id,
         "executing case command via server"
     );
-    ensure_server_available(config).await?;
+    let started = Instant::now();
+    let response: CaseResponse = timeout(crate::CASE_REQUEST_TIMEOUT, async {
+        ensure_server_available(config).await?;
 
-    let mut stream = TcpStream::connect(&config.server_addr)
-        .await
-        .map_err(|err| CaseError::DbConnection(format!("failed to connect case-server: {err}")))?;
-    let payload = serde_json::to_string(&CaseRequest {
-        repo: RepoIdentityPayload::from(identity),
-        command,
+        let mut stream = TcpStream::connect(&config.server_addr)
+            .await
+            .map_err(|err| {
+                CaseError::DbConnection(format!("failed to connect case-server: {err}"))
+            })?;
+        let payload = serde_json::to_string(&CaseRequest {
+            repo: RepoIdentityPayload::from(identity),
+            command,
+        })
+        .map_err(CaseError::Json)?;
+
+        stream
+            .write_all(payload.as_bytes())
+            .await
+            .map_err(CaseError::Io)?;
+        stream.write_all(b"\n").await.map_err(CaseError::Io)?;
+
+        let mut line = String::new();
+        let mut reader = BufReader::new(stream);
+        reader.read_line(&mut line).await.map_err(CaseError::Io)?;
+
+        serde_json::from_str(&line).map_err(CaseError::Json)
     })
-    .map_err(CaseError::Json)?;
+    .await
+    .map_err(|_| {
+        CaseError::DbConnection(format!(
+            "timed out waiting for case-server response after {} ms",
+            crate::CASE_REQUEST_TIMEOUT.as_millis()
+        ))
+    })??;
 
-    stream
-        .write_all(payload.as_bytes())
-        .await
-        .map_err(CaseError::Io)?;
-    stream.write_all(b"\n").await.map_err(CaseError::Io)?;
-
-    let mut line = String::new();
-    let mut reader = BufReader::new(stream);
-    reader.read_line(&mut line).await.map_err(CaseError::Io)?;
-
-    let response: CaseResponse = serde_json::from_str(&line).map_err(CaseError::Json)?;
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_SERVER_RPC_WARN_THRESHOLD {
+        warn!(
+            server_addr = %config.server_addr,
+            repo_id = %repo_id,
+            elapsed_ms = elapsed.as_millis(),
+            command = %command_debug,
+            "case command round-trip via case-server was slow"
+        );
+    }
     Ok(response.result)
 }
 

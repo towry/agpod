@@ -25,15 +25,41 @@ use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
+use tokio::time::timeout;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
 const CASE_SHOW_SPILL_CHAR_THRESHOLD: usize = 1_000;
+const SLOW_CURRENT_STAGE_WARN_MS: u128 = 1_000;
+
+fn warn_if_current_stage_slow(case_id: Option<&str>, stage: &'static str, started: Instant) {
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() < SLOW_CURRENT_STAGE_WARN_MS {
+        return;
+    }
+
+    match case_id {
+        Some(case_id) => warn!(
+            case_id,
+            stage,
+            elapsed_ms = elapsed.as_millis(),
+            "case current stage executed slowly"
+        ),
+        None => warn!(
+            stage,
+            elapsed_ms = elapsed.as_millis(),
+            "case current stage executed slowly"
+        ),
+    }
+}
 
 async fn dispatch_event(client: &CaseClient, event: CaseDomainEvent) -> CaseDispatchReport {
     let (dispatcher, mut report) = build_dispatcher(client);
     let envelope = CaseEventEnvelope::new(client, event);
-    let mut dispatched = dispatcher.dispatch(&envelope).await;
+    let mut dispatched = dispatcher
+        .dispatch_with_timeout(&envelope, crate::CASE_REQUEST_TIMEOUT)
+        .await;
     report.statuses.append(&mut dispatched.statuses);
     report
 }
@@ -91,6 +117,26 @@ fn context_provider_for_client(client: &CaseClient) -> CaseResult<Box<dyn CaseCo
     }
     debug!("using local case context provider");
     Ok(Box::new(LocalCaseContextProvider::new(client.clone())))
+}
+
+async fn get_case_context_with_timeout(
+    provider: &dyn CaseContextProvider,
+    scope: ContextScope<'_>,
+    query: Option<&str>,
+    limit: usize,
+    token_limit: Option<u32>,
+) -> CaseResult<CaseContextResult> {
+    timeout(
+        crate::CASE_REQUEST_TIMEOUT,
+        provider.get_context(scope, query, limit, token_limit),
+    )
+    .await
+    .map_err(|_| {
+        CaseError::ContextProviderUnavailable(format!(
+            "context provider request timed out after {} ms",
+            crate::CASE_REQUEST_TIMEOUT.as_millis()
+        ))
+    })?
 }
 
 pub async fn execute(args: CaseArgs) -> Result<()> {
@@ -1258,9 +1304,14 @@ async fn build_startup_context(
     let mut saw_hits = false;
 
     for topic_query in topic_queries {
-        let result = match provider
-            .get_context(ContextScope::Repo, Some(&topic_query), 4, Some(600))
-            .await
+        let result = match get_case_context_with_timeout(
+            provider.as_ref(),
+            ContextScope::Repo,
+            Some(&topic_query),
+            4,
+            Some(600),
+        )
+        .await
         {
             Ok(result) => result,
             Err(_) => {
@@ -1551,12 +1602,16 @@ async fn cmd_open_new(
 }
 
 async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_json::Value> {
+    let total_started = Instant::now();
+    let open_case_started = Instant::now();
     let case = client
         .find_open_case()
         .await?
         .ok_or(CaseError::NoOpenCase)?;
+    warn_if_current_stage_slow(Some(&case.id), "find_open_case", open_case_started);
 
     if state_only {
+        warn_if_current_stage_slow(Some(&case.id), "current_total", total_started);
         return Ok(json!({
             "ok": true,
             "kind": "case_current_state",
@@ -1565,8 +1620,12 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
         }));
     }
 
+    let directions_started = Instant::now();
     let directions = client.get_directions(&case.id).await?;
+    warn_if_current_stage_slow(Some(&case.id), "get_directions", directions_started);
+    let steps_started = Instant::now();
     let all_steps = client.get_all_steps(&case.id).await?;
+    warn_if_current_stage_slow(Some(&case.id), "get_all_steps", steps_started);
     let (dir_history, steps_by_dir) =
         build_direction_tree_payload(&directions, &all_steps, Some(case.current_direction_seq));
 
@@ -1584,14 +1643,18 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
 
     let (current_step, pending_steps) = split_steps(&steps);
 
+    let latest_entry_started = Instant::now();
     let last_entry = client.get_latest_entry(&case.id).await?;
+    warn_if_current_stage_slow(Some(&case.id), "get_latest_entry", latest_entry_started);
     let last_fact = last_entry.as_ref().map(|e| e.summary.as_str());
 
     // Health detection
     let health = detect_health(&steps, &last_entry);
 
     // Resume fields (absorbed from cmd_resume)
+    let entries_started = Instant::now();
     let entries = client.get_entries(&case.id).await?;
+    warn_if_current_stage_slow(Some(&case.id), "get_entries", entries_started);
     let last_decision = entries
         .iter()
         .rev()
@@ -1655,6 +1718,7 @@ async fn cmd_current(client: &CaseClient, state_only: bool) -> CaseResult<serde_
         &entries,
     );
     result["next"] = output::next_json(&next);
+    warn_if_current_stage_slow(Some(&case.id), "current_total", total_started);
 
     Ok(result)
 }
@@ -3078,14 +3142,14 @@ async fn cmd_context(
         ContextScopeArg::Case => {
             let case = resolve_case(client, id).await?;
             let provider = context_provider_for_client(client)?;
-            let result = provider
-                .get_context(
-                    ContextScope::Case { case_id: &case.id },
-                    query,
-                    default_limit,
-                    token_limit,
-                )
-                .await?;
+            let result = get_case_context_with_timeout(
+                provider.as_ref(),
+                ContextScope::Case { case_id: &case.id },
+                query,
+                default_limit,
+                token_limit,
+            )
+            .await?;
 
             Ok(json!({
                 "ok": true,
@@ -3098,18 +3162,41 @@ async fn cmd_context(
             let result =
                 if client.config().honcho_enabled && client.config().semantic_recall_enabled {
                     if let Some(honcho) = HonchoBackend::from_config(client.config())? {
-                        honcho
-                            .get_repo_context(client.repo_id(), query, default_limit, token_limit)
-                            .await?
+                        timeout(
+                            crate::CASE_REQUEST_TIMEOUT,
+                            honcho.get_repo_context(
+                                client.repo_id(),
+                                query,
+                                default_limit,
+                                token_limit,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| {
+                            CaseError::ContextProviderUnavailable(format!(
+                                "context provider request timed out after {} ms",
+                                crate::CASE_REQUEST_TIMEOUT.as_millis()
+                            ))
+                        })??
                     } else {
-                        LocalCaseContextProvider::new(client.clone())
-                            .get_context(ContextScope::Repo, query, default_limit, token_limit)
-                            .await?
+                        get_case_context_with_timeout(
+                            &LocalCaseContextProvider::new(client.clone()),
+                            ContextScope::Repo,
+                            query,
+                            default_limit,
+                            token_limit,
+                        )
+                        .await?
                     }
                 } else {
-                    LocalCaseContextProvider::new(client.clone())
-                        .get_context(ContextScope::Repo, query, default_limit, token_limit)
-                        .await?
+                    get_case_context_with_timeout(
+                        &LocalCaseContextProvider::new(client.clone()),
+                        ContextScope::Repo,
+                        query,
+                        default_limit,
+                        token_limit,
+                    )
+                    .await?
                 };
 
             Ok(json!({

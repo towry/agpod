@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 pub type HookFuture<'a> = Pin<Box<dyn Future<Output = CaseResult<()>> + Send + 'a>>;
 
@@ -69,7 +71,45 @@ impl CaseEventDispatcher {
         Self::default()
     }
 
+    pub fn enabled_sink_names(&self, event: &CaseEventEnvelope) -> Vec<String> {
+        self.sinks
+            .iter()
+            .filter(|sink| sink.is_enabled(event))
+            .map(|sink| sink.name().to_string())
+            .collect()
+    }
+
+    #[allow(dead_code)]
     pub async fn dispatch(&self, event: &CaseEventEnvelope) -> CaseDispatchReport {
+        self.dispatch_with_timeout(event, crate::CASE_REQUEST_TIMEOUT)
+            .await
+    }
+
+    pub async fn dispatch_with_timeout(
+        &self,
+        event: &CaseEventEnvelope,
+        timeout_limit: Duration,
+    ) -> CaseDispatchReport {
+        let sink_names = self.enabled_sink_names(event);
+        match timeout(timeout_limit, self.dispatch_inner(event)).await {
+            Ok(report) => report,
+            Err(_) => CaseDispatchReport {
+                statuses: sink_names
+                    .into_iter()
+                    .map(|sink| CaseHookStatus {
+                        sink,
+                        ok: false,
+                        message: Some(format!(
+                            "hook dispatch timed out after {} ms",
+                            timeout_limit.as_millis()
+                        )),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    async fn dispatch_inner(&self, event: &CaseEventEnvelope) -> CaseDispatchReport {
         let mut statuses = Vec::new();
 
         for sink in &self.sinks {
@@ -114,6 +154,7 @@ mod tests {
     use super::*;
     use crate::events::CaseDomainEvent;
     use crate::types::{Case, CaseStatus, Direction};
+    use std::time::Duration;
 
     struct FailingSink;
 
@@ -124,6 +165,21 @@ mod tests {
 
         fn handle<'a>(&'a self, _event: &'a CaseEventEnvelope) -> HookFuture<'a> {
             Box::pin(async { Err(crate::error::CaseError::Other("boom".to_string())) })
+        }
+    }
+
+    struct SlowSink;
+
+    impl CaseEventSink for SlowSink {
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+
+        fn handle<'a>(&'a self, _event: &'a CaseEventEnvelope) -> HookFuture<'a> {
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(())
+            })
         }
     }
 
@@ -185,5 +241,47 @@ mod tests {
         assert!(report.has_failures());
         assert_eq!(report.statuses.len(), 1);
         assert_eq!(report.statuses[0].sink, "failing");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_times_out_slow_sinks() {
+        let event = CaseEventEnvelope {
+            event_id: "C-1:case_opened".to_string(),
+            case_id: "C-1".to_string(),
+            associated_case_id: Some("C-1".to_string()),
+            repo_id: "repo".to_string(),
+            repo_label: "repo".to_string(),
+            worktree_id: "wt".to_string(),
+            worktree_root: "/tmp/repo".to_string(),
+            direction_seq: Some(1),
+            occurred_at: "2026-03-25T00:00:00Z".to_string(),
+            event: CaseDomainEvent::CaseOpened {
+                case: sample_case(),
+                direction: Direction {
+                    case_id: "C-1".to_string(),
+                    seq: 1,
+                    summary: "dir".to_string(),
+                    constraints: vec![],
+                    success_condition: "".to_string(),
+                    abort_condition: "".to_string(),
+                    reason: None,
+                    context: None,
+                    created_at: "2026-03-25T00:00:00Z".to_string(),
+                },
+            },
+        };
+        let dispatcher = CaseEventDispatcher::new(vec![Arc::new(SlowSink)]);
+
+        let report = dispatcher
+            .dispatch_with_timeout(&event, Duration::from_millis(5))
+            .await;
+
+        assert_eq!(report.statuses.len(), 1);
+        assert_eq!(report.statuses[0].sink, "slow");
+        assert!(!report.statuses[0].ok);
+        assert!(report.statuses[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("timed out")));
     }
 }
