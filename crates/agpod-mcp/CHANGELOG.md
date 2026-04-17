@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.5](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.4...agpod-mcp-v0.8.5) (2026-04-17)
+
+
+### Bug Fixes
+
+* **hive:** tolerate partial run result writes ([b7e4ec0](https://github.com/towry/agpod/commit/b7e4ec0d5c253bfddb9c0033623c1ca58ece1a4c))
+
 ## [0.8.4](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.3...agpod-mcp-v0.8.4) (2026-04-16)
 
 ## [0.8.3](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.2...agpod-mcp-v0.8.3) (2026-04-12)
