@@ -2,8 +2,8 @@
 //!
 //! Keywords: case server, tcp server, single writer, remote ready
 
+use crate::cli::{CaseCommand, StepCommand};
 use crate::client::CaseClient;
-use crate::commands::execute_command_json;
 use crate::config::CaseConfig;
 use crate::error::{CaseError, CaseResult};
 use crate::output;
@@ -23,7 +23,7 @@ const SLOW_SERVER_EXEC_WARN_MS: u128 = 1_000;
 pub struct CaseServer {
     listener_addr: String,
     base_client: CaseClient,
-    db_gate: Arc<Mutex<()>>,
+    write_gate: Arc<Mutex<()>>,
 }
 
 impl CaseServer {
@@ -42,7 +42,7 @@ impl CaseServer {
         Ok(Self {
             listener_addr: config.server_addr,
             base_client,
-            db_gate: Arc::new(Mutex::new(())),
+            write_gate: Arc::new(Mutex::new(())),
         })
     }
 
@@ -97,48 +97,58 @@ impl CaseServer {
     ) -> CaseResponse {
         let identity: RepoIdentity = request.repo.into();
         debug!(repo_id = %identity.repo_id, "handling case-server request");
-        let queued_at = Instant::now();
         let command_debug = format!("{:?}", request.command);
-        let _guard = match timeout(timeout_limit, self.db_gate.lock()).await {
-            Ok(guard) => guard,
-            Err(_) => {
-                warn!(
-                    repo_id = %identity.repo_id,
-                    wait_ms = timeout_limit.as_millis(),
-                    command = %command_debug,
-                    "case-server request timed out waiting on db gate"
-                );
-                return CaseResponse {
-                    result: output::error_json(
-                        "error",
-                        &format!(
-                            "case-server request timed out waiting for execution slot after {} ms",
-                            timeout_limit.as_millis()
-                        ),
-                        None,
-                    ),
-                };
-            }
-        };
-        let wait_elapsed = queued_at.elapsed();
-        if wait_elapsed.as_millis() >= SLOW_SERVER_WAIT_WARN_MS {
-            warn!(
-                repo_id = %identity.repo_id,
-                wait_ms = wait_elapsed.as_millis(),
-                command = %command_debug,
-                "case-server request waited on db gate"
-            );
-        }
         let client = self.base_client.clone_with_identity(identity);
-
         let exec_started = Instant::now();
-        let result = crate::commands::finish_json_value(
-            execute_command_json(&client, &request.command).await,
-            &client,
-            &request.command,
-            true,
-        )
-        .await;
+
+        let result = if command_requires_write_gate(&request.command) {
+            let queued_at = Instant::now();
+            let _guard = match timeout(timeout_limit, self.write_gate.lock()).await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    warn!(
+                        repo_id = %client.repo_id(),
+                        wait_ms = timeout_limit.as_millis(),
+                        command = %command_debug,
+                        "case-server request timed out waiting on write gate"
+                    );
+                    return CaseResponse {
+                        result: output::error_json(
+                            "error",
+                            &format!(
+                                "case-server request timed out waiting for execution slot after {} ms",
+                                timeout_limit.as_millis()
+                            ),
+                            None,
+                        ),
+                    };
+                }
+            };
+            let wait_elapsed = queued_at.elapsed();
+            if wait_elapsed.as_millis() >= SLOW_SERVER_WAIT_WARN_MS {
+                warn!(
+                    repo_id = %client.repo_id(),
+                    wait_ms = wait_elapsed.as_millis(),
+                    command = %command_debug,
+                    "case-server request waited on write gate"
+                );
+            }
+            crate::commands::finish_json_value(
+                crate::commands::execute_command_json(&client, &request.command).await,
+                &client,
+                &request.command,
+                true,
+            )
+            .await
+        } else {
+            crate::commands::finish_json_value(
+                crate::commands::execute_command_json(&client, &request.command).await,
+                &client,
+                &request.command,
+                true,
+            )
+            .await
+        };
         let exec_elapsed = exec_started.elapsed();
         if exec_elapsed.as_millis() >= SLOW_SERVER_EXEC_WARN_MS {
             warn!(
@@ -160,6 +170,31 @@ impl CaseServer {
         }
 
         CaseResponse { result }
+    }
+}
+
+fn command_requires_write_gate(command: &CaseCommand) -> bool {
+    match command {
+        CaseCommand::Current { .. }
+        | CaseCommand::Show { .. }
+        | CaseCommand::List { .. }
+        | CaseCommand::Recall { .. }
+        | CaseCommand::Context { .. } => false,
+        CaseCommand::Step { command } => matches!(
+            command,
+            StepCommand::Add { .. }
+                | StepCommand::Start { .. }
+                | StepCommand::Done { .. }
+                | StepCommand::Move { .. }
+                | StepCommand::Block { .. }
+                | StepCommand::Advance { .. }
+        ),
+        CaseCommand::Open { .. }
+        | CaseCommand::SessionRecord { .. }
+        | CaseCommand::Decide { .. }
+        | CaseCommand::Redirect { .. }
+        | CaseCommand::Close { .. }
+        | CaseCommand::Abandon { .. } => true,
     }
 }
 
@@ -346,12 +381,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_times_out_when_db_gate_is_held_too_long() {
+    async fn server_read_request_bypasses_write_gate() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let server = CaseServer::new(temp_config(&temp_dir))
             .await
             .expect("server should initialize");
-        let _guard = server.db_gate.lock().await;
+        let _guard = server.write_gate.lock().await;
 
         let request = CaseRequest {
             repo: repo_payload("repo-a", "/tmp/repo-a"),
@@ -361,6 +396,53 @@ mod tests {
         let started = Instant::now();
         let response = server
             .handle_request_with_timeout(request, Duration::from_millis(5))
+            .await;
+
+        assert_eq!(response.result["ok"].as_bool(), Some(false));
+        assert_eq!(
+            response.result["message"].as_str(),
+            Some("no open case in this repository")
+        );
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn server_write_request_still_times_out_when_write_gate_is_held() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let server = CaseServer::new(temp_config(&temp_dir))
+            .await
+            .expect("server should initialize");
+        let _guard = server.write_gate.lock().await;
+
+        let request = CaseRequest {
+            repo: repo_payload("repo-a", "/tmp/repo-a"),
+            command: CaseCommand::Current { state: true },
+        };
+
+        assert!(!command_requires_write_gate(&request.command));
+
+        let write_request = CaseRequest {
+            repo: repo_payload("repo-a", "/tmp/repo-a"),
+            command: CaseCommand::Open {
+                mode: crate::cli::OpenModeArg::New,
+                case_id: None,
+                goal: Some("goal".to_string()),
+                direction: Some("direction".to_string()),
+                goal_constraints: vec![],
+                constraints: vec![],
+                success_condition: None,
+                abort_condition: None,
+                how_to: vec![],
+                doc_about: vec![],
+                pitfalls_about: vec![],
+                known_patterns_for: vec![],
+                steps: vec![],
+            },
+        };
+
+        let started = Instant::now();
+        let response = server
+            .handle_request_with_timeout(write_request, Duration::from_millis(5))
             .await;
 
         assert_eq!(response.result["ok"].as_bool(), Some(false));

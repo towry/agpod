@@ -15,10 +15,12 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use surrealdb::engine::local::{Db, RocksDb};
 use surrealdb::Surreal;
+use tracing::warn;
 use uuid::Uuid;
 
 const DB_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const DB_LOCK_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const SLOW_QUERY_WARN_MS: u128 = 500;
 
 #[derive(Clone)]
 pub struct SharedDbHandle {
@@ -207,6 +209,7 @@ impl CaseClient {
     // ── Internal query helper ──
 
     async fn query_raw(&self, sql: &str, bindings: Value) -> CaseResult<Vec<Value>> {
+        let started = Instant::now();
         let mut response = self
             .db
             .query(sql)
@@ -217,6 +220,20 @@ impl CaseClient {
         let result: Vec<Value> = response
             .take(0)
             .map_err(|e| CaseError::DbQuery(format!("take(0): {e}")))?;
+
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= SLOW_QUERY_WARN_MS {
+            let first_line = sql
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or(sql);
+            warn!(
+                repo_id = %self.repo_id,
+                elapsed_ms = elapsed.as_millis(),
+                sql = first_line.trim(),
+                "case database query executed slowly"
+            );
+        }
 
         Ok(result)
     }
@@ -787,7 +804,7 @@ impl CaseClient {
         record_context: Option<&str>,
         record_files: &[String],
         started_step_id: Option<&str>,
-    ) -> CaseResult<()> {
+    ) -> CaseResult<Option<Entry>> {
         let now = Utc::now().to_rfc3339();
         let files_json =
             serde_json::to_string(record_files).map_err(|e| CaseError::Other(e.to_string()))?;
@@ -863,7 +880,19 @@ impl CaseClient {
             }),
         )
         .await?;
-        Ok(())
+        Ok(record_seq.map(|record_seq| Entry {
+            case_id: case_id.to_string(),
+            seq: record_seq,
+            entry_type: EntryType::Record,
+            kind: record_kind.map(str::to_string),
+            step_id: Some(completed_step_id.to_string()),
+            summary: record_summary.unwrap_or("").to_string(),
+            reason: Some(String::new()),
+            context: record_context.map(str::to_string),
+            files: record_files.to_vec(),
+            artifacts: vec![],
+            created_at: now,
+        }))
     }
 
     pub async fn get_entries(&self, case_id: &str) -> CaseResult<Vec<Entry>> {
@@ -886,9 +915,26 @@ impl CaseClient {
         Ok(results.first().and_then(parse_single_entry))
     }
 
-    pub async fn get_entry_count(&self, case_id: &str) -> CaseResult<u32> {
-        let entries = self.get_entries(case_id).await?;
-        Ok(entries.len() as u32)
+    pub async fn get_latest_relevant_entry_for_next_action(
+        &self,
+        case_id: &str,
+    ) -> CaseResult<Option<Entry>> {
+        let results = self
+            .query_raw(
+                "SELECT * FROM entry
+                 WHERE case_id = $case_id
+                   AND (
+                     entry_type != 'record'
+                     OR step_id = ''
+                     OR kind != 'note'
+                     OR summary != ''
+                   )
+                 ORDER BY seq DESC
+                 LIMIT 1",
+                json!({ "case_id": case_id }),
+            )
+            .await?;
+        Ok(results.first().and_then(parse_single_entry))
     }
 
     pub async fn get_step_count(&self, case_id: &str) -> CaseResult<u32> {

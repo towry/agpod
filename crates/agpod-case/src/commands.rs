@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 const CASE_SHOW_SPILL_CHAR_THRESHOLD: usize = 1_000;
 const SLOW_CURRENT_STAGE_WARN_MS: u128 = 1_000;
+const SLOW_MUTATION_STAGE_WARN_MS: u128 = 500;
 
 fn warn_if_current_stage_slow(case_id: Option<&str>, stage: &'static str, started: Instant) {
     let elapsed = started.elapsed();
@@ -54,12 +55,31 @@ fn warn_if_current_stage_slow(case_id: Option<&str>, stage: &'static str, starte
     }
 }
 
-async fn dispatch_event(client: &CaseClient, event: CaseDomainEvent) -> CaseDispatchReport {
+fn warn_if_mutation_stage_slow(case_id: Option<&str>, stage: &'static str, started: Instant) {
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() < SLOW_MUTATION_STAGE_WARN_MS {
+        return;
+    }
+
+    match case_id {
+        Some(case_id) => warn!(
+            case_id,
+            stage,
+            elapsed_ms = elapsed.as_millis(),
+            "case mutation stage executed slowly"
+        ),
+        None => warn!(
+            stage,
+            elapsed_ms = elapsed.as_millis(),
+            "case mutation stage executed slowly"
+        ),
+    }
+}
+
+fn dispatch_event(client: &CaseClient, event: CaseDomainEvent) -> CaseDispatchReport {
     let (dispatcher, mut report) = build_dispatcher(client);
     let envelope = CaseEventEnvelope::new(client, event);
-    let mut dispatched = dispatcher
-        .dispatch_with_timeout(&envelope, crate::CASE_REQUEST_TIMEOUT)
-        .await;
+    let mut dispatched = dispatcher.dispatch_in_background(envelope, crate::CASE_REQUEST_TIMEOUT);
     report.statuses.append(&mut dispatched.statuses);
     report
 }
@@ -97,11 +117,10 @@ fn build_dispatcher(client: &CaseClient) -> (CaseEventDispatcher, CaseDispatchRe
             Ok(None) => {}
             Err(error) => {
                 warn!(error = %error, "failed to initialize honcho sink");
-                report.statuses.push(CaseHookStatus {
-                    sink: "honcho".to_string(),
-                    ok: false,
-                    message: Some(error.to_string()),
-                });
+                report.statuses.push(CaseHookStatus::failed(
+                    "honcho".to_string(),
+                    Some(error.to_string()),
+                ));
             }
         }
     }
@@ -903,24 +922,21 @@ async fn maybe_rotate_case_for_redirect_limit(
                         case: closed_case,
                         summary: close_summary.clone(),
                     },
-                )
-                .await;
+                );
                 let note_dispatch = dispatch_event(
                     client,
                     CaseDomainEvent::RecordAppended {
                         case: rotated_case.clone(),
                         entry: rotation_note.clone(),
                     },
-                )
-                .await;
+                );
                 let open_dispatch = dispatch_event(
                     client,
                     CaseDomainEvent::CaseOpened {
                         case: rotated_case.clone(),
                         direction: rotated_direction.clone(),
                     },
-                )
-                .await;
+                );
 
                 let next = NextAction {
                     suggested_command: "step add".to_string(),
@@ -1004,24 +1020,21 @@ async fn maybe_rotate_case_for_redirect_limit(
             case: new_case.clone(),
             direction: new_dir.clone(),
         },
-    )
-    .await;
+    );
     let close_dispatch = dispatch_event(
         client,
         CaseDomainEvent::CaseClosed {
             case: closed_case,
             summary: close_summary.clone(),
         },
-    )
-    .await;
+    );
     let note_dispatch = dispatch_event(
         client,
         CaseDomainEvent::RecordAppended {
             case: new_case.clone(),
             entry: rotation_note.clone(),
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "step add".to_string(),
@@ -1079,8 +1092,8 @@ async fn generate_step_id(client: &CaseClient, case_id: &str) -> CaseResult<Stri
 
 /// Get next entry seq for a case.
 async fn next_entry_seq(client: &CaseClient, case_id: &str) -> CaseResult<u32> {
-    let count = client.get_entry_count(case_id).await?;
-    Ok(count + 1)
+    let latest = client.get_latest_entry(case_id).await?;
+    Ok(latest.map(|entry| entry.seq + 1).unwrap_or(1))
 }
 
 /// Get next session-record seq for the current repo/worktree scope.
@@ -1382,10 +1395,13 @@ async fn build_startup_context(
 }
 
 async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<serde_json::Value> {
+    let total_started = Instant::now();
+    let find_open_started = Instant::now();
     // Check no open case exists
     if let Some(existing) = client.find_open_case().await? {
         return Err(CaseError::RepoHasOpenCase(existing.id));
     }
+    warn_if_mutation_stage_slow(None, "open_find_open_case", find_open_started);
 
     match request.mode {
         OpenModeArg::New => {
@@ -1400,10 +1416,14 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
             let direction_constraints = parse_constraints(request.constraint_strs)?;
 
             let case_id = generate_case_id(client).await?;
+            let create_case_started = Instant::now();
             let case = client
                 .create_case(&case_id, goal, &goal_constraints)
                 .await?;
+            let mut opened_case = case.clone();
+            warn_if_mutation_stage_slow(Some(&case_id), "open_create_case", create_case_started);
 
+            let create_direction_started = Instant::now();
             let dir = client
                 .create_direction(
                     &case_id,
@@ -1416,18 +1436,26 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                     None,
                 )
                 .await?;
+            warn_if_mutation_stage_slow(
+                Some(&case_id),
+                "open_create_direction",
+                create_direction_started,
+            );
+            let dispatch_started = Instant::now();
             let dispatch = dispatch_event(
                 client,
                 CaseDomainEvent::CaseOpened {
-                    case: case.clone(),
+                    case: opened_case.clone(),
                     direction: dir.clone(),
                 },
-            )
-            .await;
+            );
+            warn_if_mutation_stage_slow(Some(&case_id), "open_dispatch_opened", dispatch_started);
 
+            let mut steps = Vec::with_capacity(initial_steps.len());
             for (index, step_spec) in initial_steps.iter().enumerate() {
+                let create_step_started = Instant::now();
                 let step_id = generate_step_id(client, &case_id).await?;
-                client
+                let mut step = client
                     .create_step(
                         &step_id,
                         &case_id,
@@ -1437,14 +1465,30 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                         step_spec.reason.as_deref(),
                     )
                     .await?;
+                warn_if_mutation_stage_slow(
+                    Some(&case_id),
+                    "open_create_step",
+                    create_step_started,
+                );
                 if step_spec.start {
-                    let open_case = client.get_case(&case_id).await?;
-                    activate_step(client, &open_case, &step_id).await?;
+                    let activate_started = Instant::now();
+                    client
+                        .update_step(&step_id, StepStatus::Active, None)
+                        .await?;
+                    client.update_case_step(&case_id, &step_id).await?;
+                    step.status = StepStatus::Active;
+                    step.updated_at = chrono::Utc::now().to_rfc3339();
+                    opened_case.current_step_id = Some(step_id.clone());
+                    opened_case.updated_at = step.updated_at.clone();
+                    warn_if_mutation_stage_slow(
+                        Some(&case_id),
+                        "open_activate_initial_step",
+                        activate_started,
+                    );
                 }
+                steps.push(step);
             }
 
-            let opened_case = client.get_case(&case_id).await?;
-            let steps = client.get_steps(&case_id, 1).await?;
             let (current_step, pending_steps) = split_steps(&steps);
             let entries_for_next: Vec<Entry> = Vec::new();
             let next = suggest_next(
@@ -1475,6 +1519,7 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                 value["startup_context_status"] = json!(startup_context.status);
             }
             append_dispatch_report(&mut value, &dispatch);
+            warn_if_mutation_stage_slow(Some(&case_id), "open_total", total_started);
             Ok(value)
         }
         OpenModeArg::Reopen => {
@@ -1553,8 +1598,7 @@ async fn cmd_open(client: &CaseClient, request: OpenRequest<'_>) -> CaseResult<s
                     direction: dir.clone(),
                     reopened_entry: reopened_entry.clone(),
                 },
-            )
-            .await;
+            );
 
             let mut value = json!({
                 "ok": true,
@@ -1834,8 +1878,7 @@ async fn cmd_session_record(
             session_record: session_record.clone(),
             linked_entry: linked_entry.clone(),
         },
-    )
-    .await;
+    );
     let mut result = json!({
         "ok": true,
         "session_record": session_record,
@@ -1930,8 +1973,7 @@ async fn cmd_decide(
             case: case.clone(),
             entry: entry.clone(),
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "step done".to_string(),
@@ -2007,8 +2049,7 @@ async fn cmd_redirect(
                     from_direction: prev_dir.clone(),
                     to_direction: existing_dir.clone(),
                 },
-            )
-            .await;
+            );
 
             let next = NextAction {
                 suggested_command: "step add".to_string(),
@@ -2089,8 +2130,7 @@ async fn cmd_redirect(
             to_direction: new_dir.clone(),
             entry: entry.clone(),
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "step add".to_string(),
@@ -2194,8 +2234,7 @@ async fn cmd_close(
             case: closed_case,
             summary: summary.to_string(),
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "open".to_string(),
@@ -2238,8 +2277,7 @@ async fn cmd_abandon(
             case: abandoned_case,
             summary: summary.to_string(),
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "open".to_string(),
@@ -2411,8 +2449,7 @@ async fn cmd_step_add(
             case: refreshed_case.clone(),
             step: step.clone(),
         },
-    )
-    .await;
+    );
 
     let next = if start {
         NextAction {
@@ -2471,8 +2508,7 @@ async fn cmd_step_start(
             case: refreshed_case.clone(),
             step: started_step,
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "session_record".to_string(),
@@ -2544,8 +2580,7 @@ async fn cmd_step_done(
             case: refreshed_case.clone(),
             step: done_step,
         },
-    )
-    .await;
+    );
     let (_, pending_steps) = split_steps(&steps);
 
     let next = if pending_steps.is_empty() {
@@ -2628,8 +2663,7 @@ async fn cmd_step_move(
             before_step_id: before_id.to_string(),
             steps: steps.clone(),
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "step start".to_string(),
@@ -2679,8 +2713,7 @@ async fn cmd_step_block(
             case: refreshed_case.clone(),
             step: blocked_step,
         },
-    )
-    .await;
+    );
 
     let next = NextAction {
         suggested_command: "step add".to_string(),
@@ -2795,7 +2828,7 @@ fn select_next_pending_step(
 }
 
 fn step_advance_next(
-    entries_before: &[Entry],
+    latest_relevant_entry_before: Option<&Entry>,
     pending_steps_after: &[Step],
     started_step: Option<&Step>,
 ) -> NextAction {
@@ -2811,17 +2844,7 @@ fn step_advance_next(
             why: "there are pending steps waiting to be started".to_string(),
         };
     }
-    if entries_before
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry.entry_type != EntryType::Record
-                || entry.step_id.is_none()
-                || entry.kind.as_deref() != Some("note")
-                || !entry.summary.is_empty()
-        })
-        .is_some_and(|entry| entry.entry_type == EntryType::Decision)
-    {
+    if latest_relevant_entry_before.is_some_and(|entry| entry.entry_type == EntryType::Decision) {
         return NextAction {
             suggested_command: "case_finish".to_string(),
             why: "all execution steps and decisions are in place".to_string(),
@@ -2841,13 +2864,28 @@ async fn cmd_step_advance(
     next_step_id: Option<&str>,
     next_step_auto: bool,
 ) -> CaseResult<serde_json::Value> {
+    let total_started = Instant::now();
+    let resolve_case_started = Instant::now();
     let case = resolve_case(client, case_id).await?;
+    warn_if_mutation_stage_slow(
+        Some(&case.id),
+        "step_advance_resolve_case",
+        resolve_case_started,
+    );
     ensure_open(&case)?;
+    let steps_before_started = Instant::now();
     let steps_before = client
         .get_steps(&case.id, case.current_direction_seq)
         .await?;
+    warn_if_mutation_stage_slow(
+        Some(&case.id),
+        "step_advance_get_steps_before",
+        steps_before_started,
+    );
     let completed_step = if let Some(step_id) = step_id {
+        let get_step_started = Instant::now();
         let step = client.get_step(step_id).await?;
+        warn_if_mutation_stage_slow(Some(&case.id), "step_advance_get_step", get_step_started);
         ensure_step_belongs_to_current_direction(&step, &case, step_id)?;
         step
     } else {
@@ -2892,14 +2930,30 @@ async fn cmd_step_advance(
 
     let started_step =
         select_next_pending_step(&steps_before, &completed_step, next_step_id, next_step_auto)?;
-    let entries_before = client.get_entries(&case.id).await?;
+    let latest_entry_started = Instant::now();
+    let latest_relevant_entry_before = client
+        .get_latest_relevant_entry_for_next_action(&case.id)
+        .await?;
+    warn_if_mutation_stage_slow(
+        Some(&case.id),
+        "step_advance_get_latest_relevant_entry",
+        latest_entry_started,
+    );
     let record_seq = if record.is_some() {
-        Some(next_entry_seq(client, &case.id).await?)
+        let next_seq_started = Instant::now();
+        let seq = next_entry_seq(client, &case.id).await?;
+        warn_if_mutation_stage_slow(
+            Some(&case.id),
+            "step_advance_next_entry_seq",
+            next_seq_started,
+        );
+        Some(seq)
     } else {
         None
     };
 
-    client
+    let advance_started = Instant::now();
+    let record_entry = client
         .advance_step(
             &case.id,
             case.current_direction_seq,
@@ -2912,11 +2966,33 @@ async fn cmd_step_advance(
             started_step.as_ref().map(|step| step.id.as_str()),
         )
         .await?;
+    warn_if_mutation_stage_slow(Some(&case.id), "step_advance_transaction", advance_started);
 
-    let refreshed_case = client.get_case(&case.id).await?;
-    let steps_after = client
-        .get_steps(&case.id, refreshed_case.current_direction_seq)
-        .await?;
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    let mut refreshed_case = case.clone();
+    refreshed_case.current_step_id = started_step.as_ref().map(|step| step.id.clone());
+    refreshed_case.updated_at = updated_at.clone();
+
+    let mut steps_after = steps_before.clone();
+    for step in &mut steps_after {
+        if step.id == completed_step.id {
+            step.status = StepStatus::Done;
+            step.reason = None;
+            step.updated_at = updated_at.clone();
+        } else if step.status == StepStatus::Active {
+            step.status = StepStatus::Pending;
+            step.reason = None;
+            step.updated_at = updated_at.clone();
+        }
+        if started_step
+            .as_ref()
+            .is_some_and(|started| step.id == started.id)
+        {
+            step.status = StepStatus::Active;
+            step.reason = None;
+            step.updated_at = updated_at.clone();
+        }
+    }
     let completed_step_after = steps_after
         .iter()
         .find(|step| step.id == completed_step.id)
@@ -2926,55 +3002,54 @@ async fn cmd_step_advance(
         .as_ref()
         .and_then(|started| steps_after.iter().find(|step| step.id == started.id))
         .cloned();
-    let record_entry = if let Some(record_seq) = record_seq {
-        client
-            .get_entries(&case.id)
-            .await?
-            .into_iter()
-            .find(|entry| entry.seq == record_seq)
-    } else {
-        None
-    };
-
     let (_, pending_steps_after) = split_steps(&steps_after);
     let next = step_advance_next(
-        &entries_before,
+        latest_relevant_entry_before.as_ref(),
         &pending_steps_after,
         started_step_after.as_ref(),
     );
     let mut dispatches = Vec::new();
     if let Some(entry) = record_entry.as_ref() {
-        dispatches.push(
-            dispatch_event(
-                client,
-                CaseDomainEvent::RecordAppended {
-                    case: refreshed_case.clone(),
-                    entry: entry.clone(),
-                },
-            )
-            .await,
+        let dispatch_record_started = Instant::now();
+        dispatches.push(dispatch_event(
+            client,
+            CaseDomainEvent::RecordAppended {
+                case: refreshed_case.clone(),
+                entry: entry.clone(),
+            },
+        ));
+        warn_if_mutation_stage_slow(
+            Some(&case.id),
+            "step_advance_dispatch_record",
+            dispatch_record_started,
         );
     }
-    dispatches.push(
-        dispatch_event(
-            client,
-            CaseDomainEvent::StepDone {
-                case: refreshed_case.clone(),
-                step: completed_step_after.clone(),
-            },
-        )
-        .await,
+    let dispatch_done_started = Instant::now();
+    dispatches.push(dispatch_event(
+        client,
+        CaseDomainEvent::StepDone {
+            case: refreshed_case.clone(),
+            step: completed_step_after.clone(),
+        },
+    ));
+    warn_if_mutation_stage_slow(
+        Some(&case.id),
+        "step_advance_dispatch_done",
+        dispatch_done_started,
     );
     if let Some(started_step_after) = started_step_after.as_ref() {
-        dispatches.push(
-            dispatch_event(
-                client,
-                CaseDomainEvent::StepStarted {
-                    case: refreshed_case.clone(),
-                    step: started_step_after.clone(),
-                },
-            )
-            .await,
+        let dispatch_started_started = Instant::now();
+        dispatches.push(dispatch_event(
+            client,
+            CaseDomainEvent::StepStarted {
+                case: refreshed_case.clone(),
+                step: started_step_after.clone(),
+            },
+        ));
+        warn_if_mutation_stage_slow(
+            Some(&case.id),
+            "step_advance_dispatch_started",
+            dispatch_started_started,
         );
     }
     let dispatch = merge_dispatch_reports(dispatches);
@@ -3000,6 +3075,7 @@ async fn cmd_step_advance(
         value["started_step"] = step_json_min(started_step_after);
     }
     append_dispatch_report(&mut value, &dispatch);
+    warn_if_mutation_stage_slow(Some(&case.id), "step_advance_total", total_started);
     Ok(value)
 }
 
@@ -3485,6 +3561,10 @@ fn suggest_next(
 mod tests {
     use super::*;
     use crate::config::DbConfig;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     use tempfile::TempDir;
 
     fn temp_db_config(temp_dir: &TempDir) -> DbConfig {
@@ -5762,6 +5842,90 @@ mod tests {
             .as_array()
             .expect("warnings should be present");
         assert!(!warnings.is_empty());
+        assert_eq!(
+            opened["hooks"]["statuses"][0]["state"].as_str(),
+            Some("failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn open_queues_honcho_sync_without_waiting_for_slow_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener addr should resolve");
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let server_count = request_count.clone();
+        let server_result_count = request_count.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.expect("request should arrive");
+                server_count.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf).await;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"id\":\"ok\"}",
+                    )
+                    .await
+                    .expect("response should write");
+            }
+
+            server_result_count.load(Ordering::SeqCst)
+        });
+
+        let temp_dir = TempDir::new().expect("temporary directory should be created");
+        let mut config = temp_db_config(&temp_dir);
+        config.honcho_enabled = true;
+        config.honcho_sync_enabled = true;
+        config.honcho_base_url = Some(format!("http://{addr}"));
+        config.honcho_workspace_id = Some("ws-test".to_string());
+        config.honcho_api_key = Some("test-key".to_string());
+        let client = CaseClient::new(
+            &config,
+            RepoIdentity {
+                repo_id: "aaaaaaaaaaaaaaaa".to_string(),
+                repo_label: "github.com/example/repo-a".to_string(),
+                worktree_id: "1111111111111111".to_string(),
+                worktree_root: "/tmp/repo-a".to_string(),
+            },
+        )
+        .await
+        .expect("client should initialize");
+
+        let started = std::time::Instant::now();
+        let opened = cmd_open_new(
+            &client,
+            "slow honcho queue",
+            "verify background hook dispatch",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .expect("case should open");
+
+        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+        assert_eq!(
+            opened["hooks"]["statuses"][0]["state"].as_str(),
+            Some("queued")
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if request_count.load(Ordering::SeqCst) >= 4 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("background honcho delivery should finish");
+        assert_eq!(server.await.expect("server should join"), 4);
     }
 
     #[tokio::test]

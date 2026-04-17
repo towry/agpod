@@ -11,9 +11,11 @@
 ## 当前原则
 
 - `case` 真相仅在本地
-- 外部系统只消费事件或回答查询
+- 外部系统只消费后台排队之事件或回答查询
 - `Honcho` 只是首个 adapter
 - 用户向配置以 `[case.plugins.<name>]` 为宜
+- hook 失败不得回滚本地 mutation
+- 同一 case 之后台事件按序出队，但仅属进程内 best-effort
 
 ## 推荐分层
 

@@ -40,7 +40,7 @@ api_key_env = "HONCHO_API_KEY"
 ## Honcho Fields
 
 - `enabled` — enable Honcho integration
-- `sync_enabled` — send qualifying case events to Honcho
+- `sync_enabled` — queue qualifying case events for background Honcho sync
 - `base_url` — Honcho API base URL
 - `workspace_id` — target Honcho workspace
 - `api_key` — raw API key stored directly in config
@@ -71,5 +71,7 @@ Environment variables still override file config:
 
 - If `case.plugins.honcho.enabled = false`, Honcho config is ignored.
 - If Honcho is enabled, missing `base_url`, `workspace_id`, and both `api_key` / API key env will fail fast.
+- Mutation responses report hook enqueue / init failures only; background delivery failures are logged by `agpod-case-server`.
+- Background sync is in-process best effort: delivery is queued per case in order while the process stays alive, not durably persisted across process exit.
 - `api_key` is supported for convenience, but environment variables remain safer when practical.
 - Some implementation-only fields are intentionally omitted from user-facing config docs.

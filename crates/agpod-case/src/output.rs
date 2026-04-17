@@ -166,13 +166,15 @@ fn render_text(value: &Value) {
     {
         for status in statuses {
             let sink = status.get("sink").and_then(|v| v.as_str()).unwrap_or("?");
-            let ok = status.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+            let state = status
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             let message = status.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            let label = if ok { "ok" } else { "failed" };
             if message.is_empty() {
-                println!("hook {sink}: {label}");
+                println!("hook {sink}: {state}");
             } else {
-                println!("hook {sink}: {label} ({message})");
+                println!("hook {sink}: {state} ({message})");
             }
         }
     }
