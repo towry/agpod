@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.5](https://github.com/towry/agpod/compare/agpod-case-v0.6.4...agpod-case-v0.6.5) (2026-04-17)
+
+
+### Bug Fixes
+
+* **case:** decouple hook dispatch from request path ([f786155](https://github.com/towry/agpod/commit/f786155c216669558a946181244c0c499a4820ab))
+* **case:** reset closed hook queue senders ([42ebcf6](https://github.com/towry/agpod/commit/42ebcf6d3691b3aa76c4b5e05c7c6b6e37e0a24c))
+
 ## [0.6.4](https://github.com/towry/agpod/compare/agpod-case-v0.6.3...agpod-case-v0.6.4) (2026-04-16)
 
 

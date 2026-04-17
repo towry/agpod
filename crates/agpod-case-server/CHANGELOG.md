@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.3.6](https://github.com/towry/agpod/compare/agpod-case-server-v0.3.5...agpod-case-server-v0.3.6) (2026-04-17)
+
 ## [0.3.5](https://github.com/towry/agpod/compare/agpod-case-server-v0.3.4...agpod-case-server-v0.3.5) (2026-04-16)
 
 ## [0.3.4](https://github.com/towry/agpod/compare/agpod-case-server-v0.3.3...agpod-case-server-v0.3.4) (2026-04-09)
