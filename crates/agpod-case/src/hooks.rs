@@ -434,6 +434,12 @@ mod tests {
         }
     }
 
+    fn sample_case_with_id(case_id: &str) -> Case {
+        let mut case = sample_case();
+        case.id = case_id.to_string();
+        case
+    }
+
     #[tokio::test]
     async fn dispatcher_collects_sink_failures_as_report() {
         let event = CaseEventEnvelope {
@@ -516,10 +522,11 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_can_queue_background_delivery_without_blocking_response() {
         let completions = Arc::new(AtomicUsize::new(0));
+        let case_id = "C-bg-queue";
         let event = CaseEventEnvelope {
-            event_id: "C-1:case_opened".to_string(),
-            case_id: "C-1".to_string(),
-            associated_case_id: Some("C-1".to_string()),
+            event_id: format!("{case_id}:case_opened"),
+            case_id: case_id.to_string(),
+            associated_case_id: Some(case_id.to_string()),
             repo_id: "repo".to_string(),
             repo_label: "repo".to_string(),
             worktree_id: "wt".to_string(),
@@ -527,9 +534,9 @@ mod tests {
             direction_seq: Some(1),
             occurred_at: "2026-03-25T00:00:00Z".to_string(),
             event: CaseDomainEvent::CaseOpened {
-                case: sample_case(),
+                case: sample_case_with_id(case_id),
                 direction: Direction {
-                    case_id: "C-1".to_string(),
+                    case_id: case_id.to_string(),
                     seq: 1,
                     summary: "dir".to_string(),
                     constraints: vec![],
@@ -559,13 +566,14 @@ mod tests {
     #[tokio::test]
     async fn dispatcher_preserves_event_order_per_case_when_queued() {
         let delivered = Arc::new(StdMutex::new(Vec::new()));
+        let case_id = "C-bg-order";
         let dispatcher = CaseEventDispatcher::new(vec![Arc::new(OrderingSink {
             delivered: delivered.clone(),
         })]);
         let case_opened = CaseEventEnvelope {
-            event_id: "C-1:case_opened".to_string(),
-            case_id: "C-1".to_string(),
-            associated_case_id: Some("C-1".to_string()),
+            event_id: format!("{case_id}:case_opened"),
+            case_id: case_id.to_string(),
+            associated_case_id: Some(case_id.to_string()),
             repo_id: "repo".to_string(),
             repo_label: "repo".to_string(),
             worktree_id: "wt".to_string(),
@@ -573,9 +581,9 @@ mod tests {
             direction_seq: Some(1),
             occurred_at: "2026-03-25T00:00:00Z".to_string(),
             event: CaseDomainEvent::CaseOpened {
-                case: sample_case(),
+                case: sample_case_with_id(case_id),
                 direction: Direction {
-                    case_id: "C-1".to_string(),
+                    case_id: case_id.to_string(),
                     seq: 1,
                     summary: "dir".to_string(),
                     constraints: vec![],
@@ -588,9 +596,9 @@ mod tests {
             },
         };
         let step_done = CaseEventEnvelope {
-            event_id: "C-1:step_done".to_string(),
-            case_id: "C-1".to_string(),
-            associated_case_id: Some("C-1".to_string()),
+            event_id: format!("{case_id}:step_done"),
+            case_id: case_id.to_string(),
+            associated_case_id: Some(case_id.to_string()),
             repo_id: "repo".to_string(),
             repo_label: "repo".to_string(),
             worktree_id: "wt".to_string(),
@@ -598,10 +606,10 @@ mod tests {
             direction_seq: Some(1),
             occurred_at: "2026-03-25T00:00:01Z".to_string(),
             event: CaseDomainEvent::StepDone {
-                case: sample_case(),
+                case: sample_case_with_id(case_id),
                 step: crate::types::Step {
-                    id: "C-1/S-1".to_string(),
-                    case_id: "C-1".to_string(),
+                    id: format!("{case_id}/S-1"),
+                    case_id: case_id.to_string(),
                     direction_seq: 1,
                     order_index: 1,
                     title: "step".to_string(),
