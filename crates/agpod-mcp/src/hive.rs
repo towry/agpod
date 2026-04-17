@@ -1476,12 +1476,16 @@ async fn wait_for_run_completion(
                         None
                     }
                     RunProcessState::IdentityMismatch => {
-                        let mismatch_started_at =
-                            identity_mismatch_since.get_or_insert_with(std::time::Instant::now);
-                        if mismatch_started_at.elapsed() < Duration::from_secs(2) {
+                        if run_result_path_exists(current_run) {
+                            identity_mismatch_since = None;
                             None
                         } else {
-                            Some(Ok(build_error_response(
+                            let mismatch_started_at =
+                                identity_mismatch_since.get_or_insert_with(std::time::Instant::now);
+                            if mismatch_started_at.elapsed() < Duration::from_secs(2) {
+                                None
+                            } else {
+                                Some(Ok(build_error_response(
                                 "identity_mismatch",
                                 format!(
                                     "hive agent `{agent_id}` run `{run_id}` may still be running, but its pid no longer matches the recorded launcher; manual inspection required"
@@ -1490,6 +1494,7 @@ async fn wait_for_run_completion(
                                 Some(agent),
                                 HiveResponseShape::Summary,
                             )))
+                            }
                         }
                     }
                 }
@@ -2247,6 +2252,10 @@ fn persisted_run_result_exists(run: &HiveRunState) -> bool {
         .ok()
         .and_then(|raw| serde_json::from_str::<HiveRunResultFile>(&raw).ok())
         .is_some()
+}
+
+fn run_result_path_exists(run: &HiveRunState) -> bool {
+    Path::new(&run.result_path).is_file()
 }
 
 fn active_run_marker_matches(run: &HiveRunState, pid: u32) -> bool {
@@ -3111,6 +3120,70 @@ mod tests {
                 .map(|object| object.keys().cloned().collect::<Vec<_>>()),
             Some(vec!["summary".to_string()])
         );
+    }
+
+    #[tokio::test]
+    async fn wait_for_run_completion_tolerates_identity_mismatch_while_result_file_appears() {
+        let temp = tempdir().expect("temp dir");
+        let runtime = sample_runtime(&temp);
+        let run_dir = temp.path().join("run-race");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let result_path = run_dir.join("result.json");
+        fs::write(&result_path, "{not-json").expect("seed malformed result");
+
+        let state = HiveSessionState {
+            version: HIVE_VERSION,
+            session_id: runtime.session_id.clone(),
+            session_name: runtime.session_name.clone(),
+            repo_root: runtime.repo_root.display().to_string(),
+            agent_limit: HIVE_AGENT_LIMIT,
+            updated_at_ms: 1,
+            agents: vec![HiveAgentState {
+                agent_id: "agent-01".to_string(),
+                worker_name: "worker".to_string(),
+                mode: "readonly".to_string(),
+                workdir: runtime.repo_root.display().to_string(),
+                conversation_session_id: None,
+                status: HiveAgentStatus::Running,
+                current_run: Some(HiveRunState {
+                    run_id: "run-1".to_string(),
+                    prompt_preview: "hello".to_string(),
+                    provider: "claude".to_string(),
+                    output_path: run_dir.join("output.log").display().to_string(),
+                    prompt_path: run_dir.join("prompt.txt").display().to_string(),
+                    result_path: result_path.display().to_string(),
+                    launcher_path: "/definitely/not/the/current/process/launcher.sh".to_string(),
+                    process_pid: Some(std::process::id()),
+                    resume_requested: false,
+                    provider_session_id: None,
+                    started_at_ms: 1,
+                    finished_at_ms: None,
+                    exit_code: None,
+                    termination_reason: None,
+                    provider_output: None,
+                }),
+                last_run: None,
+                last_used_at_ms: Some(1),
+            }],
+        };
+        runtime.save_state(&state).expect("seed state");
+
+        let result_path_for_task = result_path.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(200)).await;
+            fs::write(
+                result_path_for_task,
+                r#"{"provider":"claude","exit_code":0,"started_at_ms":1,"finished_at_ms":2}"#,
+            )
+            .expect("write valid result");
+        });
+
+        let raw =
+            wait_for_run_completion(&runtime, "agent-01", "run-1", Some(Duration::from_secs(5)))
+                .await
+                .expect("wait should complete once result file becomes valid");
+
+        assert_eq!(raw.get("state").and_then(Value::as_str), Some("completed"));
     }
 
     #[tokio::test]
