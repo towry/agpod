@@ -253,7 +253,10 @@ fn background_dispatch_sender(
         .lock()
         .expect("background dispatch queue registry should not be poisoned");
     if let Some(sender) = queues.get(queue_key) {
-        return sender.clone();
+        if !sender.is_closed() {
+            return sender.clone();
+        }
+        queues.remove(queue_key);
     }
 
     let (sender, receiver) = mpsc::unbounded_channel();
@@ -613,7 +616,21 @@ mod tests {
         dispatcher.dispatch_in_background(case_opened, Duration::from_secs(1));
         dispatcher.dispatch_in_background(step_done, Duration::from_secs(1));
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if delivered
+                    .lock()
+                    .expect("ordering sink buffer should not be poisoned")
+                    .len()
+                    == 2
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("queued events should drain in order");
         let delivered = delivered
             .lock()
             .expect("ordering sink buffer should not be poisoned")
