@@ -88,7 +88,7 @@ impl HiveToolResponse {
             .result
             .message
             .clone()
-            .unwrap_or_else(|| self.result.kind.clone());
+            .unwrap_or_else(|| crate::render_raw_text(&self.result.raw, &self.result.kind));
         let value = serde_json::to_value(&self).map_err(|err| {
             ErrorData::internal_error(format!("Failed to serialize MCP tool result: {err}"), None)
         })?;
