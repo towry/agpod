@@ -893,7 +893,7 @@ impl ToolResponse {
             .result
             .message
             .clone()
-            .unwrap_or_else(|| self.result.kind.clone());
+            .unwrap_or_else(|| render_raw_text(&self.result.raw, &self.result.kind));
         structured_tool_result(self, text, is_error)
     }
 }
@@ -1592,6 +1592,17 @@ pub struct CaseStepAdvanceRequest {
     /// Start the next pending step automatically by order.
     #[serde(default)]
     pub next_step_auto: bool,
+}
+
+/// Serialize a raw MCP tool payload into the human-readable `content[0].text`
+/// field. Falls back to the tool kind only when serialization itself fails.
+///
+/// Keywords: mcp content fallback, human readable payload, tool text, client compat
+pub(crate) fn render_raw_text(raw: &Map<String, Value>, kind: &str) -> String {
+    if raw.is_empty() {
+        return kind.to_string();
+    }
+    serde_json::to_string_pretty(raw).unwrap_or_else(|_| kind.to_string())
 }
 
 fn structured_tool_result<T>(
@@ -2405,6 +2416,39 @@ mod tests {
     }
 
     #[test]
+    fn tool_response_renders_raw_payload_when_message_is_missing() {
+        let raw = serde_json::json!({
+            "case_id": "C-123",
+            "state": "open",
+            "steps": {
+                "current": {
+                    "id": "C-123/S-001",
+                    "title": "inspect logs"
+                }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("raw payload should be object");
+        let expected = render_raw_text(&raw, "case_current");
+        let result = ToolResponse {
+            result: ToolEnvelope {
+                is_error: false,
+                kind: "case_current".to_string(),
+                case_id: Some("C-123".to_string()),
+                state: Some("open".to_string()),
+                message: None,
+                raw,
+            },
+        }
+        .into_call_tool_result()
+        .expect("tool response should serialize");
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content, vec![Content::text(expected)]);
+    }
+
+    #[test]
     fn hive_tool_response_sets_mcp_is_error() {
         let result = HiveToolResponse {
             result: HiveToolEnvelope::from_raw(
@@ -2425,5 +2469,28 @@ mod tests {
 
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result.content, vec![Content::text("limit reached")]);
+    }
+
+    #[test]
+    fn hive_tool_response_renders_raw_payload_when_message_is_missing() {
+        let raw = serde_json::json!({
+            "ok": true,
+            "state": "completed",
+            "session": { "id": "hive-q9" },
+            "agent": { "agent_id": "agent-01", "status": "completed" },
+            "provider_output": { "summary": "finished task" }
+        })
+        .as_object()
+        .cloned()
+        .expect("raw payload should be object");
+        let expected = render_raw_text(&raw, "hive");
+        let result = HiveToolResponse {
+            result: HiveToolEnvelope::from_raw(raw),
+        }
+        .into_call_tool_result()
+        .expect("tool response should serialize");
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.content, vec![Content::text(expected)]);
     }
 }
