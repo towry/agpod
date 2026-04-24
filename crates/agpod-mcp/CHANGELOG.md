@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.6](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.5...agpod-mcp-v0.8.6) (2026-04-24)
+
+
+### Bug Fixes
+
+* **agpod-mcp:** render raw tool content fallback ([f8d2d67](https://github.com/towry/agpod/commit/f8d2d67981a63acc2faabce5d6bedf40d692e61d))
+
 ## [0.8.5](https://github.com/towry/agpod/compare/agpod-mcp-v0.8.4...agpod-mcp-v0.8.5) (2026-04-17)
 
 

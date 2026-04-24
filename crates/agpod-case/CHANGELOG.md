@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/towry/agpod/compare/agpod-case-v0.6.5...agpod-case-v0.6.6) (2026-04-24)
+
+
+### Bug Fixes
+
+* **case:** isolate hook queue tests by case id ([bfc0687](https://github.com/towry/agpod/commit/bfc06879cc7e63e216570135eaa247b799fb3263))
+
 ## [0.6.5](https://github.com/towry/agpod/compare/agpod-case-v0.6.4...agpod-case-v0.6.5) (2026-04-17)
 
 
