@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MCP server for agpod case workflows"
+description = "DEPRECATED: MCP server for agpod case workflows. Superseded by the Go implementation under internal/agpod-mcp/ (same binary name). Slated for removal."
 
 [dependencies]
 agpod-case = { workspace = true }

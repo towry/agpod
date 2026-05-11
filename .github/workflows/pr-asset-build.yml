@@ -81,7 +81,7 @@ jobs:
               body: `🔄 Building assets for PR #${context.issue.number} (commit: \`${{ steps.get_pr_info.outputs.head_sha }}\`)...
 
               **Platforms**: macOS (ARM64 only)
-              **Binaries**: agpod, agpod-mcp, agpod-case-server
+              **Binaries**: agpod
               **Retention**: 1 day
               **Trigger**: ${context.actor}`
             });
@@ -103,24 +103,6 @@ jobs:
             bin_name: agpod
             extra_pr_tests: true
             smoke_test_command: ""
-          - build: macos-arm
-            os: macos-latest
-            rust: stable
-            target: aarch64-apple-darwin
-            bin_name: agpod-mcp
-            extra_pr_tests: false
-            smoke_test_command: |
-              npx -y @modelcontextprotocol/inspector --cli --transport stdio --method tools/list target/aarch64-apple-darwin/release/agpod-mcp > /tmp/agpod-mcp-tools-list.json
-              test -s /tmp/agpod-mcp-tools-list.json
-          - build: macos-arm
-            os: macos-latest
-            rust: stable
-            target: aarch64-apple-darwin
-            bin_name: agpod-case-server
-            extra_pr_tests: false
-            smoke_test_command: |
-              target/aarch64-apple-darwin/release/agpod-case-server --help >/tmp/agpod-case-server-help.txt
-              test -s /tmp/agpod-case-server-help.txt
     env:
       PR_NUMBER: ${{ needs.check_trigger.outputs.pr_number }}
       PR_HEAD_SHA: ${{ needs.check_trigger.outputs.pr_head_sha }}
@@ -282,7 +264,7 @@ jobs:
               **Retention**: 1 day
 
               📦 **Download artifacts:**
-              - [Workflow run artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`agpod-pr${prNumber}-macos-arm\`, \`agpod-mcp-pr${prNumber}-macos-arm\`, and \`agpod-case-server-pr${prNumber}-macos-arm\`
+              - [Workflow run artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - Look for \`agpod-pr${prNumber}-macos-arm\`
 
               > 💡 Click the links above, then scroll down to the "Artifacts" section to download.
               >
@@ -293,8 +275,6 @@ jobs:
               **Quick test after download:**
               \`\`\`bash
               ./agpod --help
-              ./agpod-mcp --help
-              ./agpod-case-server --help
               \`\`\``;
             } else {
               commentBody = `❌ **PR asset build failed**
