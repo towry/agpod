@@ -1,21 +1,22 @@
 name: agpod-mcp release (Go, macOS arm64)
 
-# Tag-driven release for the Go binary under internal/agpod-mcp.
+# Build & publish workflow for the Go binary under internal/agpod-mcp.
 # This binary supersedes the Rust crate at crates/agpod-mcp (deprecated; see
 # crates/agpod-mcp/DEPRECATED.md). The frozen Rust crate tags end at v0.8.6.
 #
-# The Go module is tracked by release-please (see release-please-config.json,
-# package `internal/agpod-mcp`); when its release PR merges, release-please
-# pushes an `agpod-mcp-v<version>` tag which triggers this workflow.
-#
-# Trigger:
-#   - Push of a tag matching `agpod-mcp-v*` (auto, via release-please).
-#   - Or run manually via the Actions UI; the tag input becomes the release name.
+# Invoked as `workflow_call` from release.yml right after release-please cuts a
+# release. `on: push: tags` is intentionally NOT used: release-please pushes
+# tags with GITHUB_TOKEN, and tag-push events from that token do not trigger
+# downstream workflows (GitHub anti-recursion). `workflow_dispatch` is kept for
+# manual recovery against an existing tag.
 
 on:
-  push:
-    tags:
-      - "agpod-mcp-v*"
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Existing tag to build and publish (e.g. agpod-mcp-v1.0.0)."
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag_name:
@@ -37,7 +38,7 @@ jobs:
       GOOS: darwin
       GOARCH: arm64
       CGO_ENABLED: "0"
-      TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+      TAG_NAME: ${{ inputs.tag_name }}
     steps:
       - uses: actions/checkout@v4
         with:
