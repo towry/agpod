@@ -1,12 +1,15 @@
 name: agpod-mcp release (Go, macOS arm64)
 
-# Manual / tag-driven release for the Go binary under internal/agpod-mcp.
+# Tag-driven release for the Go binary under internal/agpod-mcp.
 # This binary supersedes the Rust crate at crates/agpod-mcp (deprecated; see
-# crates/agpod-mcp/DEPRECATED.md). The Rust crate is no longer wired into
-# release-please, so its tags are frozen at v0.8.6.
+# crates/agpod-mcp/DEPRECATED.md). The frozen Rust crate tags end at v0.8.6.
+#
+# The Go module is tracked by release-please (see release-please-config.json,
+# package `internal/agpod-mcp`); when its release PR merges, release-please
+# pushes an `agpod-mcp-v<version>` tag which triggers this workflow.
 #
 # Trigger:
-#   - Push a tag matching `agpod-mcp-v*` (e.g. `agpod-mcp-v1.0.0`).
+#   - Push of a tag matching `agpod-mcp-v*` (auto, via release-please).
 #   - Or run manually via the Actions UI; the tag input becomes the release name.
 
 on:

@@ -35,6 +35,13 @@
       "package-name": "agpod-vcs-path",
       "changelog-path": "CHANGELOG.md",
       "component": "agpod-vcs-path"
+    },
+    "internal/agpod-mcp": {
+      "release-type": "go",
+      "package-name": "agpod-mcp",
+      "component": "agpod-mcp",
+      "include-component-in-tag": true,
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }
