@@ -1,0 +1,124 @@
+name: agpod-mcp release (Go, macOS arm64)
+
+# Manual / tag-driven release for the Go binary under internal/agpod-mcp.
+# This binary supersedes the Rust crate at crates/agpod-mcp (deprecated; see
+# crates/agpod-mcp/DEPRECATED.md). The Rust crate is no longer wired into
+# release-please, so its tags are frozen at v0.8.6.
+#
+# Trigger:
+#   - Push a tag matching `agpod-mcp-v*` (e.g. `agpod-mcp-v1.0.0`).
+#   - Or run manually via the Actions UI; the tag input becomes the release name.
+
+on:
+  push:
+    tags:
+      - "agpod-mcp-v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to publish (e.g. agpod-mcp-v1.0.0). The tag must already exist."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & publish darwin/arm64
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: internal/agpod-mcp
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+      CGO_ENABLED: "0"
+      TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG_NAME }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: internal/agpod-mcp/go.mod
+          cache: true
+          cache-dependency-path: internal/agpod-mcp/go.sum
+
+      - name: Verify fmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt issues:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        id: build
+        run: |
+          mkdir -p dist
+          VERSION="${TAG_NAME#agpod-mcp-}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BIN_NAME="agpod-mcp-${GOOS}-${GOARCH}"
+          go build \
+            -trimpath \
+            -ldflags="-s -w \
+              -X github.com/towry/agpod/internal/agpod-mcp/internal/buildinfo.Version=${VERSION} \
+              -X github.com/towry/agpod/internal/agpod-mcp/internal/buildinfo.Commit=${GITHUB_SHA} \
+              -X github.com/towry/agpod/internal/agpod-mcp/internal/buildinfo.Date=${DATE}" \
+            -o "dist/${BIN_NAME}" \
+            ./cmd/agpod-mcp
+          file "dist/${BIN_NAME}"
+          (cd dist && shasum -a 256 "${BIN_NAME}" > "${BIN_NAME}.sha256")
+          echo "bin_name=${BIN_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test the binary
+        run: |
+          BIN="dist/${{ steps.build.outputs.bin_name }}"
+          # Server refuses to start without HONCHO_API_KEY — the failure is the
+          # expected signal that the binary loaded and parsed config.
+          set +e
+          out=$("$BIN" 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          if [ $rc -eq 0 ]; then
+            echo "::error::Binary exited 0 without HONCHO_API_KEY; expected non-zero"
+            exit 1
+          fi
+          echo "$out" | grep -q "HONCHO_API_KEY must be set"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BIN_NAME: ${{ steps.build.outputs.bin_name }}
+        run: |
+          # Create release if it does not exist; --notes-from-tag falls back to
+          # the empty body if the tag has no message.
+          if ! gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG_NAME" \
+              --notes "Automated release for agpod-mcp Go binary (darwin/arm64)."
+          fi
+          gh release upload "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "dist/${BIN_NAME}" \
+            "dist/${BIN_NAME}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.bin_name }}
+          path: |
+            internal/agpod-mcp/dist/${{ steps.build.outputs.bin_name }}
+            internal/agpod-mcp/dist/${{ steps.build.outputs.bin_name }}.sha256
+          if-no-files-found: error

@@ -17,6 +17,7 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 - `crates/agpod-diff` — diff minimization for LLM context
 - `crates/agpod-case` — exploration case tracker (SurrealDB embedded, RocksDB backend)
 - `crates/agpod-vcs-path` — VCS branch/bookmark path formatting
+- `internal/agpod-mcp` — Go-based agent-memo MCP server (own `go.mod`, not in Cargo workspace)
 
 ## Code Conventions
 
@@ -25,6 +26,7 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 - Before creating new files: follow existing crate module structure (`cli.rs`, `commands.rs`, `client.rs`, `config.rs`, `error.rs`, `types.rs`)
 - Before adding or removing a crate: update `release-please-config.json` and `.release-please-manifest.json` accordingly
 - If modifying agpod-case client/queries: see `docs/agents-md/case-surrealdb.md`
+- If using the agent-memo MCP server (memo_* tools): see `docs/agents-md/agent-memo.md`
 
 ## CI
 

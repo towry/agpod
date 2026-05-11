@@ -1,0 +1,68 @@
+name: agpod-mcp (macOS arm64)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/agpod-mcp/**"
+      - ".github/workflows/agpod-mcp.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/agpod-mcp/**"
+      - ".github/workflows/agpod-mcp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & test
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: internal/agpod-mcp
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: internal/agpod-mcp/go.mod
+          cache: true
+          cache-dependency-path: internal/agpod-mcp/go.sum
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt issues:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build agpod-mcp (darwin/arm64)
+        run: |
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/towry/agpod/internal/agpod-mcp/internal/buildinfo.Version=${GITHUB_REF_NAME:-dev} -X github.com/towry/agpod/internal/agpod-mcp/internal/buildinfo.Commit=${GITHUB_SHA} -X github.com/towry/agpod/internal/agpod-mcp/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o dist/agpod-mcp-darwin-arm64 \
+            ./cmd/agpod-mcp
+          file dist/agpod-mcp-darwin-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agpod-mcp-darwin-arm64
+          path: internal/agpod-mcp/dist/agpod-mcp-darwin-arm64
+          if-no-files-found: error
