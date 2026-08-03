@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Fast wake-up repair for agpod orbs. Keep under ~10s; no installs.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+log() { printf '+ %s\n' "$*"; }
+
+# Re-apply lightweight PATH hooks if profiles exist (login shells also source these).
+if [ -f "${HOME}/.config/dots/orb-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.config/dots/orb-profile.sh"
+fi
+if [ -f "${HOME}/.config/agpod/rust-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.config/agpod/rust-profile.sh"
+fi
+if [ -f "${HOME}/.config/agpod/go-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.config/agpod/go-profile.sh"
+fi
+if [ -f "${HOME}/.config/agpod/honcho-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.config/agpod/honcho-profile.sh"
+fi
+
+# Nix daemon env when present (no install here).
+nix_profile_sh=/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+if [ -f "$nix_profile_sh" ]; then
+  # shellcheck disable=SC1090
+  source "$nix_profile_sh"
+fi
+
+# Ensure gitignored .env.sh helper still exists for smoke docs.
+if [ ! -f "${repo_root}/.env.sh" ]; then
+  log "Recreating missing .env.sh helper"
+  cat > "${repo_root}/.env.sh" <<'ENVSH_EOF'
+#!/usr/bin/env bash
+# Local smoke helper for agpod Honcho integration. Gitignored.
+# Only load HONCHO_* keys so sourcing this file never clobbers PATH.
+_agpod_load_honcho_keys() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      HONCHO_*=*)
+        local key="${line%%=*}"
+        local val="${line#*=}"
+        val="${val%$'\r'}"
+        if [[ "$val" == \"*\" ]]; then val="${val:1:${#val}-2}"; fi
+        if [[ "$val" == \'*\' ]]; then val="${val:1:${#val}-2}"; fi
+        export "$key=$val"
+        ;;
+    esac
+  done < "$file"
+}
+_agpod_load_honcho_keys "$HOME/.env"
+_agpod_load_honcho_keys "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/.env"
+unset -f _agpod_load_honcho_keys
+if [ -z "${HONCHO_WORKSPACE_ID:-}" ] && [ -n "${HONCHO_WORKSPACE:-}" ]; then
+  export HONCHO_WORKSPACE_ID="${HONCHO_WORKSPACE}"
+fi
+export HONCHO_BASE_URL="${HONCHO_BASE_URL:-https://api.honcho.dev}"
+export AGPOD_CASE_HONCHO_API_KEY_ENV="${AGPOD_CASE_HONCHO_API_KEY_ENV:-HONCHO_API_KEY}"
+ENVSH_EOF
+  chmod 600 "${repo_root}/.env.sh"
+fi
+
+# Quick toolchain presence check (do not install).
+for cmd in rustc cargo go; do
+  if command -v "$cmd" >/dev/null 2>&1; then
+    log "$cmd ok"
+  else
+    log "warning: $cmd not on PATH (run .agents/setup)"
+  fi
+done
+
+log "resume complete"

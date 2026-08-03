@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+# Fresh-orb bootstrap for agpod. Non-interactive and idempotent.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+log() { printf '+ %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# System packages needed to build Rust (rocksdb/surrealdb) and common tools
+# ---------------------------------------------------------------------------
+need_apt=0
+for pkg in build-essential pkg-config libssl-dev clang cmake curl ca-certificates git; do
+  if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+    need_apt=1
+    break
+  fi
+done
+if [ "$need_apt" -eq 1 ]; then
+  log "Installing system build packages"
+  sudo apt-get update -y
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    build-essential pkg-config libssl-dev clang cmake curl ca-certificates git
+else
+  log "System build packages already present"
+fi
+
+# libclang for bindgen/rocksdb
+export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir 2>/dev/null || true)}"
+if [ -z "${LIBCLANG_PATH:-}" ]; then
+  for candidate in /usr/lib/llvm-*/lib /usr/lib/x86_64-linux-gnu; do
+    if compgen -G "$candidate/libclang.so*" >/dev/null 2>&1; then
+      export LIBCLANG_PATH="$candidate"
+      break
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# Nix + dots orb workflow (merged; skip Nix install when already available)
+# ---------------------------------------------------------------------------
+nix_profile_sh=/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+if [ -f "$nix_profile_sh" ]; then
+  # shellcheck disable=SC1090
+  source "$nix_profile_sh"
+fi
+export PATH="/nix/var/nix/profiles/default/bin:${PATH:-}"
+
+if ! command -v nix >/dev/null 2>&1; then
+  log "Installing Determinate Nix"
+  curl --proto '=https' --tlsv1.2 -sSfL \
+    https://install.determinate.systems/nix \
+    | sh -s -- install --no-confirm
+  # shellcheck disable=SC1090
+  source "$nix_profile_sh"
+  export PATH="/nix/var/nix/profiles/default/bin:${PATH:-}"
+fi
+log "nix: $(nix --version)"
+
+dots_checkout="${HOME}/.cache/towry-dots"
+if [ ! -d "${dots_checkout}/.git" ]; then
+  log "Cloning towry/dots (authenticated gh, depth 1)"
+  gh repo clone towry/dots "$dots_checkout" -- --depth 1
+else
+  log "Updating towry/dots checkout"
+  git -C "$dots_checkout" pull --ff-only || log "dots pull skipped (non-ff); keeping existing checkout"
+fi
+
+orb_profiles_dir="${HOME}/.local/state/nix/profiles"
+profile="${orb_profiles_dir}/dots-orb-workflow"
+mkdir -p "$orb_profiles_dir"
+log "Building dots orb workflow profile"
+nix build --profile "$profile" "path:${dots_checkout}/nix/orb#default"
+export PATH="${profile}/bin:${PATH:-}"
+hash -r
+
+orb_profile_script="${HOME}/.config/dots/orb-profile.sh"
+mkdir -p "$(dirname "$orb_profile_script")"
+cat > "$orb_profile_script" <<'PROFILE_EOF'
+# Login shells may not source /etc/bashrc; pull in the Nix daemon env here.
+nix_daemon_sh="/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
+if [ -f "$nix_daemon_sh" ]; then
+  # shellcheck disable=SC1090
+  . "$nix_daemon_sh"
+fi
+case ":${PATH:-}:" in
+  *":/nix/var/nix/profiles/default/bin:"*) ;;
+  *) export PATH="/nix/var/nix/profiles/default/bin:${PATH:-}" ;;
+esac
+profile="$HOME/.local/state/nix/profiles/dots-orb-workflow"
+if [ -d "$profile/bin" ]; then
+  export PATH="$profile/bin:$PATH"
+fi
+unset profile nix_daemon_sh
+PROFILE_EOF
+
+profile_marker="# dots orb workflow profile"
+if ! grep -Fqx "$profile_marker" "${HOME}/.bash_profile" 2>/dev/null; then
+  cat >> "${HOME}/.bash_profile" <<'PROFILE_EOF'
+
+# dots orb workflow profile
+if [ -f "$HOME/.config/dots/orb-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.config/dots/orb-profile.sh"
+fi
+PROFILE_EOF
+fi
+
+# ---------------------------------------------------------------------------
+# Rust toolchain (stable) via rustup
+# ---------------------------------------------------------------------------
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export PATH="${CARGO_HOME}/bin:${PATH:-}"
+
+if ! command -v rustup >/dev/null 2>&1; then
+  log "Installing rustup"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile default --no-modify-path
+fi
+# shellcheck disable=SC1091
+source "${CARGO_HOME}/env" 2>/dev/null || true
+export PATH="${CARGO_HOME}/bin:${PATH:-}"
+
+log "Ensuring stable Rust + components"
+rustup toolchain install stable --profile default
+rustup default stable
+rustup component add rustfmt clippy
+
+log "rustc: $(rustc --version)"
+log "cargo: $(cargo --version)"
+
+rust_profile_script="${HOME}/.config/agpod/rust-profile.sh"
+mkdir -p "$(dirname "$rust_profile_script")"
+cat > "$rust_profile_script" <<'PROFILE_EOF'
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+if [ -f "$CARGO_HOME/env" ]; then
+  # shellcheck disable=SC1091
+  source "$CARGO_HOME/env"
+fi
+case ":$PATH:" in
+  *":$CARGO_HOME/bin:"*) ;;
+  *) export PATH="$CARGO_HOME/bin:$PATH" ;;
+esac
+# Help bindgen find libclang when building surrealdb/rocksdb.
+if [ -z "${LIBCLANG_PATH:-}" ]; then
+  for candidate in /usr/lib/llvm-*/lib /usr/lib/x86_64-linux-gnu; do
+    if compgen -G "$candidate/libclang.so*" >/dev/null 2>&1; then
+      export LIBCLANG_PATH="$candidate"
+      break
+    fi
+  done
+fi
+PROFILE_EOF
+
+rust_marker="# agpod rust toolchain profile"
+if ! grep -Fqx "$rust_marker" "${HOME}/.bash_profile" 2>/dev/null; then
+  cat >> "${HOME}/.bash_profile" <<'PROFILE_EOF'
+
+# agpod rust toolchain profile
+if [ -f "$HOME/.config/agpod/rust-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.config/agpod/rust-profile.sh"
+fi
+PROFILE_EOF
+fi
+
+# ---------------------------------------------------------------------------
+# Go toolchain (internal/agpod-mcp requires go 1.26+)
+# ---------------------------------------------------------------------------
+GO_VERSION="${AGPOD_GO_VERSION:-1.26.0}"
+GO_ROOT="${HOME}/.local/go"
+GO_INSTALL_DIR="${HOME}/.local"
+export PATH="${GO_ROOT}/bin:${HOME}/go/bin:${PATH:-}"
+
+need_go_install=0
+if ! command -v go >/dev/null 2>&1; then
+  need_go_install=1
+else
+  # Compare major.minor roughly; reinstall if below 1.26
+  current_go="$(go env GOVERSION 2>/dev/null || go version | awk '{print $3}')"
+  case "$current_go" in
+    go1.2[6-9]*|go1.[3-9]*|go[2-9]*) ;;
+    *) need_go_install=1 ;;
+  esac
+fi
+
+if [ "$need_go_install" -eq 1 ]; then
+  log "Installing Go ${GO_VERSION}"
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) go_arch=amd64 ;;
+    aarch64|arm64) go_arch=arm64 ;;
+    *) log "Unsupported arch for Go: $arch"; exit 1 ;;
+  esac
+  tmp_tgz="$(mktemp)"
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" -o "$tmp_tgz"
+  rm -rf "$GO_ROOT"
+  mkdir -p "$GO_INSTALL_DIR"
+  tar -C "$GO_INSTALL_DIR" -xzf "$tmp_tgz"
+  rm -f "$tmp_tgz"
+fi
+export PATH="${GO_ROOT}/bin:${HOME}/go/bin:${PATH:-}"
+log "go: $(go version)"
+
+go_profile_script="${HOME}/.config/agpod/go-profile.sh"
+cat > "$go_profile_script" <<'PROFILE_EOF'
+export GOROOT="${GOROOT:-$HOME/.local/go}"
+export GOPATH="${GOPATH:-$HOME/go}"
+case ":$PATH:" in
+  *":$GOROOT/bin:"*) ;;
+  *) export PATH="$GOROOT/bin:$PATH" ;;
+esac
+case ":$PATH:" in
+  *":$GOPATH/bin:"*) ;;
+  *) export PATH="$GOPATH/bin:$PATH" ;;
+esac
+PROFILE_EOF
+
+go_marker="# agpod go toolchain profile"
+if ! grep -Fqx "$go_marker" "${HOME}/.bash_profile" 2>/dev/null; then
+  cat >> "${HOME}/.bash_profile" <<'PROFILE_EOF'
+
+# agpod go toolchain profile
+if [ -f "$HOME/.config/agpod/go-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.config/agpod/go-profile.sh"
+fi
+PROFILE_EOF
+fi
+
+# ---------------------------------------------------------------------------
+# Honcho environment (HONCHO_* from orb secrets / ~/.env)
+# ---------------------------------------------------------------------------
+# Load only HONCHO_* keys so we never clobber PATH/toolchain vars from ~/.env.
+load_honcho_keys_from_file() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  # Parse KEY=VALUE lines for HONCHO_* only; strip optional surrounding quotes.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      HONCHO_*=*)
+        local key="${line%%=*}"
+        local val="${line#*=}"
+        val="${val%$'\r'}"
+        if [[ "$val" == \"*\" ]]; then val="${val:1:${#val}-2}"; fi
+        if [[ "$val" == \'*\' ]]; then val="${val:1:${#val}-2}"; fi
+        export "$key=$val"
+        ;;
+    esac
+  done < "$file"
+}
+
+load_honcho_keys_from_file "${HOME}/.env"
+load_honcho_keys_from_file "${repo_root}/.env"
+
+# Sandbox may provide HONCHO_WORKSPACE; agpod reads HONCHO_WORKSPACE_ID.
+if [ -z "${HONCHO_WORKSPACE_ID:-}" ] && [ -n "${HONCHO_WORKSPACE:-}" ]; then
+  export HONCHO_WORKSPACE_ID="${HONCHO_WORKSPACE}"
+fi
+if [ -z "${HONCHO_BASE_URL:-}" ]; then
+  export HONCHO_BASE_URL="https://api.honcho.dev"
+fi
+
+# Re-assert toolchain PATH after any env loading.
+export PATH="${CARGO_HOME}/bin:${GO_ROOT}/bin:${HOME}/go/bin:${profile}/bin:/nix/var/nix/profiles/default/bin:${PATH:-}"
+
+honcho_profile_script="${HOME}/.config/agpod/honcho-profile.sh"
+cat > "$honcho_profile_script" <<'PROFILE_EOF'
+# Load only HONCHO_* from Amp/orb env files (never source full ~/.env: it may reset PATH).
+load_honcho_keys_from_file() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      HONCHO_*=*)
+        local key="${line%%=*}"
+        local val="${line#*=}"
+        val="${val%$'\r'}"
+        if [[ "$val" == \"*\" ]]; then val="${val:1:${#val}-2}"; fi
+        if [[ "$val" == \'*\' ]]; then val="${val:1:${#val}-2}"; fi
+        export "$key=$val"
+        ;;
+    esac
+  done < "$file"
+}
+load_honcho_keys_from_file "$HOME/.env"
+# Map sandbox alias -> agpod config key.
+if [ -z "${HONCHO_WORKSPACE_ID:-}" ] && [ -n "${HONCHO_WORKSPACE:-}" ]; then
+  export HONCHO_WORKSPACE_ID="$HONCHO_WORKSPACE"
+fi
+if [ -z "${HONCHO_BASE_URL:-}" ]; then
+  export HONCHO_BASE_URL="https://api.honcho.dev"
+fi
+PROFILE_EOF
+
+honcho_marker="# agpod honcho env profile"
+if ! grep -Fqx "$honcho_marker" "${HOME}/.bash_profile" 2>/dev/null; then
+  cat >> "${HOME}/.bash_profile" <<'PROFILE_EOF'
+
+# agpod honcho env profile
+if [ -f "$HOME/.config/agpod/honcho-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.config/agpod/honcho-profile.sh"
+fi
+PROFILE_EOF
+fi
+
+# Repo-local .env.sh used by docs/smoke (gitignored). Regenerate when missing
+# or when it does not export the expected Honcho keys (never embed secret values).
+env_sh="${repo_root}/.env.sh"
+write_env_sh=0
+if [ ! -f "$env_sh" ]; then
+  write_env_sh=1
+elif ! grep -q 'HONCHO_WORKSPACE_ID' "$env_sh" 2>/dev/null; then
+  write_env_sh=1
+fi
+if [ "$write_env_sh" -eq 1 ]; then
+  log "Writing gitignored .env.sh helper (sources orb HONCHO_* envs)"
+  cat > "$env_sh" <<'ENVSH_EOF'
+#!/usr/bin/env bash
+# Local smoke helper for agpod Honcho integration. Gitignored.
+# Prefer ambient HONCHO_* from the orb (~/.env); do not hardcode secrets.
+# Only load HONCHO_* keys so sourcing this file never clobbers PATH.
+_agpod_load_honcho_keys() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      HONCHO_*=*)
+        local key="${line%%=*}"
+        local val="${line#*=}"
+        val="${val%$'\r'}"
+        if [[ "$val" == \"*\" ]]; then val="${val:1:${#val}-2}"; fi
+        if [[ "$val" == \'*\' ]]; then val="${val:1:${#val}-2}"; fi
+        export "$key=$val"
+        ;;
+    esac
+  done < "$file"
+}
+_agpod_load_honcho_keys "$HOME/.env"
+_agpod_load_honcho_keys "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/.env"
+unset -f _agpod_load_honcho_keys
+
+# agpod reads HONCHO_WORKSPACE_ID; some orbs inject HONCHO_WORKSPACE.
+if [ -z "${HONCHO_WORKSPACE_ID:-}" ] && [ -n "${HONCHO_WORKSPACE:-}" ]; then
+  export HONCHO_WORKSPACE_ID="${HONCHO_WORKSPACE}"
+fi
+export HONCHO_BASE_URL="${HONCHO_BASE_URL:-https://api.honcho.dev}"
+
+# Optional convenience toggles for smoke (callers may override).
+export AGPOD_CASE_HONCHO_API_KEY_ENV="${AGPOD_CASE_HONCHO_API_KEY_ENV:-HONCHO_API_KEY}"
+ENVSH_EOF
+  chmod 600 "$env_sh"
+fi
+
+# ---------------------------------------------------------------------------
+# Fetch Rust/Go deps (no full compile — keeps setup reasonably fast)
+# ---------------------------------------------------------------------------
+log "cargo fetch"
+cargo fetch --locked 2>/dev/null || cargo fetch
+
+if [ -f "${repo_root}/internal/agpod-mcp/go.mod" ]; then
+  log "go mod download (internal/agpod-mcp)"
+  (cd "${repo_root}/internal/agpod-mcp" && go mod download)
+fi
+
+# ---------------------------------------------------------------------------
+# Orb agent guidance (Honcho + toolchain notes)
+# ---------------------------------------------------------------------------
+amp_agents="${HOME}/.config/amp/AGENTS.md"
+mkdir -p "$(dirname "$amp_agents")"
+marker_begin="<!-- agpod-orb-setup:begin -->"
+marker_end="<!-- agpod-orb-setup:end -->"
+guidance=$(cat <<'EOF'
+<!-- agpod-orb-setup:begin -->
+# agpod orb notes
+
+- Toolchains: Rust stable (`cargo`/`rustc` via rustup), Go 1.26+ (`go` under `~/.local/go`).
+- Dots workflow tools (`just`, `uv`, `shellcheck`, …) come from the `dots-orb-workflow` Nix profile.
+- Build: `cargo build -p agpod -p agpod-mcp -p agpod-case-server`
+- Test: `cargo test` (or `cargo test -p <crate>`)
+- Honcho: secrets arrive as `HONCHO_*` (typically `HONCHO_API_KEY`, and `HONCHO_WORKSPACE` or `HONCHO_WORKSPACE_ID`). `HONCHO_WORKSPACE` is aliased to `HONCHO_WORKSPACE_ID`. Default API base is `https://api.honcho.dev`.
+- For Honcho smoke: `source .env.sh` then enable with `AGPOD_CASE_HONCHO_ENABLED=true` / `AGPOD_CASE_HONCHO_SYNC_ENABLED=true` (see `.agents/docs/honcho-smoke-test.md`).
+- Do not print `HONCHO_*` or other secret values.
+<!-- agpod-orb-setup:end -->
+EOF
+)
+if [ -f "$amp_agents" ] && grep -q "$marker_begin" "$amp_agents"; then
+  # Replace existing guided block in place.
+  tmp="$(mktemp)"
+  awk -v begin="$marker_begin" -v end="$marker_end" -v repl="$guidance" '
+    $0 == begin { print repl; skip=1; next }
+    $0 == end { skip=0; next }
+    !skip { print }
+  ' "$amp_agents" > "$tmp"
+  mv "$tmp" "$amp_agents"
+else
+  printf '\n%s\n' "$guidance" >> "$amp_agents"
+fi
+
+log "Setup complete"
+log "Verify markers: rustc=$(command -v rustc) go=$(command -v go) just=$(command -v just || true) nix=$(command -v nix)"
+if [ -n "${HONCHO_API_KEY:-}" ]; then
+  log "HONCHO_API_KEY is set"
+else
+  log "HONCHO_API_KEY is not set (Honcho smoke will need it)"
+fi
+if [ -n "${HONCHO_WORKSPACE_ID:-}" ]; then
+  log "HONCHO_WORKSPACE_ID is set"
+else
+  log "HONCHO_WORKSPACE_ID is not set"
+fi
