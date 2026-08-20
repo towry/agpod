@@ -12,6 +12,10 @@ if [ -f "${HOME}/.config/dots/orb-profile.sh" ]; then
   # shellcheck disable=SC1091
   source "${HOME}/.config/dots/orb-profile.sh"
 fi
+if [ -f "${HOME}/.config/agpod/nix-profile.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.config/agpod/nix-profile.sh"
+fi
 if [ -f "${HOME}/.config/agpod/rust-profile.sh" ]; then
   # shellcheck disable=SC1091
   source "${HOME}/.config/agpod/rust-profile.sh"
