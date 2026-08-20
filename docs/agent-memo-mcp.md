@@ -3,9 +3,7 @@
 Go MCP server that lets agents persist short facts to a Honcho v3 backend
 and retrieve them later. Source: `internal/agpod-mcp/`.
 
-Decoupled from the Rust `agpod-case` crate. Recommended workspace:
-`agpod-memo` (keep it distinct from any `agpod-case` workspace). Session
-namespace: `memo_<repo_id>`.
+Recommended Honcho workspace: `agpod-memo`. Session namespace: `memo_<repo_id>`.
 
 ## Build
 
@@ -14,6 +12,9 @@ cd internal/agpod-mcp
 go build ./cmd/agpod-mcp
 go test ./...
 ```
+
+Remote agents: `AGPOD_MEMO_LISTEN=0.0.0.0:8742 AGPOD_MEMO_TOKEN=... ./agpod-mcp`,
+then point the MCP client at `http://<host>:8742/mcp`.
 
 ## Environment
 
@@ -26,9 +27,10 @@ go test ./...
 | `AGPOD_MEMO_REPO_ROOT` | no | cwd | Used to derive `repo_id` from `git remote`. |
 | `AGPOD_MEMO_LOG_LEVEL` | no | `info` | Logs go to stderr; stdout is MCP. |
 | `AGPOD_MEMO_READONLY` | no | `false` | Truthy values hide `note` and `forget`. |
+| `AGPOD_MEMO_LISTEN` | no | — | If set (e.g. `127.0.0.1:8742`), serve Streamable HTTP instead of stdio. |
+| `AGPOD_MEMO_TOKEN` | no | — | If set, HTTP requires `Authorization: Bearer`. |
 
-`repo_id` is `hex(sha256("v1:" + normalized_remote_url))[:16]` — the same
-algorithm as `crates/agpod-case/src/repo_id.rs`. Session id is `memo_<repo_id>`.
+`repo_id` is `hex(sha256("v1:" + normalized_remote_url))[:16]`. Session id is `memo_<repo_id>`.
 
 ## Tools
 

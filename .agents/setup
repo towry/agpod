@@ -350,8 +350,6 @@ if [ -z "${HONCHO_WORKSPACE_ID:-}" ] && [ -n "${HONCHO_WORKSPACE:-}" ]; then
 fi
 export HONCHO_BASE_URL="${HONCHO_BASE_URL:-https://api.honcho.dev}"
 
-# Optional convenience toggles for smoke (callers may override).
-export AGPOD_CASE_HONCHO_API_KEY_ENV="${AGPOD_CASE_HONCHO_API_KEY_ENV:-HONCHO_API_KEY}"
 ENVSH_EOF
   chmod 600 "$env_sh"
 fi
@@ -380,10 +378,10 @@ guidance=$(cat <<'EOF'
 
 - Toolchains: Rust stable (`cargo`/`rustc` via rustup), Go 1.26+ (`go` under `~/.local/go`).
 - Dots workflow tools (`just`, `uv`, `shellcheck`, …) come from the `dots-orb-workflow` Nix profile.
-- Build: `cargo build -p agpod -p agpod-mcp -p agpod-case-server`
-- Test: `cargo test` (or `cargo test -p <crate>`)
+- Build: `cargo build -p agpod`; Go MCP: `cd internal/agpod-mcp && go build -o /tmp/agpod-mcp ./cmd/agpod-mcp`
+- Test: `cargo test` (or `cargo test -p <crate>`); `cd internal/agpod-mcp && go test ./...`
 - Honcho: secrets arrive as `HONCHO_*` (typically `HONCHO_API_KEY`, and `HONCHO_WORKSPACE` or `HONCHO_WORKSPACE_ID`). `HONCHO_WORKSPACE` is aliased to `HONCHO_WORKSPACE_ID`. Default API base is `https://api.honcho.dev`.
-- For Honcho smoke: `source .env.sh` then enable with `AGPOD_CASE_HONCHO_ENABLED=true` / `AGPOD_CASE_HONCHO_SYNC_ENABLED=true` (see `.agents/docs/honcho-smoke-test.md`).
+- For memo MCP smoke: `source .env.sh` then `HONCHO_API_KEY=... HONCHO_WORKSPACE_ID=... /tmp/agpod-mcp` over stdio, or set `AGPOD_MEMO_LISTEN` for HTTP.
 - Do not print `HONCHO_*` or other secret values.
 <!-- agpod-orb-setup:end -->
 EOF

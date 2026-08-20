@@ -15,7 +15,6 @@ name = "agpod"
 path = "src/main.rs"
 
 [dependencies]
-agpod-case = { workspace = true }
 agpod-core = { workspace = true }
 agpod-diff = { workspace = true }
 agpod-vcs-path = { workspace = true }

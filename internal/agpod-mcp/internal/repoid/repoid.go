@@ -1,5 +1,5 @@
 // Package repoid derives a stable repository identity from the git remote URL.
-// Algorithm mirrors crates/agpod-case/src/repo_id.rs so values match across tools.
+// repo_id = hex(sha256("v1:" + normalized_remote_url))[:16]
 //
 // Keywords: repo-id, repository identity, git remote, normalize url
 package repoid

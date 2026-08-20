@@ -69,7 +69,10 @@ func (m *honchoMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.handleCreateConclusions(w, body)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/conclusions/query"):
 		m.handleQueryConclusions(w)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/conclusions/list"):
+		m.handleListConclusions(w)
 	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/conclusions/"):
+		m.handleDeleteConclusion(r.URL.Path)
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chat"):
 		content := m.chatContent
@@ -189,6 +192,31 @@ func (m *honchoMock) handleCreateConclusions(w http.ResponseWriter, body []byte)
 	}
 	m.mu.Unlock()
 	writeJSON(w, out)
+}
+
+func (m *honchoMock) handleListConclusions(w http.ResponseWriter) {
+	m.mu.Lock()
+	items := make([]honcho.Conclusion, 0, len(m.conclusions))
+	for _, c := range m.conclusions {
+		if c != nil {
+			items = append(items, *c)
+		}
+	}
+	m.mu.Unlock()
+	writeJSON(w, honcho.PageConclusion{Items: items, Total: len(items), Page: 1, Size: len(items), Pages: 1})
+}
+
+func (m *honchoMock) handleDeleteConclusion(path string) {
+	id := path[strings.LastIndex(path, "/")+1:]
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := m.conclusions[:0]
+	for _, c := range m.conclusions {
+		if c != nil && c.ID != id {
+			out = append(out, c)
+		}
+	}
+	m.conclusions = out
 }
 
 func (m *honchoMock) handleQueryConclusions(w http.ResponseWriter) {
@@ -349,8 +377,8 @@ func TestFindSearchMergesAndRanksCueOverlap(t *testing.T) {
 		t.Fatalf("note nix: %v", err)
 	}
 	_, err = store.Note(ctx, NoteInput{
-		Content: "SurrealDB case store uses embedded RocksDB in production.",
-		Cues:    []string{"case db backend"},
+		Content: "Honcho message metadata must be flat; drop empty arrays before send.",
+		Cues:    []string{"honcho metadata 扁平"},
 	})
 	if err != nil {
 		t.Fatalf("note db: %v", err)
@@ -600,5 +628,32 @@ func TestListLiveEntriesPagesPast100(t *testing.T) {
 	}
 	if fr.Hits[0].ID != oldest.ID {
 		t.Fatalf("want oldest %s, got %+v", oldest.ID, fr.Hits[0])
+	}
+}
+
+func TestForgetDeletesConclusionByContent(t *testing.T) {
+	mock, cli := newHonchoMock(t)
+	store := newTestStore(t, cli)
+	ctx := context.Background()
+	res, err := store.Note(ctx, NoteInput{Content: "forget me please", Cues: []string{"forget me"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a failed metadata patch: strip conclusion_id from the message.
+	mock.mu.Lock()
+	var meta map[string]any
+	_ = json.Unmarshal(mock.messages[0].Metadata, &meta)
+	delete(meta, "conclusion_id")
+	raw, _ := json.Marshal(meta)
+	mock.messages[0].Metadata = raw
+	mock.mu.Unlock()
+
+	if err := store.Forget(ctx, ForgetInput{ID: res.ID}); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.conclusions) != 0 {
+		t.Fatalf("leftover conclusions: %+v", mock.conclusions)
 	}
 }

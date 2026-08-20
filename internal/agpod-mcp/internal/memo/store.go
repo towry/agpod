@@ -321,25 +321,7 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 			add(e, "conclusion")
 			continue
 		}
-		// Conclusion hit without a live message: still surface the clean body.
-		synthetic := entry{
-			Content:   c.Content,
-			CreatedAt: c.CreatedAt,
-			Status:    statusLive,
-			EntryID:   "", // unknown
-		}
-		// Use content as a temporary key so duplicates collapse.
-		key := "content:" + normalizeKey(c.Content)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = len(out)
-		out = append(out, ranked{
-			e:       synthetic,
-			source:  "conclusion",
-			overlap: cueOverlap(query, ExtractTokens(c.Content)),
-			order:   len(out),
-		})
+		// Retired or foreign conclusions have no live message; drop them.
 	}
 	for i := range msgs {
 		e, decErr := decodeEntry(&msgs[i])
@@ -580,10 +562,8 @@ func (s *Store) Forget(ctx context.Context, in ForgetInput) error {
 	if err != nil {
 		return err
 	}
-	if e.ConclusionID != "" {
-		if delErr := s.cli.DeleteConclusion(ctx, s.workspaceID, e.ConclusionID); delErr != nil {
-			return fmt.Errorf("delete conclusion: %w", delErr)
-		}
+	if err := s.deleteConclusionsFor(ctx, e); err != nil {
+		return err
 	}
 	e.Status = statusRetired
 	meta, err := entryMetadata(e)
@@ -594,6 +574,47 @@ func (s *Store) Forget(ctx context.Context, in ForgetInput) error {
 		Metadata: meta,
 	}); err != nil {
 		return fmt.Errorf("mark retired: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) deleteConclusionsFor(ctx context.Context, e entry) error {
+	seen := map[string]struct{}{}
+	if e.ConclusionID != "" {
+		if err := s.cli.DeleteConclusion(ctx, s.workspaceID, e.ConclusionID); err != nil {
+			return fmt.Errorf("delete conclusion: %w", err)
+		}
+		seen[e.ConclusionID] = struct{}{}
+	}
+	sid := s.SessionID()
+	page, err := s.cli.ListConclusions(ctx, s.workspaceID, &honcho.ConclusionGet{
+		Filters: map[string]any{
+			"session_id":  sid,
+			"observer_id": s.peerID,
+			"observed_id": s.peerID,
+		},
+	}, &honcho.ListConclusionsOptions{Size: 100, Reverse: true})
+	if err != nil {
+		if e.ConclusionID != "" {
+			return nil // already deleted the known id
+		}
+		return fmt.Errorf("list conclusions to forget: %w", err)
+	}
+	if page == nil {
+		return nil
+	}
+	want := normalizeKey(e.Content)
+	for i := range page.Items {
+		c := page.Items[i]
+		if _, ok := seen[c.ID]; ok {
+			continue
+		}
+		if normalizeKey(c.Content) != want {
+			continue
+		}
+		if err := s.cli.DeleteConclusion(ctx, s.workspaceID, c.ID); err != nil {
+			return fmt.Errorf("delete leftover conclusion: %w", err)
+		}
 	}
 	return nil
 }

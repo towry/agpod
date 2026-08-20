@@ -43,6 +43,8 @@ func (m *honchoMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.createConclusions(w, body)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/conclusions/query"):
 		m.queryConclusions(w)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/conclusions/list"):
+		m.listConclusions(w)
 	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/conclusions/"):
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chat"):
@@ -116,6 +118,18 @@ func (m *honchoMock) createConclusions(w http.ResponseWriter, body []byte) {
 	}
 	m.mu.Unlock()
 	writeJSON(w, out)
+}
+
+func (m *honchoMock) listConclusions(w http.ResponseWriter) {
+	m.mu.Lock()
+	items := make([]honcho.Conclusion, 0, len(m.conclusions))
+	for _, c := range m.conclusions {
+		if c != nil {
+			items = append(items, *c)
+		}
+	}
+	m.mu.Unlock()
+	writeJSON(w, honcho.PageConclusion{Items: items, Total: len(items), Page: 1, Size: len(items), Pages: 1})
 }
 
 func (m *honchoMock) queryConclusions(w http.ResponseWriter) {

@@ -14,6 +14,8 @@ const (
 	EnvPeerID            = "AGPOD_MEMO_PEER_ID"
 	EnvRepoRoot          = "AGPOD_MEMO_REPO_ROOT"
 	EnvReadonly          = "AGPOD_MEMO_READONLY"
+	EnvListen            = "AGPOD_MEMO_LISTEN"
+	EnvToken             = "AGPOD_MEMO_TOKEN"
 
 	DefaultBaseURL = "https://api.honcho.dev"
 	DefaultPeerID  = "agpod-agent"
@@ -25,8 +27,12 @@ type Config struct {
 	HonchoWorkspaceID string
 	PeerID            string
 	RepoRoot          string
-	// Readonly disables note and forget. find is always exposed.
+	// Readonly disables note and forget. ask_note is always exposed.
 	Readonly bool
+	// Listen, if set, serves Streamable HTTP instead of stdio.
+	Listen string
+	// Token, if set, requires Authorization: Bearer on HTTP.
+	Token string
 }
 
 func FromEnv() (Config, error) {
@@ -36,6 +42,8 @@ func FromEnv() (Config, error) {
 		HonchoWorkspaceID: strings.TrimSpace(os.Getenv(EnvHonchoWorkspaceID)),
 		PeerID:            strings.TrimSpace(os.Getenv(EnvPeerID)),
 		RepoRoot:          strings.TrimSpace(os.Getenv(EnvRepoRoot)),
+		Listen:            strings.TrimSpace(os.Getenv(EnvListen)),
+		Token:             strings.TrimSpace(os.Getenv(EnvToken)),
 	}
 	if cfg.HonchoBaseURL == "" {
 		cfg.HonchoBaseURL = DefaultBaseURL

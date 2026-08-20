@@ -66,8 +66,8 @@ func TestLiveAgentScenarios(t *testing.T) {
 			Cues:    []string{"login shell 没有 nix", "nix not on PATH"},
 		},
 		{
-			Content: "agent-memo 与 agpod-case 共用 Honcho 时必须分 session：memo 用 memo_<repo_id>，case 用 case id，find 默认不搜 case 事件。",
-			Cues:    []string{"memo session 隔离", "case honcho 混在一起"},
+			Content: "agent-memo 用独立 Honcho workspace 和 session id memo_<repo_id>，不要和其他产品共用 session。",
+			Cues:    []string{"memo session 隔离", "honcho session 混在一起"},
 		},
 		{
 			Content: "Honcho conclusions 没有自定义 metadata，也不能改 status；forget 只能 DELETE conclusion，再把 message metadata.status 标 retired。",
@@ -78,12 +78,12 @@ func TestLiveAgentScenarios(t *testing.T) {
 			Cues:    []string{"cues 放哪", "metadata 不能搜"},
 		},
 		{
-			Content: "SurrealDB case store 在测试里不能用 RocksDB：并行测试会挂，改用 mem backend。",
-			Cues:    []string{"case db 测试挂", "rocksdb hang tests"},
+			Content: "Go memo 单测用 httptest mock Honcho，不要打真实网络；live 测试才打 agpod-dev workspace。",
+			Cues:    []string{"memo 单测 mock", "live 才打 honcho"},
 		},
 		{
-			Content: "agpod-mcp 的 Go 二进制会自动拉起 sibling agpod-case-server；MCP smoke 前要先杀掉占用 127.0.0.1:6142 的旧进程。",
-			Cues:    []string{"stale case-server", "6142 被占用"},
+			Content: "远程 memo MCP 用 AGPOD_MEMO_LISTEN 开 Streamable HTTP；非 loopback 必须设 AGPOD_MEMO_TOKEN。",
+			Cues:    []string{"AGPOD_MEMO_LISTEN", "8742 被占用"},
 		},
 		{
 			Content: "dots orb bootstrap 现在由 towry/dots 的 nix/orb/bootstrap-workflow.sh 负责，不要再内联 8 月 gist。",
@@ -98,8 +98,8 @@ func TestLiveAgentScenarios(t *testing.T) {
 			Cues:    []string{"wake reinstall toolchains", "orb resume 不重装"},
 		},
 		{
-			Content: "case_open 失败时不要重试同一 payload，先查 6142 是否被旧 agpod-case-server 占用。",
-			Cues:    []string{"case_open 失败"},
+			Content: "ask_note 空检索直接 unknown，不要把 unknown 当成事实；有命中才走 peer.chat。",
+			Cues:    []string{"ask_note unknown", "空检索"},
 		},
 	}
 
@@ -121,8 +121,8 @@ func TestLiveAgentScenarios(t *testing.T) {
 		{name: "agent oral zh", query: "为什么 orb 里 nix 不在 PATH", wantSub: "nix-profile.sh", mode: "search"},
 		{name: "cue exact en", query: "nix not on PATH", wantSub: "Determinate Nix", mode: "search"},
 		{name: "identifier", query: "bootstrap-workflow.sh", wantSub: "towry/dots", mode: "search"},
-		{name: "port conflict", query: "6142 被占用", wantSub: "agpod-case-server", mode: "search"},
-		{name: "confusable db", query: "case db 测试挂", wantSub: "mem backend", mode: "search"},
+		{name: "http listen", query: "8742 被占用", wantSub: "AGPOD_MEMO_LISTEN", mode: "search"},
+		{name: "mock vs live", query: "memo 单测 mock", wantSub: "httptest", mode: "search"},
 		{name: "cues location", query: "cues 放哪", wantSub: "find:", mode: "search"},
 		{name: "forget mechanics", query: "forget 怎么删 conclusion", wantSub: "DELETE conclusion", mode: "search"},
 		{name: "empty unknown", query: "user's favorite pizza topping", wantSub: "", mode: "search"},
@@ -130,7 +130,7 @@ func TestLiveAgentScenarios(t *testing.T) {
 		{name: "ask unknown", query: "what is the user's favorite pizza topping", wantSub: "", mode: "ask"},
 		{name: "semantic paraphrase", query: "wake reinstall toolchains", wantSub: "不会重装依赖", mode: "search"},
 		{name: "same language paraphrase", query: "暂停后会不会重装依赖", wantSub: "不会重装依赖", mode: "search"},
-		{name: "competing similar", query: "case_open 失败", wantSub: "不要重试同一 payload", mode: "search"},
+		{name: "competing similar", query: "ask_note unknown", wantSub: "空检索直接 unknown", mode: "search"},
 	}
 
 	var hit, miss int
@@ -190,17 +190,9 @@ func TestLiveAgentScenarios(t *testing.T) {
 	// forget then confirm the retired note is gone from live search
 	var forgetID string
 	for k, id := range ids {
-		if strings.Contains(k, "SurrealDB") || strings.HasPrefix(k, "SurrealDB") {
+		if strings.Contains(k, "Go memo") || strings.Contains(k, "httptest") {
 			forgetID = id
-		}
-	}
-	if forgetID == "" {
-		// ids keyed by first 20 runes of content
-		for k, id := range ids {
-			if strings.Contains(k, "Surreal") {
-				forgetID = id
-				break
-			}
+			break
 		}
 	}
 	if forgetID != "" {
@@ -208,7 +200,7 @@ func TestLiveAgentScenarios(t *testing.T) {
 			t.Fatalf("forget: %v", err)
 		}
 		time.Sleep(1 * time.Second)
-		fr, err := store.search(ctx, "case db 测试挂", 8)
+		fr, err := store.search(ctx, "memo 单测 mock", 8)
 		if err != nil {
 			t.Fatalf("find after forget: %v", err)
 		}
@@ -396,8 +388,8 @@ func TestLiveWarmChat(t *testing.T) {
 	}{
 		{name: "nix path", query: "Why is nix missing from the orb login shell PATH, and how does agpod fix it?", want: "bashrc"},
 		{name: "resume", query: "Does waking a paused orb reinstall toolchains?", want: "reinstall"},
-		{name: "case server", query: "What should I check if case_open fails against localhost 6142?", want: "6142"},
-		{name: "honcho isolation", query: "If case events and memo notes share a Honcho workspace, how must sessions be split?", want: "memo_"},
+		{name: "http listen", query: "How do remote agents connect to memo MCP over HTTP?", want: "AGPOD_MEMO_LISTEN"},
+		{name: "honcho isolation", query: "What session id prefix does agent-memo use in Honcho?", want: "memo_"},
 		{name: "unrelated", query: "What is the user's favorite pizza topping?", want: ""},
 	}
 
@@ -447,21 +439,21 @@ func warmNotes() []NoteInput {
 	return []NoteInput{
 		{Content: "orb login shell 不 source /etc/bashrc，Determinate Nix 不在 PATH；agpod 用 ~/.config/agpod/nix-profile.sh 把 /nix/var/nix/profiles/default/bin 补进 login shell。", Cues: []string{"login shell 没有 nix", "nix not on PATH"}},
 		{Content: "暂停后恢复不会重装依赖。.agents/resume 只重新挂 PATH 并检查 rustc/cargo/go 是否还在，缺了只打 warning，不会跑 rustup 或 apt-get。", Cues: []string{"wake reinstall toolchains", "orb resume 不重装"}},
-		{Content: "agent-memo 与 agpod-case 若共用一个 Honcho workspace，必须分 session：memo 用 memo_<repo_id>，case 用 case id。find 默认只扫 memo_ 前缀，不搜 case 事件。", Cues: []string{"memo session 隔离", "case honcho 混在一起"}},
+		{Content: "agent-memo 用独立 Honcho workspace 和 session id memo_<repo_id>，不要和其他产品共用 session。", Cues: []string{"memo session 隔离", "honcho session 混在一起"}},
 		{Content: "Honcho conclusions 没有自定义 metadata，也不能改 status。forget 只能 DELETE /conclusions/{id}，再把对应 message metadata.status 标成 retired。", Cues: []string{"forget 怎么删 conclusion", "conclusion 没有 status"}},
 		{Content: "cues 必须写进 message.content 的 find: 附录才能被 hybrid 关键词检索。只放在 metadata 里，Honcho search 打不中那些词。", Cues: []string{"cues 放哪", "metadata 不能搜"}},
-		{Content: "SurrealDB case store 在并行测试里不能用 RocksDB：会挂死。测试改用 mem backend，生产仍用 embedded RocksDB。", Cues: []string{"case db 测试挂", "rocksdb hang tests"}},
-		{Content: "agpod-mcp 的 Go 二进制会自动拉起 sibling agpod-case-server。MCP smoke 前要先杀掉占用 127.0.0.1:6142 的旧进程，否则 case_open 会打到过期 server。", Cues: []string{"stale case-server", "6142 被占用"}},
+		{Content: "Go memo 单测用 httptest mock Honcho，不要打真实网络。live 测试才打 agpod-dev workspace。", Cues: []string{"memo 单测 mock", "live 才打 honcho"}},
+		{Content: "远程 memo MCP 用 AGPOD_MEMO_LISTEN 开 Streamable HTTP；非 loopback 必须设 AGPOD_MEMO_TOKEN，客户端连 http://<host>:8742/mcp。", Cues: []string{"AGPOD_MEMO_LISTEN", "8742 被占用"}},
 		{Content: "dots orb bootstrap 现在由 towry/dots 的 nix/orb/bootstrap-workflow.sh 负责。不要再把 2026-08-02 gist 内联进项目 .agents/setup。", Cues: []string{"dots workflow gist 过时", "bootstrap-workflow.sh"}},
 		{Content: "HONCHO_WORKSPACE 是沙箱别名，agpod 读的是 HONCHO_WORKSPACE_ID。.agents/setup 会把前者映射到后者，默认 HONCHO_BASE_URL 为 https://api.honcho.dev。", Cues: []string{"HONCHO_WORKSPACE 别名"}},
-		{Content: "case_open 失败时不要用同一 payload 立刻重试。先查 127.0.0.1:6142 是否被旧 agpod-case-server 占用，或换 AGPOD_CASE_SERVER_ADDR。", Cues: []string{"case_open 失败"}},
+		{Content: "ask_note 空检索直接 unknown，不要把 unknown 当成事实。有命中才走 peer.chat，超时则回退 top hit。", Cues: []string{"ask_note unknown", "空检索"}},
 		{Content: "cargo clippy 在 CI 以 -D warnings 跑。改 crate 行为后要跑该 crate 全量 cargo test，不能只跑窄测试。改 CLI/MCP 输出形状还要补覆盖该路径的测试。", Cues: []string{"clippy -D warnings", "crate 全量测试"}},
-		{Content: "AGPOD_CASE_DATA_DIR 指向独立 sqlite/rocks 数据目录。本地 smoke 用 /tmp/agpod-case-smoke.db，不要写进开发者家目录的默认库。", Cues: []string{"AGPOD_CASE_DATA_DIR", "case smoke db"}},
+		{Content: "MCP stdio 是默认传输。远程部署设 AGPOD_MEMO_LISTEN=0.0.0.0:8742 和 AGPOD_MEMO_TOKEN，不要把 token 写进仓库。", Cues: []string{"stdio 默认", "远程 HTTP token"}},
 		{Content: "MCP stdio 调试必须保持 stdin 打开，按行发送 JSON-RPC：initialize → notifications/initialized → tools/list → tools/call。tools/call 的 params 是 {name, arguments}。", Cues: []string{"mcp stdio 顺序", "tools/call 形状"}},
-		{Content: "空的 temp DB 上 case_current 应返回 structured isError true，消息为 no open case in this repository，这是正常空状态不是 server 挂了。", Cues: []string{"no open case", "case_current 空库"}},
-		{Content: "跨仓库 case smoke 用 agpod case --repo-root <abs-path>。两个临时 git 仓库指向同一 AGPOD_CASE_DATA_DIR 和同一 SERVER_ADDR 并行 open，用来证明 server 复用一个 DB client。", Cues: []string{"跨仓库 case smoke", "repo-root"}},
-		{Content: "Honcho message metadata 必须扁平。空数组和空字符串在发送前丢掉，和 crates/agpod-case/src/honcho.rs 的 retain 非 null 策略一致。", Cues: []string{"honcho metadata 扁平", "空字段丢掉"}},
-		{Content: "repo_id 算法是 hex(sha256(\"v1:\" + normalized_remote_url))[:16]，与 crates/agpod-case/src/repo_id.rs 相同，所以 memo session 和 case 工具对同一仓库的 id 对齐。", Cues: []string{"repo_id 算法", "v1: remote hash"}},
+		{Content: "forget 会删 conclusion 并把 message 标 retired。结论检索必须 join 到 live message，否则 stale conclusion 会把已删笔记捞回来。", Cues: []string{"forget 删 conclusion", "stale conclusion"}},
+		{Content: "repo_id 来自 git remote。同一仓库不同 worktree 共用 memo_<repo_id> session，所以跨 worktree 能问到同一批笔记。", Cues: []string{"跨 worktree memo", "repo-root"}},
+		{Content: "Honcho message metadata 必须扁平。空数组和空字符串在发送前丢掉，不要塞 nested object。", Cues: []string{"honcho metadata 扁平", "空字段丢掉"}},
+		{Content: "repo_id 算法是 hex(sha256(\"v1:\" + normalized_remote_url))[:16]。session id 是 memo_ 加上这段 hex。", Cues: []string{"repo_id 算法", "v1: remote hash"}},
 		{Content: "orb 里不要用 nohup、setsid、& 或 tmux 保活长进程。Amp CLI 更新或 pause/resume 会杀同 cgroup 进程。长服务用 amp orb service start。", Cues: []string{"orb 长进程", "amp orb service"}},
 		{Content: "用户打不开 sandbox localhost。对外分享必须走 amp orb portal 返回的 HTTPS portal URL，并加 Markdown 标题 amp-portal。不要发 e2b.app 直链。", Cues: []string{"portal URL", "不要发 localhost"}},
 		{Content: "force-push、改保护分支、写生产、操作他人 PR 属于先询后行。自建分支的 commit 和草稿 PR 可自主执行。密钥禁止探读，即使用户同意。", Cues: []string{"§GR-A 动作分级", "禁止探读密钥"}},
@@ -472,7 +464,7 @@ func warmNotes() []NoteInput {
 		{Content: "just、uv、shellcheck、nixfmt、ast-grep、dots-orb 来自 ~/.local/state/nix/profiles/dots-orb-workflow，不是系统 apt。login shell 靠 ~/.config/dots/orb-profile.sh。", Cues: []string{"dots-orb-workflow", "just 从哪来"}},
 		{Content: "workspace 依赖必须先加到根 Cargo.toml 的 [workspace.dependencies]，crate 里用 { workspace = true }。不要在子 crate 单独钉版本。", Cues: []string{"workspace.dependencies", "workspace = true"}},
 		{Content: "新 crate 要同步改 release-please-config.json 和 .release-please-manifest.json，否则 CI 发版会漏。", Cues: []string{"release-please crate", "新 crate 清单"}},
-		{Content: "改 agpod-case 的 CLI/RPC 形状后，MCP smoke 前必须重编 agpod-case-server。agpod-mcp 会自动拉起旁边的二进制，旧构建会拒新 payload。", Cues: []string{"重编 case-server", "stale payload"}},
+		{Content: "改 memo MCP 工具形状后必须重编 internal/agpod-mcp。stdio 和 HTTP 共用同一套 note/ask_note/forget。", Cues: []string{"重编 agpod-mcp", "stale payload"}},
 		{Content: "Honcho search 是 hybrid：关键词写入即可命中，语义 embedding 后台生成，刚写入的几秒内语义可能空。结论 query 只做语义、不返回 score。", Cues: []string{"hybrid 关键词即时", "conclusion 无 score"}},
 		{Content: "QueryConclusions 打 workspace 端点时必须带 observer_id 和 observed_id，否则 400 observer and observed must be specified for semantic search。Python SDK 的 peer.conclusions.query 会自动填。", Cues: []string{"observer_id required", "conclusions query 400"}},
 		{Content: "login shell 不 source /etc/bashrc，Determinate Nix 的 hook 在 bashrc 里，所以 nix 默认不在 PATH。agpod 用 ~/.config/agpod/nix-profile.sh 自己 source nix-daemon.sh，不覆盖 dots 的 orb-profile.sh。", Cues: []string{"nix-daemon login shell", "agpod nix-profile"}},

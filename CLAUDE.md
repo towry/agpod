@@ -1,6 +1,6 @@
 # agpod
 
-Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS path formatting.
+Rust multi-crate CLI tool: diff minimization, VCS path formatting. Agent memory lives in the Go MCP server.
 
 ## Build & Test
 
@@ -15,7 +15,6 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 - `crates/agpod` — CLI entrypoint
 - `crates/agpod-core` — shared utilities
 - `crates/agpod-diff` — diff minimization for LLM context
-- `crates/agpod-case` — exploration case tracker (SurrealDB embedded, RocksDB backend)
 - `crates/agpod-vcs-path` — VCS branch/bookmark path formatting
 - `internal/agpod-mcp` — Go-based agent-memo MCP server (own `go.mod`, not in Cargo workspace)
 
@@ -23,9 +22,8 @@ Rust multi-crate CLI tool: diff minimization, exploration case tracking, VCS pat
 
 - Conventional commits: `topic(scope): message`
 - Before adding dependencies: add to `[workspace.dependencies]` in root `Cargo.toml`, reference via `{ workspace = true }` in crate
-- Before creating new files: follow existing crate module structure (`cli.rs`, `commands.rs`, `client.rs`, `config.rs`, `error.rs`, `types.rs`)
+- Before creating new files: follow existing crate module structure
 - Before adding or removing a crate: update `release-please-config.json` and `.release-please-manifest.json` accordingly
-- If modifying agpod-case client/queries: see `docs/agents-md/case-surrealdb.md`
 - If using the agent-memo MCP server (`note` / `ask_note` / `forget`): see `docs/agents-md/agent-memo.md`
 
 ## CI

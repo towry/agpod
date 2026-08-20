@@ -54,11 +54,9 @@ func TestRepoIDIs16HexChars(t *testing.T) {
 	}
 }
 
-// TestRepoIDMatchesRustImplementation guards against drift from the Rust crate
-// in crates/agpod-case/src/repo_id.rs. The expected value is the first 16 hex
-// chars of sha256("v1:github.com/towry/agpod"), verified against
-// `printf 'v1:github.com/towry/agpod' | shasum -a 256`.
-func TestRepoIDMatchesRustImplementation(t *testing.T) {
+// TestRepoIDStableHash pins hex(sha256("v1:github.com/towry/agpod"))[:16],
+// verified against `printf 'v1:github.com/towry/agpod' | shasum -a 256`.
+func TestRepoIDStableHash(t *testing.T) {
 	cases := []struct {
 		normalized string
 		want       string
