@@ -20,8 +20,9 @@ or env name. Do not invent categories.
 Before exploring an unfamiliar area, `find` with a short concrete query
 that looks like a cue (`"login shell 没有 nix"`), not `"any related memory"`.
 
-Use `mode=ask` only when you need a synthesized answer. If it returns
-`unknown`, there is no stored note — do not treat that as a fact.
+If it returns `unknown`, there is no stored note — do not treat that as a
+fact. `answer` is a synthesis or the top matching note; `quotes`/`ids`
+are the supporting hits.
 
 ## When to forget
 

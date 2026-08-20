@@ -48,15 +48,12 @@ semantic search).
 
 ### `find`
 
-Search stored notes. `query` is required.
+Ask stored notes. `query` is required. There is no search/ask mode switch.
 
-- `mode=search` (default): Honcho conclusion query (cosine distance ≤ 0.55,
-  3s timeout, one retry) plus session hybrid search plus a local scan of
-  every live note (paginated). Cue cover and CJK 3-gram overlap inject
-  notes Honcho missed. Hybrid-only noise is dropped.
-- `mode=ask`: search first. Empty → `{unknown: true}` (no chat). Hits then
-  call Honcho `peer.chat` (low, 8s cap) after representation has had time
-  to run; chat unknown/timeout falls back to the top search hit.
+Internally: Honcho conclusion query + session hybrid search + local cue/CJK
+recall. Empty retrieval returns `{unknown: true}` without calling chat.
+Hits then call Honcho `peer.chat` (low, 8s cap); chat unknown/timeout
+falls back to the top hit as `answer` with `quotes`/`ids`.
 
 ### `forget`
 
@@ -67,7 +64,6 @@ Retire a note by `id`. Deletes the conclusion and marks the message
 
 ```text
 Before exploring   find({query: "<short phrase>"})
-Unsure / need a synthesis   find({query, mode: "ask"})
 Learned a fact grep cannot recover   note({content, cues?})
 Fact is wrong or obsolete   forget({id})
 ```

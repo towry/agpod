@@ -17,8 +17,6 @@ type noteArgs struct {
 
 type findArgs struct {
 	Query string `json:"query" jsonschema:"short search phrase like a cue, or a natural question"`
-	Mode  string `json:"mode,omitempty" jsonschema:"search (default, ranked excerpts) or ask (synthesized answer)"`
-	Limit int    `json:"limit,omitempty"`
 }
 
 type forgetArgs struct {
@@ -70,12 +68,12 @@ func registerWriteTools(server *mcp.Server, store *memo.Store) {
 func registerReadTools(server *mcp.Server, store *memo.Store) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "find",
-		Description: "Search stored notes before exploring. " +
+		Description: "Ask stored notes before exploring. " +
 			"query should look like a cue: a short concrete phrase (\"login shell 没有 nix\"), not \"any related memory\". " +
-			"mode=search (default) returns ranked excerpts with ids. " +
-			"mode=ask returns a grounded answer from the same search: the top note as answer, plus quotes/ids. unknown=true means nothing matched. It does not call Honcho chat.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args findArgs) (*mcp.CallToolResult, any, error) {
-		res, err := store.Find(ctx, memo.FindInput{Query: args.Query, Mode: args.Mode, Limit: args.Limit})
+			"Returns {answer, quotes, ids} or unknown=true if nothing matched. " +
+			"Do not call this to list recent notes.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args findArgs) (*mcp.CallToolResult, *memo.AskResult, error) {
+		res, err := store.Find(ctx, memo.FindInput{Query: args.Query})
 		if err != nil {
 			return nil, nil, err
 		}

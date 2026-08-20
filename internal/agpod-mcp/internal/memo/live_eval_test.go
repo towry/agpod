@@ -136,36 +136,43 @@ func TestLiveAgentScenarios(t *testing.T) {
 	var hit, miss int
 	for _, c := range cases {
 		start := time.Now()
-		res, err := store.Find(ctx, FindInput{Query: c.query, Mode: c.mode, Limit: 8})
+		var (
+			ok     bool
+			detail string
+			err    error
+		)
+		if c.mode == "ask" {
+			ar, e := store.Find(ctx, FindInput{Query: c.query})
+			err = e
+			if ar != nil {
+				detail = "unknown=" + boolStr(ar.Unknown) + " answer=" + ar.Answer
+				if c.wantSub == "" {
+					ok = ar.Unknown
+				} else {
+					ok = !ar.Unknown && strings.Contains(ar.Answer, c.wantSub)
+				}
+			}
+		} else {
+			fr, e := store.search(ctx, c.query, 8)
+			err = e
+			if fr != nil {
+				if len(fr.Hits) > 0 {
+					detail = "hit1=" + fr.Hits[0].Content
+				} else {
+					detail = "empty"
+				}
+				if c.wantSub == "" {
+					ok = fr.Status == "empty" || len(fr.Hits) == 0
+				} else if len(fr.Hits) > 0 {
+					ok = strings.Contains(fr.Hits[0].Content, c.wantSub)
+				}
+			}
+		}
 		elapsed := time.Since(start)
 		if err != nil {
 			t.Errorf("%s: find error: %v", c.name, err)
 			miss++
 			continue
-		}
-		ok := false
-		detail := ""
-		switch c.mode {
-		case "ask":
-			ar := res.(*AskResult)
-			detail = "unknown=" + boolStr(ar.Unknown) + " answer=" + ar.Answer
-			if c.wantSub == "" {
-				ok = ar.Unknown
-			} else {
-				ok = !ar.Unknown && strings.Contains(ar.Answer, c.wantSub)
-			}
-		default:
-			fr := res.(*FindResult)
-			if len(fr.Hits) > 0 {
-				detail = "hit1=" + fr.Hits[0].Content
-			} else {
-				detail = "empty"
-			}
-			if c.wantSub == "" {
-				ok = fr.Status == "empty" || len(fr.Hits) == 0
-			} else if len(fr.Hits) > 0 {
-				ok = strings.Contains(fr.Hits[0].Content, c.wantSub)
-			}
 		}
 		if ok {
 			hit++
@@ -201,11 +208,10 @@ func TestLiveAgentScenarios(t *testing.T) {
 			t.Fatalf("forget: %v", err)
 		}
 		time.Sleep(1 * time.Second)
-		res, err := store.Find(ctx, FindInput{Query: "case db 测试挂", Mode: "search"})
+		fr, err := store.search(ctx, "case db 测试挂", 8)
 		if err != nil {
 			t.Fatalf("find after forget: %v", err)
 		}
-		fr := res.(*FindResult)
 		for _, h := range fr.Hits {
 			if h.ID == forgetID {
 				t.Fatalf("forgotten id still in live hits")
@@ -299,12 +305,11 @@ func TestLiveSemanticProbe(t *testing.T) {
 				}
 			}
 		}
-		res, err := store.Find(ctx, FindInput{Query: q, Mode: "search", Limit: 8})
+		fr, err := store.search(ctx, q, 8)
 		if err != nil {
 			t.Logf("  find err=%v", err)
 			continue
 		}
-		fr := res.(*FindResult)
 		t.Logf("  find status=%s", fr.Status)
 		for _, h := range fr.Hits {
 			t.Logf("    rank=%d source=%s %s", h.Rank, h.Source, h.Content)
@@ -410,12 +415,11 @@ func TestLiveWarmChat(t *testing.T) {
 		}
 		t.Logf("CHAT %s %s err=%v answer=%q", q.name, elapsed.Truncate(time.Millisecond), err, raw)
 
-		fr, ferr := store.Find(ctx, FindInput{Query: q.query, Mode: "search", Limit: 3})
+		findRes, ferr := store.search(ctx, q.query, 3)
 		if ferr != nil {
 			t.Logf("  find err=%v", ferr)
 			continue
 		}
-		findRes := fr.(*FindResult)
 		hit := ""
 		if len(findRes.Hits) > 0 {
 			hit = findRes.Hits[0].Content

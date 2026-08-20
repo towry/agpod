@@ -349,11 +349,10 @@ func TestFindSearchMergesAndRanksCueOverlap(t *testing.T) {
 	}
 
 	// Search returns both; cue overlap should put nix first for this query.
-	res, err := store.Find(ctx, FindInput{Query: "login shell 没有 nix", Mode: "search"})
+	fr, err := store.search(ctx, "login shell 没有 nix", 8)
 	if err != nil {
-		t.Fatalf("find: %v", err)
+		t.Fatalf("search: %v", err)
 	}
-	fr := res.(*FindResult)
 	if fr.Status != "ok" {
 		t.Fatalf("status: %s", fr.Status)
 	}
@@ -373,11 +372,10 @@ func TestFindAskUnknown(t *testing.T) {
 	mock, cli := newHonchoMock(t)
 	mock.chatContent = `{"answer":"","unknown":true,"quotes":[]}`
 	store := newTestStore(t, cli)
-	res, err := store.Find(context.Background(), FindInput{Query: "user's favorite color", Mode: "ask"})
+	ar, err := store.Find(context.Background(), FindInput{Query: "user's favorite color"})
 	if err != nil {
-		t.Fatalf("find ask: %v", err)
+		t.Fatalf("find: %v", err)
 	}
-	ar := res.(*AskResult)
 	if !ar.Unknown {
 		t.Fatalf("want unknown")
 	}
@@ -440,11 +438,10 @@ func TestFindDropsHybridNoiseWhenConclusionsMiss(t *testing.T) {
 	mock.nextSearch = append([]honcho.Message(nil), mock.messages...)
 	mock.mu.Unlock()
 
-	res, err := store.Find(ctx, FindInput{Query: "user's favorite pizza topping", Mode: "search"})
+	fr, err := store.search(ctx, "user's favorite pizza topping", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fr := res.(*FindResult)
 	if fr.Status != "empty" {
 		t.Fatalf("want empty, got %+v", fr)
 	}
@@ -465,11 +462,10 @@ func TestFindKeepsSemanticHitWithoutSharedWords(t *testing.T) {
 	mock.nextSearch = []honcho.Message{}
 	mock.mu.Unlock()
 
-	res, err := store.Find(ctx, FindInput{Query: "does wake reinstall toolchains", Mode: "search"})
+	fr, err := store.search(ctx, "does wake reinstall toolchains", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fr := res.(*FindResult)
 	if fr.Status != "ok" || len(fr.Hits) == 0 {
 		t.Fatalf("semantic hit should survive, got %+v", fr)
 	}
@@ -493,11 +489,10 @@ func TestAskGroundedFromSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := store.Find(ctx, FindInput{Query: "login shell 没有 nix", Mode: "ask"})
+	ar, err := store.Find(ctx, FindInput{Query: "login shell 没有 nix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ar := res.(*AskResult)
 	if ar.Unknown {
 		t.Fatalf("search fallback should answer")
 	}
@@ -522,11 +517,10 @@ func TestFindRecallsByCueWhenHonchoMisses(t *testing.T) {
 	mock.nextSearch = []honcho.Message{}
 	mock.mu.Unlock()
 
-	res, err := store.Find(ctx, FindInput{Query: "wake reinstall toolchains", Mode: "search"})
+	fr, err := store.search(ctx, "wake reinstall toolchains", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fr := res.(*FindResult)
 	if fr.Status != "ok" || len(fr.Hits) == 0 {
 		t.Fatalf("cue recall should hit, got %+v", fr)
 	}
@@ -548,11 +542,10 @@ func TestAskUnknownSkipsChat(t *testing.T) {
 	mock.nextSearch = []honcho.Message{}
 	mock.mu.Unlock()
 
-	res, err := store.Find(ctx, FindInput{Query: "user's favorite pizza topping", Mode: "ask"})
+	ar, err := store.Find(ctx, FindInput{Query: "user's favorite pizza topping"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ar := res.(*AskResult)
 	if !ar.Unknown || ar.Answer != "" {
 		t.Fatalf("want unknown empty, got %+v", ar)
 	}
@@ -589,11 +582,10 @@ func TestListLiveEntriesPagesPast100(t *testing.T) {
 	mock.nextSearch = []honcho.Message{}
 	mock.mu.Unlock()
 
-	res, err := store.Find(ctx, FindInput{Query: "unique-oldest-cue", Mode: "search"})
+	fr, err := store.search(ctx, "unique-oldest-cue", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fr := res.(*FindResult)
 	if fr.Status != "ok" || len(fr.Hits) == 0 {
 		t.Fatalf("oldest cue should be recalled across pages, got %+v", fr)
 	}

@@ -195,25 +195,14 @@ func (s *Store) Note(ctx context.Context, in NoteInput) (*NoteResult, error) {
 	return &NoteResult{ID: entryID, Indexed: true}, nil
 }
 
-// Find retrieves live memories. mode=search (default) returns ranked hits;
-// mode=ask returns the top hit as a grounded answer, or unknown.
-func (s *Store) Find(ctx context.Context, in FindInput) (any, error) {
+// Find answers from stored notes. It retrieves ranked hits internally, then
+// asks Honcho to synthesize. Empty retrieval returns unknown without chat.
+func (s *Store) Find(ctx context.Context, in FindInput) (*AskResult, error) {
 	query := collapseSpace(in.Query)
 	if query == "" {
 		return nil, errors.New("query is required")
 	}
-	mode := strings.ToLower(strings.TrimSpace(in.Mode))
-	if mode == "" {
-		mode = "search"
-	}
-	switch mode {
-	case "search":
-		return s.search(ctx, query, in.Limit)
-	case "ask":
-		return s.ask(ctx, query)
-	default:
-		return nil, fmt.Errorf("mode must be search or ask, got %q", in.Mode)
-	}
+	return s.ask(ctx, query)
 }
 
 func (s *Store) search(ctx context.Context, query string, limit int) (*FindResult, error) {

@@ -29,11 +29,10 @@ type NoteResult struct {
 // FindInput is the payload for find.
 type FindInput struct {
 	Query string `json:"query"`
-	Mode  string `json:"mode,omitempty"` // search (default) | ask
 	Limit int    `json:"limit,omitempty"`
 }
 
-// FindHit is one live memory surfaced by find.search.
+// FindHit is one live memory used internally by retrieval.
 type FindHit struct {
 	ID        string    `json:"id,omitempty"`
 	Content   string    `json:"content"`
@@ -43,13 +42,13 @@ type FindHit struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// FindResult is returned by find.search.
+// FindResult is the internal ranked-hit list.
 type FindResult struct {
 	Status string    `json:"status"` // ok | empty
 	Hits   []FindHit `json:"hits"`
 }
 
-// AskResult is returned by find.ask.
+// AskResult is returned by find.
 type AskResult struct {
 	Answer  string   `json:"answer"`
 	Unknown bool     `json:"unknown"`
