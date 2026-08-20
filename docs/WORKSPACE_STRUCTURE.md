@@ -1,6 +1,6 @@
 # Workspace Structure
 
-`agpod` is a Rust workspace with focused crates.
+`agpod` is a Rust workspace with focused crates. Agent memory lives in a separate Go module.
 
 ## Crates
 
@@ -14,11 +14,6 @@
 - Location: `crates/agpod-diff/`
 - Purpose: git diff minimization and saved review chunks
 
-### `agpod-case`
-
-- Location: `crates/agpod-case/`
-- Purpose: structured exploration case tracking with steps and event logs
-
 ### `agpod-vcs-path`
 
 - Location: `crates/agpod-vcs-path/`
@@ -26,13 +21,13 @@
 
 ### `agpod-mcp`
 
-- Location: `crates/agpod-mcp/`
-- Purpose: MCP server exposing `agpod-case` workflows
+- Location: `internal/agpod-mcp/`
+- Purpose: Go MCP server for agent memory (`note` / `ask_note` / `forget`), stdio or Streamable HTTP
 
 ### `agpod`
 
 - Location: `crates/agpod/`
-- Purpose: CLI entrypoint wiring `diff`, `case`, and `vcs-path-info`
+- Purpose: CLI entrypoint wiring `diff` and `vcs-path-info`
 
 ## Build
 

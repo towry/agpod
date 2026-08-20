@@ -2,11 +2,7 @@ all:
   just --list
 
 install-agpod-local:
-    cargo build -p agpod -p agpod-case-server -p agpod-mcp
+    cargo build -p agpod
     mkdir -p ~/.local/bin
     cp -f target/debug/agpod ~/.local/bin/agpod
-    cp -f target/debug/agpod-case-server ~/.local/bin/agpod-case-server
-    cp -f target/debug/agpod-mcp ~/.local/bin/agpod-mcp
-
-mcp-full-smoke:
-    python3 scripts/mcp_full_smoke.py
+    (cd internal/agpod-mcp && go build -o ~/.local/bin/agpod-mcp ./cmd/agpod-mcp)

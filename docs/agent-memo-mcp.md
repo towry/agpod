@@ -1,22 +1,20 @@
 # agent-memo MCP
 
-Go-implemented MCP server that lets agents persist findings, decisions, and
-session handoffs to a Honcho v3 backend. Source: `internal/agpod-mcp/`.
+Go MCP server that lets agents persist short facts to a Honcho v3 backend
+and retrieve them later. Source: `internal/agpod-mcp/`.
 
-The server is intentionally decoupled from the Rust `agpod-case` crate: it has
-its own Honcho workspace (recommended: `agpod-memo`) and its own session
-namespace (`memo_<repo_id>`).
+Recommended Honcho workspace: `agpod-memo`. Session namespace: `memo_<repo_id>`.
 
 ## Build
 
 ```bash
 cd internal/agpod-mcp
 go build ./cmd/agpod-mcp
+go test ./...
 ```
 
-The binary is independent from the Cargo workspace; it has its own `go.mod`
-and is not in CI today. Run `go test ./...` from the same directory before
-shipping changes.
+Remote agents: `AGPOD_MEMO_LISTEN=0.0.0.0:8742 AGPOD_MEMO_TOKEN=... ./agpod-mcp`,
+then point the MCP client at `http://<host>:8742/mcp`.
 
 ## Environment
 
@@ -24,83 +22,49 @@ shipping changes.
 |---|---|---|---|
 | `HONCHO_API_KEY` | yes | — | Bearer token for Honcho. |
 | `HONCHO_BASE_URL` | no | `https://api.honcho.dev` | Override for self-hosted Honcho. |
-| `HONCHO_WORKSPACE_ID` | yes | — | Recommended value: `agpod-memo`. Keep this distinct from any `agpod-case` workspace. |
-| `AGPOD_MEMO_PEER_ID` | no | `agpod-memo` | All entries are written under this peer. |
-| `AGPOD_MEMO_REPO_ROOT` | no | current working directory | Used to derive `repo_id` from `git remote`. |
-| `AGPOD_MEMO_LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error`. Logs go to stderr; stdout is reserved for MCP traffic. |
-| `AGPOD_MEMO_READONLY` | no | `false` | Truthy values (`1`, `true`, `yes`, `on`) skip registering the four mutating tools — only `memo_pickup_handoff`, `memo_recall`, `memo_why` are exposed. Use for low-trust agents that should consume memory without writing to it. |
+| `HONCHO_WORKSPACE_ID` | yes | — | Recommended: `agpod-memo`. |
+| `AGPOD_MEMO_PEER_ID` | no | `agpod-agent` | All notes are written under this peer. |
+| `AGPOD_MEMO_REPO_ROOT` | no | cwd | Used to derive `repo_id` from `git remote`. |
+| `AGPOD_MEMO_LOG_LEVEL` | no | `info` | Logs go to stderr; stdout is MCP. |
+| `AGPOD_MEMO_READONLY` | no | `false` | Truthy values hide `note` and `forget`. |
+| `AGPOD_MEMO_LISTEN` | no | — | If set (e.g. `127.0.0.1:8742`), serve Streamable HTTP instead of stdio. |
+| `AGPOD_MEMO_TOKEN` | no | — | If set, HTTP requires `Authorization: Bearer`. |
 
-The `repo_id` is `hex(sha256("v1:" + normalized_remote_url))[:16]` — the same
-algorithm as `crates/agpod-case/src/repo_id.rs`, so the IDs match across
-tools. The Honcho session ID is `memo_<repo_id>`.
-
-## Wiring into an MCP client
-
-Stdio transport. Example launch line for Claude Code or any other MCP host:
-
-```bash
-HONCHO_API_KEY=... HONCHO_WORKSPACE_ID=agpod-memo \
-  /path/to/agpod-mcp
-```
-
-Run it with the host's working directory pinned to the repo root — that is
-how `repo_id` is derived. Alternatively set `AGPOD_MEMO_REPO_ROOT=/abs/path`.
+`repo_id` is `hex(sha256("v1:" + normalized_remote_url))[:16]`. Session id is `memo_<repo_id>`.
 
 ## Tools
 
-All write tools auto-bind to the current repo. Read tools default to the
-current repo and accept `cross_repo: true` to escape that boundary.
+### `note`
 
-### `memo_write_finding`
-Record an explored fact (how / where / what). Inputs: `content`, `scope[]`, optional `evidence_refs[]`. Output: `{entry_id}`.
+Persist a standalone present-tense fact that `rg` cannot recover.
 
-### `memo_write_decision`
-Record a choice and its rejected alternatives. Pass `supersedes` to mark a
-previous decision as replaced — the old entry's status is updated to
-`superseded` automatically.
+Inputs: `content` (required), `cues[]` (required: one or more short
+phrases a later agent will type into `ask_note`). Output: `{id}`.
 
-### `memo_write_handoff`
-Snapshot session end state. Inputs: `summary` (short title), `content`
-(markdown body). Pickup is by repo (latest live) or by `handoff_id`.
+Cues are not categories. Auto-extracted paths/commands do not count.
 
-### `memo_pickup_handoff`
-Returns the latest live handoff for this repo by default. Pass `handoff_id`
-for a specific one, or `cross_repo: true` to fetch the latest across repos.
+Each note writes a Honcho **message** (canonical, with metadata and a
+`find:` keyword appendix) and a Honcho **conclusion** (clean body, for
+semantic search).
 
-### `memo_recall`
-Semantic search when `query` is non-empty; otherwise lists the most recent
-entries. Defaults skip `handoff` entries — set `include_handoff: true` to
-include them. Other filters: `entry_type`, `scope_prefix`, `cross_repo`,
-`limit` (default 20, max 100).
+### `ask_note`
 
-### `memo_why`
-Returns every live decision whose `scope` contains the supplied anchor, each
-carrying its full supersedes chain (oldest predecessor last). Use this to
-audit why a piece of code is the way it is.
+Ask stored notes. `query` is required. There is no search/ask mode switch.
 
-### `memo_set_status`
-Mark an entry as `superseded` or `no_longer_applicable`. Live → these states
-only; cannot resurrect a retired entry by passing `live`.
+Internally: Honcho conclusion query + session hybrid search + local cue/CJK
+recall. Empty retrieval returns `{unknown: true}` without calling chat.
+Hits then call Honcho `peer.chat` (low, 8s cap); chat unknown/timeout
+falls back to the top hit as `answer` with `quotes`/`ids`.
 
-## Operational notes
+### `forget`
 
-- The server treats Honcho failures as fatal for the failing call only — it
-  does not retry. The peer/session is ensured at startup; if that fails the
-  server still boots and each tool will surface the underlying error.
-- Metadata is stored flat (no nested status records); empty arrays and empty
-  strings are dropped before sending, matching the policy in
-  `crates/agpod-case/src/honcho.rs`.
-- Recall results sort by `created_at` descending. Honcho's metadata-filter
-  support varies; the server post-filters locally for `status`, `entry_type`,
-  and `scope_prefix` so behavior is consistent regardless.
+Retire a note by `id`. Deletes the conclusion and marks the message
+`retired`. Does not resurrect.
 
-## Future work
+## Agent usage
 
-These items are deliberately out of scope for the first version and live
-here as a punch list:
-
-1. Wire into CI (Linux/macOS build + test).
-2. Decide release-please policy if the binary is to be distributed.
-3. `memo_handoff_compact` to merge or archive old handoffs.
-4. Bridge to `agpod-case`: on case-close write a `decision` automatically.
-5. Auto-collect `evidence_refs` from the current git commit.
+```text
+Before exploring   ask_note({query: "<short phrase>"})
+Learned a fact grep cannot recover   note({content, cues})
+Fact is wrong or obsolete   forget({id})
+```

@@ -1,11 +1,9 @@
 # agpod-mcp
 
-agent-memo MCP server in Go. Provides seven tools backed by [Honcho v3](https://docs.honcho.dev/v3) for agents to record findings, decisions, and session handoffs that later agents can pick up.
+agent-memo MCP server in Go. Three tools backed by [Honcho v3](https://docs.honcho.dev/v3):
+`note`, `ask_note`, `forget`.
 
-This module supersedes the legacy Rust crate at `crates/agpod-mcp/` — the Rust
-binary is on a deprecation path and will be removed once consumers have moved
-to this Go binary. Both produce a binary named `agpod-mcp`, but only the Go
-one is installed under `~/.local/bin/agpod-mcp` today.
+Stdio is the default. Set `AGPOD_MEMO_LISTEN` to serve Streamable HTTP for remote agents.
 
 The module lives outside the Cargo workspace with its own `go.mod`.
 
@@ -22,8 +20,18 @@ HONCHO_API_KEY=xxx HONCHO_WORKSPACE_ID=agpod-memo \
   ./agpod-mcp
 ```
 
-See `docs/agent-memo-mcp.md` (in the repo root) for the full env reference and
-agent-side usage notes.
+## Run (HTTP)
+
+```bash
+HONCHO_API_KEY=xxx HONCHO_WORKSPACE_ID=agpod-memo \
+  AGPOD_MEMO_LISTEN=127.0.0.1:8742 AGPOD_MEMO_TOKEN=secret \
+  ./agpod-mcp
+```
+
+Clients connect to `http://127.0.0.1:8742/mcp` with `Authorization: Bearer secret`.
+Health: `GET /healthz`.
+
+See `docs/agent-memo-mcp.md` for the env reference and agent-side usage.
 
 ## Test
 

@@ -1,8 +1,6 @@
 name: agpod-mcp release (Go, macOS arm64)
 
 # Build & publish workflow for the Go binary under internal/agpod-mcp.
-# This binary supersedes the Rust crate at crates/agpod-mcp (deprecated; see
-# crates/agpod-mcp/DEPRECATED.md). The frozen Rust crate tags end at v0.8.6.
 #
 # Invoked as `workflow_call` from release.yml right after release-please cuts a
 # release. `on: push: tags` is intentionally NOT used: release-please pushes

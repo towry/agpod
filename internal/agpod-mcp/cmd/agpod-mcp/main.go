@@ -1,7 +1,4 @@
-// Command agpod-mcp serves the agent-memo MCP tools over stdio.
-// The Go binary supersedes the Rust crate at crates/agpod-mcp/ (which is on
-// a deprecation path). The surrounding Go module can host additional
-// commands later.
+// Command agpod-mcp serves the agent-memo MCP tools over stdio or HTTP.
 package main
 
 import (
@@ -49,7 +46,8 @@ func run() error {
 	logger.Info("repo identity resolved",
 		"repo_id", identity.RepoID,
 		"repo_label", identity.RepoLabel,
-		"readonly", cfg.Readonly)
+		"readonly", cfg.Readonly,
+		"listen", cfg.Listen)
 
 	cli, err := memo.NewClient(cfg)
 	if err != nil {
@@ -69,11 +67,13 @@ func run() error {
 	defer cancel()
 
 	if err := store.Ensure(ctx); err != nil {
-		// Log but continue: on Honcho outage tools will surface the error per-call.
 		slog.Warn("ensure peer/session failed; tools will retry on first call", "err", err)
 	}
 
 	server := mcpserver.New(store, mcpserver.Options{Readonly: cfg.Readonly})
+	if cfg.Listen != "" {
+		return mcpserver.ListenAndServe(ctx, server, cfg.Listen, cfg.Token, logger)
+	}
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		return fmt.Errorf("mcp server: %w", err)
 	}

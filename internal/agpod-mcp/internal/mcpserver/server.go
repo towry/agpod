@@ -10,8 +10,7 @@ import (
 
 // Options tunes server registration.
 type Options struct {
-	// Readonly skips registering the four mutating tools (memo_write_* and
-	// memo_set_status). Read tools are always exposed.
+	// Readonly skips registering note and forget. find is always exposed.
 	Readonly bool
 }
 

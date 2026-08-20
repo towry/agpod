@@ -1,66 +1,30 @@
 # agent-memo MCP usage
 
-## When to Use
+When the agent-memo MCP server is registered, three tools are available:
+`note`, `ask_note`, `forget`.
 
-When the agent-memo MCP server is registered with the host. The seven
-`memo_*` tools let an agent preserve work for future sessions and inherit
-work from past ones.
+## When to note
 
-Three entry types — each answering a different question:
+Call `note` as soon as you learn something `rg` cannot recover: a
+convention, a pitfall, a choice with a real tradeoff. Do not note file
+paths, signatures, or call graphs.
 
-| Type | Answers | Lifetime |
-|---|---|---|
-| `finding` | how / where / what | live until explicitly retired |
-| `decision` | why this path was chosen | live until superseded by a new decision |
-| `handoff` | what state the last session ended in | always live; recalled only on demand |
+`content` is one present-tense sentence that stands alone.
 
-## When to Write
+`cues` is required: one or more short phrases you would type into
+`ask_note` later (2–8 words). Do not invent categories. Auto-extracted
+paths do not satisfy this.
 
-| Situation | Tool | Why |
-|---|---|---|
-| Just spent >10 minutes mapping a module / convention / pitfall and the answer is not in code or commit messages | `memo_write_finding` | Next agent will not re-explore. |
-| Picked a path with a real tradeoff (rejected alternatives matter) | `memo_write_decision` | `memo_why` later replays the reasoning. |
-| Replacing an earlier decision in the same scope | `memo_write_decision` with `supersedes` and `supersede_reason` | Marks old one superseded, preserves the chain. |
-| Ending a session with open work, queued questions, or a non-obvious next step | `memo_write_handoff` (once at session end, not per task) | Next session picks up via `memo_pickup_handoff`. |
+## When to ask_note
 
-Do **not** write findings for things derivable from the code (file paths,
-function signatures, simple call graphs). Reach for `grep` first; memo is
-for what `grep` cannot recover.
+Before exploring an unfamiliar area, `ask_note` with a short concrete query
+that looks like a cue (`"login shell 没有 nix"`), not `"any related memory"`.
 
-## Scope Anchors
+If it returns `unknown`, there is no stored note — do not treat that as a
+fact. `answer` is a synthesis or the top matching note; `quotes`/`ids`
+are the supporting hits.
 
-`scope[]` on findings and decisions is the lookup key — pick anchors that
-the next agent is likely to query by:
+## When to forget
 
-- `file:line` for code-local facts: `crates/agpod-case/src/hooks.rs:128`
-- module/crate path for cross-cutting facts: `crates/agpod-case`
-- concept keys for things without a clear file: `case-hooks`, `repo-id`,
-  `honcho-metadata`
-
-Use 1–3 anchors. The first should be the most specific, the last the most
-general — `memo_recall scope_prefix=...` walks them as prefixes.
-
-## On Pickup
-
-At the start of a new session for the same repo, call `memo_pickup_handoff`
-(no args) before doing anything else. Treat the returned `summary` as the
-title of the carry-over and the `content` as the brief.
-
-When investigating an unfamiliar area, call `memo_why scope=<anchor>` first
-— it can save you from re-arguing a decision that was already weighed.
-
-## Cross-Repo
-
-All entries are bound to one repo. `cross_repo: true` widens the search to
-the entire Honcho workspace. Use this sparingly: it is right for "what did
-we learn last time we did X" across related repos, and wrong for routine
-recall (which should stay scoped).
-
-## Don'ts
-
-- Don't write `handoff` after every small task. One at session end is the
-  right cadence; the queue grows fast otherwise.
-- Don't use `memo_set_status live` — the status transition is one-way
-  (live → superseded / no_longer_applicable). The tool will reject it.
-- Don't put secrets in `content` or `evidence_refs`. The store has no
-  redaction layer.
+The stored note is wrong or no longer true. Pass the `id` from `note`.
+To correct, `note` a new sentence; do not try to resurrect.

@@ -2,7 +2,6 @@
 //!
 //! Supports feature-specific configuration sections:
 //! - [diff] - Git diff minimization settings
-//! - [case] - Case server settings
 //! - [mcp] - MCP server settings
 
 use serde::{Deserialize, Serialize};
@@ -32,10 +31,6 @@ pub struct Config {
     #[serde(default)]
     pub diff: Option<DiffConfig>,
 
-    /// Case workflow configuration.
-    #[serde(default)]
-    pub case: Option<CaseConfig>,
-
     /// Shared logging configuration.
     #[serde(default)]
     pub log: Option<LogConfig>,
@@ -50,7 +45,6 @@ impl Default for Config {
         Self {
             version: default_config_version(),
             diff: None,
-            case: None,
             log: None,
             mcp: None,
         }
@@ -90,85 +84,6 @@ pub struct LogConfig {
 pub struct ResolvedLogConfig {
     pub level: LogLevel,
     pub dir: PathBuf,
-}
-
-/// Configuration for case server / client access.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaseConfig {
-    #[serde(default)]
-    pub data_dir: Option<String>,
-
-    #[serde(default)]
-    pub server_addr: Option<String>,
-
-    #[serde(default)]
-    pub auto_start: Option<bool>,
-
-    #[serde(default)]
-    pub access_mode: Option<String>,
-
-    #[serde(default)]
-    pub semantic_recall_enabled: Option<bool>,
-
-    #[serde(default)]
-    pub vector_digest_job_enabled: Option<bool>,
-
-    #[serde(default)]
-    pub honcho_enabled: Option<bool>,
-
-    #[serde(default)]
-    pub honcho_sync_enabled: Option<bool>,
-
-    #[serde(default)]
-    pub honcho_base_url: Option<String>,
-
-    #[serde(default)]
-    pub honcho_workspace_id: Option<String>,
-
-    #[serde(default)]
-    pub honcho_api_key: Option<String>,
-
-    #[serde(default)]
-    pub honcho_api_key_env: Option<String>,
-
-    #[serde(default)]
-    pub honcho_peer_id: Option<String>,
-
-    #[serde(default)]
-    pub plugins: Option<CasePluginsConfig>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CasePluginsConfig {
-    #[serde(default)]
-    pub honcho: Option<CaseHonchoPluginConfig>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CaseHonchoPluginConfig {
-    #[serde(default)]
-    pub enabled: Option<bool>,
-
-    #[serde(default)]
-    pub sync_enabled: Option<bool>,
-
-    #[serde(default)]
-    pub base_url: Option<String>,
-
-    #[serde(default)]
-    pub workspace_id: Option<String>,
-
-    #[serde(default)]
-    pub api_key: Option<String>,
-
-    #[serde(default)]
-    pub api_key_env: Option<String>,
-
-    #[serde(default)]
-    pub peer_id: Option<String>,
 }
 
 /// Configuration for diff minimization.
@@ -376,10 +291,6 @@ impl Config {
             self.diff = other.diff;
         }
 
-        if other.case.is_some() {
-            self.case = other.case;
-        }
-
         if other.log.is_some() {
             self.log = other.log;
         }
@@ -442,7 +353,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.version, "1");
         assert!(config.diff.is_none());
-        assert!(config.case.is_none());
         assert!(config.log.is_none());
         assert!(config.mcp.is_none());
     }
@@ -452,7 +362,6 @@ mod tests {
         let config = Config {
             version: "1".to_string(),
             diff: None,
-            case: None,
             log: None,
             mcp: None,
         };
@@ -462,7 +371,6 @@ mod tests {
         let unsupported_config = Config {
             version: "999".to_string(),
             diff: None,
-            case: None,
             log: None,
             mcp: None,
         };
@@ -478,9 +386,6 @@ version = "1"
 [diff]
 output_dir = "custom/diff"
 large_file_changes_threshold = 200
-
-[case]
-server_addr = "127.0.0.1:6142"
 
 [mcp.hive.claude]
 env_set = { ANTHROPIC_BASE_URL = "https://example.invalid", ANTHROPIC_AUTH_TOKEN = "token" }
@@ -503,13 +408,10 @@ system_prompt = "You are a full-access coding assistant."
         assert_eq!(config.version, "1");
         assert!(config.is_version_supported());
         assert!(config.diff.is_some());
-        assert!(config.case.is_some());
 
         let diff = config.diff.unwrap();
         assert_eq!(diff.output_dir, "custom/diff");
         assert_eq!(diff.large_file_changes_threshold, 200);
-        let case = config.case.unwrap();
-        assert_eq!(case.server_addr.as_deref(), Some("127.0.0.1:6142"));
         let mcp = config.mcp.unwrap();
         let hive = mcp.hive.unwrap();
         let claude = hive.claude.unwrap();
