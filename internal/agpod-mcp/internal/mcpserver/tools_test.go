@@ -222,7 +222,7 @@ func TestToolsExposed(t *testing.T) {
 		}
 		got[tool.Name] = true
 	}
-	for _, name := range []string{"note", "find", "forget"} {
+	for _, name := range []string{"note", "ask_note", "forget"} {
 		if !got[name] {
 			t.Fatalf("expected tool %s registered, got %v", name, got)
 		}
@@ -240,13 +240,13 @@ func TestNoteThenFind(t *testing.T) {
 		"content": "orb login shell 不 source /etc/bashrc",
 		"cues":    []string{"login shell 没有 nix"},
 	})
-	res := callTool(t, cs, ctx, "find", map[string]any{"query": "login shell 没有 nix"})
+	res := callTool(t, cs, ctx, "ask_note", map[string]any{"query": "login shell 没有 nix"})
 	out := contentText(res)
 	if !strings.Contains(out, "orb login shell") {
-		t.Fatalf("find did not surface note, got: %s", out)
+		t.Fatalf("ask_note did not surface note, got: %s", out)
 	}
 	if strings.Contains(out, "find:") {
-		t.Fatalf("find output leaked appendix: %s", out)
+		t.Fatalf("ask_note output leaked appendix: %s", out)
 	}
 }
 
@@ -279,8 +279,8 @@ func TestReadonlyOmitsMutatingTools(t *testing.T) {
 			t.Fatalf("readonly server must not expose %s", name)
 		}
 	}
-	if !got["find"] {
-		t.Fatalf("readonly server must still expose find")
+	if !got["ask_note"] {
+		t.Fatalf("readonly server must still expose ask_note")
 	}
 
 	_, err := cs.CallTool(ctx, &mcp.CallToolParams{

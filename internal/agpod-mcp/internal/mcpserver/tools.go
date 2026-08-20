@@ -40,7 +40,7 @@ func registerWriteTools(server *mcp.Server, store *memo.Store) {
 		Description: "Persist a fact for later sessions. Call as soon as you learn something grep cannot recover " +
 			"(a convention, a pitfall, a choice with a real tradeoff). " +
 			"content must stand alone in the present tense. " +
-			"cues are optional short phrases you would type into find later; skip them when the content already contains the path, command, or env name. " +
+			"cues are optional short phrases you would type into ask_note later; skip them when the content already contains the path, command, or env name. " +
 			"Do not note file paths, signatures, or anything rg can answer.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args noteArgs) (*mcp.CallToolResult, *memo.NoteResult, error) {
 		res, err := store.Note(ctx, memo.NoteInput{Content: args.Content, Cues: args.Cues})
@@ -67,7 +67,7 @@ func registerWriteTools(server *mcp.Server, store *memo.Store) {
 
 func registerReadTools(server *mcp.Server, store *memo.Store) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "find",
+		Name: "ask_note",
 		Description: "Ask stored notes before exploring. " +
 			"query should look like a cue: a short concrete phrase (\"login shell 没有 nix\"), not \"any related memory\". " +
 			"Returns {answer, quotes, ids} or unknown=true if nothing matched. " +

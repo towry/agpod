@@ -1,7 +1,7 @@
 # agpod-mcp
 
 agent-memo MCP server in Go. Three tools backed by [Honcho v3](https://docs.honcho.dev/v3):
-`note`, `find`, `forget`.
+`note`, `ask_note`, `forget`.
 
 This module supersedes the legacy Rust crate at `crates/agpod-mcp/`. Both
 produce a binary named `agpod-mcp`, but only the Go one is installed under

@@ -37,7 +37,7 @@ algorithm as `crates/agpod-case/src/repo_id.rs`. Session id is `memo_<repo_id>`.
 Persist a standalone present-tense fact that `rg` cannot recover.
 
 Inputs: `content` (required), `cues[]` (optional short phrases a later
-agent will type into `find`). Output: `{id}`.
+agent will type into `ask_note`). Output: `{id}`.
 
 Cues are not categories. Skip them when `content` already contains the
 path, command, or env name.
@@ -46,7 +46,7 @@ Each note writes a Honcho **message** (canonical, with metadata and a
 `find:` keyword appendix) and a Honcho **conclusion** (clean body, for
 semantic search).
 
-### `find`
+### `ask_note`
 
 Ask stored notes. `query` is required. There is no search/ask mode switch.
 
@@ -63,7 +63,7 @@ Retire a note by `id`. Deletes the conclusion and marks the message
 ## Agent usage
 
 ```text
-Before exploring   find({query: "<short phrase>"})
+Before exploring   ask_note({query: "<short phrase>"})
 Learned a fact grep cannot recover   note({content, cues?})
 Fact is wrong or obsolete   forget({id})
 ```
