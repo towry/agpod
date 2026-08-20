@@ -38,49 +38,43 @@ if [ -z "${LIBCLANG_PATH:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Nix + dots orb workflow (merged; skip Nix install when already available)
+# Nix + dots orb workflow (latest towry/dots bootstrap; skip Nix if present)
 # ---------------------------------------------------------------------------
-nix_profile_sh=/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-if [ -f "$nix_profile_sh" ]; then
-  # shellcheck disable=SC1090
-  source "$nix_profile_sh"
-fi
-export PATH="/nix/var/nix/profiles/default/bin:${PATH:-}"
-
-if ! command -v nix >/dev/null 2>&1; then
-  log "Installing Determinate Nix"
-  curl --proto '=https' --tlsv1.2 -sSfL \
-    https://install.determinate.systems/nix \
-    | sh -s -- install --no-confirm
-  # shellcheck disable=SC1090
-  source "$nix_profile_sh"
-  export PATH="/nix/var/nix/profiles/default/bin:${PATH:-}"
-fi
-log "nix: $(nix --version)"
-
 dots_checkout="${HOME}/.cache/towry-dots"
 if [ ! -d "${dots_checkout}/.git" ]; then
   log "Cloning towry/dots (authenticated gh, depth 1)"
   gh repo clone towry/dots "$dots_checkout" -- --depth 1
 else
   log "Updating towry/dots checkout"
-  git -C "$dots_checkout" pull --ff-only || log "dots pull skipped (non-ff); keeping existing checkout"
+  git -C "$dots_checkout" fetch --depth 1 origin main
+  git -C "$dots_checkout" checkout --detach FETCH_HEAD
 fi
+log "dots checkout: $(git -C "$dots_checkout" rev-parse --short HEAD)"
 
-orb_profiles_dir="${HOME}/.local/state/nix/profiles"
-profile="${orb_profiles_dir}/dots-orb-workflow"
-mkdir -p "$orb_profiles_dir"
-log "Building dots orb workflow profile"
-nix build --profile "$profile" "path:${dots_checkout}/nix/orb#default"
-export PATH="${profile}/bin:${PATH:-}"
-hash -r
+# bootstrap-workflow.sh installs Nix if needed, builds dots-orb-workflow,
+# writes ~/.config/dots/orb-profile.sh, and migrates the login hook.
+log "Bootstrapping dots orb workflow"
+"${dots_checkout}/nix/orb/bootstrap-workflow.sh"
+# shellcheck disable=SC1091
+source "${HOME}/.config/dots/orb-profile.sh"
+if ! command -v nix >/dev/null 2>&1; then
+  unset __ETC_PROFILE_NIX_SOURCED
+  nix_profile_sh=/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  if [ -f "$nix_profile_sh" ]; then
+    # shellcheck disable=SC1090
+    source "$nix_profile_sh"
+  fi
+fi
+log "nix: $(nix --version)"
 
-orb_profile_script="${HOME}/.config/dots/orb-profile.sh"
-mkdir -p "$(dirname "$orb_profile_script")"
-cat > "$orb_profile_script" <<'PROFILE_EOF'
-# Login shells may not source /etc/bashrc; pull in the Nix daemon env here.
+# Login shells may not source /etc/bashrc (where Determinate Nix hooks live).
+# Keep this as an agpod-owned hook; do not overwrite dots' orb-profile.sh.
+nix_login_script="${HOME}/.config/agpod/nix-profile.sh"
+mkdir -p "$(dirname "$nix_login_script")"
+cat > "$nix_login_script" <<'PROFILE_EOF'
 nix_daemon_sh="/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
 if [ -f "$nix_daemon_sh" ]; then
+  unset __ETC_PROFILE_NIX_SOURCED
   # shellcheck disable=SC1090
   . "$nix_daemon_sh"
 fi
@@ -88,21 +82,16 @@ case ":${PATH:-}:" in
   *":/nix/var/nix/profiles/default/bin:"*) ;;
   *) export PATH="/nix/var/nix/profiles/default/bin:${PATH:-}" ;;
 esac
-profile="$HOME/.local/state/nix/profiles/dots-orb-workflow"
-if [ -d "$profile/bin" ]; then
-  export PATH="$profile/bin:$PATH"
-fi
-unset profile nix_daemon_sh
+unset nix_daemon_sh
 PROFILE_EOF
-
-profile_marker="# dots orb workflow profile"
-if ! grep -Fqx "$profile_marker" "${HOME}/.bash_profile" 2>/dev/null; then
+nix_login_marker="# agpod nix daemon profile"
+if ! grep -Fqx "$nix_login_marker" "${HOME}/.bash_profile" 2>/dev/null; then
   cat >> "${HOME}/.bash_profile" <<'PROFILE_EOF'
 
-# dots orb workflow profile
-if [ -f "$HOME/.config/dots/orb-profile.sh" ]; then
+# agpod nix daemon profile
+if [ -f "$HOME/.config/agpod/nix-profile.sh" ]; then
   # shellcheck disable=SC1091
-  source "$HOME/.config/dots/orb-profile.sh"
+  source "$HOME/.config/agpod/nix-profile.sh"
 fi
 PROFILE_EOF
 fi
@@ -265,7 +254,8 @@ if [ -z "${HONCHO_BASE_URL:-}" ]; then
 fi
 
 # Re-assert toolchain PATH after any env loading.
-export PATH="${CARGO_HOME}/bin:${GO_ROOT}/bin:${HOME}/go/bin:${profile}/bin:/nix/var/nix/profiles/default/bin:${PATH:-}"
+dots_workflow_bin="${HOME}/.local/state/nix/profiles/dots-orb-workflow/bin"
+export PATH="${CARGO_HOME}/bin:${GO_ROOT}/bin:${HOME}/go/bin:${dots_workflow_bin}:/nix/var/nix/profiles/default/bin:${PATH:-}"
 
 honcho_profile_script="${HOME}/.config/agpod/honcho-profile.sh"
 cat > "$honcho_profile_script" <<'PROFILE_EOF'
@@ -379,7 +369,7 @@ guidance=$(cat <<'EOF'
 # agpod orb notes
 
 - Toolchains: Rust stable (`cargo`/`rustc` via rustup), Go 1.26+ (`go` under `~/.local/go`).
-- Dots workflow tools (`just`, `uv`, `shellcheck`, …) come from the `dots-orb-workflow` Nix profile.
+- Dots workflow tools (`just`, `uv`, `shellcheck`, `ast-grep`, `dots-orb`, …) come from the `dots-orb-workflow` Nix profile via `towry/dots` `nix/orb/bootstrap-workflow.sh`.
 - Build: `cargo build -p agpod -p agpod-mcp -p agpod-case-server`
 - Test: `cargo test` (or `cargo test -p <crate>`)
 - Honcho: secrets arrive as `HONCHO_*` (typically `HONCHO_API_KEY`, and `HONCHO_WORKSPACE` or `HONCHO_WORKSPACE_ID`). `HONCHO_WORKSPACE` is aliased to `HONCHO_WORKSPACE_ID`. Default API base is `https://api.honcho.dev`.
