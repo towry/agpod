@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.8.6](https://github.com/towry/agpod/compare/agpod-diff-v0.8.5...agpod-diff-v0.8.6) (2026-08-20)
+
 ## [0.8.5](https://github.com/towry/agpod/compare/agpod-diff-v0.8.4...agpod-diff-v0.8.5) (2026-04-08)
 
 ## [0.8.4](https://github.com/towry/agpod/compare/agpod-diff-v0.8.3...agpod-diff-v0.8.4) (2026-03-25)

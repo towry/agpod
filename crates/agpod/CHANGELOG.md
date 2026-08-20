@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/towry/agpod/compare/v0.12.7...v0.13.0) (2026-08-20)
+
+
+### Features
+
+* **mcp:** replace memo_* tools with note/find/forget ([#145](https://github.com/towry/agpod/issues/145)) ([c04dc1b](https://github.com/towry/agpod/commit/c04dc1bd837cf391d462a9ccd8beb4c4214fe384))
+
 ## [0.12.7](https://github.com/towry/agpod/compare/v0.12.6...v0.12.7) (2026-04-24)
 
 ## [0.12.6](https://github.com/towry/agpod/compare/v0.12.5...v0.12.6) (2026-04-17)
