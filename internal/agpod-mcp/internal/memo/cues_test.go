@@ -95,3 +95,12 @@ func TestCJKNgramOverlap(t *testing.T) {
 		t.Fatal("unrelated English must not overlap CJK content")
 	}
 }
+
+func TestPortIsSignificant(t *testing.T) {
+	if !significantWord("6142") {
+		t.Fatal("port numbers must count")
+	}
+	if cueOverlap("case_open fails against localhost 6142", []string{"6142 被占用"}) == 0 {
+		t.Fatal("6142 in query should overlap the port cue")
+	}
+}

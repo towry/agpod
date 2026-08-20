@@ -135,6 +135,15 @@ func significantWord(w string) bool {
 	if n := cjkCount(w); n > 0 {
 		return n >= 2
 	}
+	digits := 0
+	for _, r := range rs {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	if digits == len(rs) {
+		return digits >= 3 // ports, pids
+	}
 	// Latin tokens shorter than this are magnets ("orb", "nix", "the").
 	return len(rs) >= 6
 }

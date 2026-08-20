@@ -429,6 +429,44 @@ func (s *Store) ask(ctx context.Context, query string) (*AskResult, error) {
 	if fr == nil || len(fr.Hits) == 0 {
 		return &AskResult{Unknown: true}, nil
 	}
+
+	sid := s.SessionID()
+	prompt := "Answer this question using only the stored repository notes. " +
+		"Quote the relevant facts. Do not invent.\n\nQuestion: " + query
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	resp, chatErr := s.cli.Chat(cctx, s.workspaceID, s.peerID, honcho.DialecticOptions{
+		Query:          prompt,
+		SessionID:      &sid,
+		ReasoningLevel: honcho.ReasoningLevelLow,
+	})
+	if chatErr == nil && resp != nil && resp.Content != nil {
+		raw := strings.TrimSpace(*resp.Content)
+		if parsed := parseAskJSON(raw); parsed != nil {
+			if !parsed.Unknown && parsed.Answer != "" {
+				for _, h := range fr.Hits {
+					if h.Content != "" {
+						parsed.Quotes = append(parsed.Quotes, h.Content)
+					}
+					if h.ID != "" {
+						parsed.IDs = append(parsed.IDs, h.ID)
+					}
+				}
+				return parsed, nil
+			}
+		} else if raw != "" && !looksUnknown(raw) {
+			out := &AskResult{Answer: raw, Unknown: false}
+			for _, h := range fr.Hits {
+				if h.Content != "" {
+					out.Quotes = append(out.Quotes, h.Content)
+				}
+				if h.ID != "" {
+					out.IDs = append(out.IDs, h.ID)
+				}
+			}
+			return out, nil
+		}
+	}
 	return groundedFromSearch(fr), nil
 }
 
@@ -449,6 +487,48 @@ func groundedFromSearch(fr *FindResult) *AskResult {
 		Quotes:  quotes,
 		IDs:     ids,
 	}
+}
+
+func parseAskJSON(raw string) *AskResult {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "{"); i >= 0 {
+		if j := strings.LastIndex(raw, "}"); j > i {
+			raw = raw[i : j+1]
+		}
+	}
+	var probe struct {
+		Answer  *string `json:"answer"`
+		Unknown *bool   `json:"unknown"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return nil
+	}
+	if probe.Answer == nil && probe.Unknown == nil {
+		return nil
+	}
+	out := &AskResult{}
+	if probe.Answer != nil {
+		out.Answer = strings.TrimSpace(*probe.Answer)
+	}
+	if probe.Unknown != nil {
+		out.Unknown = *probe.Unknown
+	}
+	return out
+}
+
+func looksUnknown(s string) bool {
+	n := strings.ToLower(s)
+	needles := []string{
+		"no stored", "nothing relevant", "i don't know", "i do not know",
+		"i don’t have any information", "no memory", "not recorded",
+		"没有记录", "不知道",
+	}
+	for _, n0 := range needles {
+		if strings.Contains(n, n0) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) queryConclusionsOnce(ctx context.Context, query string, limit int, maxDist float64, sid string) ([]*honcho.Conclusion, error) {

@@ -54,8 +54,9 @@ Search stored notes. `query` is required.
   3s timeout, one retry) plus session hybrid search plus a local scan of
   every live note (paginated). Cue cover and CJK 3-gram overlap inject
   notes Honcho missed. Hybrid-only noise is dropped.
-- `mode=ask`: same retrieval as search, then `{answer, quotes, ids}` from
-  the hits. Empty → `{unknown: true}`. Does not call Honcho `peer.chat`.
+- `mode=ask`: search first. Empty → `{unknown: true}` (no chat). Hits then
+  call Honcho `peer.chat` (low, 8s cap) after representation has had time
+  to run; chat unknown/timeout falls back to the top search hit.
 
 ### `forget`
 
