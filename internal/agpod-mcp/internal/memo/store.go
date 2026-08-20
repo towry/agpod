@@ -134,7 +134,11 @@ func (s *Store) Note(ctx context.Context, in NoteInput) (*NoteResult, error) {
 	if content == "" {
 		return nil, errors.New("content is required")
 	}
-	cues := mergeCues(in.Cues, ExtractTokens(content))
+	manual := cleanCues(in.Cues)
+	if len(manual) == 0 {
+		return nil, errors.New("cues must include at least one short search phrase")
+	}
+	cues := mergeCues(manual, ExtractTokens(content))
 	entryID := s.id()
 	created := s.now()
 	e := entry{

@@ -254,13 +254,27 @@ func TestNoteMissingContentIsError(t *testing.T) {
 	cs, ctx := newTestStack(t)
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "note",
-		Arguments: map[string]any{"content": ""},
+		Arguments: map[string]any{"content": "", "cues": []string{"x"}},
 	})
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	if !res.IsError {
 		t.Fatalf("expected IsError=true when content missing")
+	}
+}
+
+func TestNoteMissingCuesIsError(t *testing.T) {
+	cs, ctx := newTestStack(t)
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "note",
+		Arguments: map[string]any{"content": "a standalone fact"},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError=true when cues missing")
 	}
 }
 

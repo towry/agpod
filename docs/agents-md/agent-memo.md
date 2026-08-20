@@ -11,9 +11,9 @@ paths, signatures, or call graphs.
 
 `content` is one present-tense sentence that stands alone.
 
-`cues` are optional short phrases you would type into `ask_note` later
-(2–8 words). Skip them when `content` already contains the path, command,
-or env name. Do not invent categories.
+`cues` is required: one or more short phrases you would type into
+`ask_note` later (2–8 words). Do not invent categories. Auto-extracted
+paths do not satisfy this.
 
 ## When to ask_note
 

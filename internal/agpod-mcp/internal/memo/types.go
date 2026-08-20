@@ -17,7 +17,7 @@ const (
 // NoteInput is the payload for note.
 type NoteInput struct {
 	Content string   `json:"content"`
-	Cues    []string `json:"cues,omitempty"`
+	Cues    []string `json:"cues"`
 }
 
 // NoteResult is returned by note.

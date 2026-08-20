@@ -323,8 +323,16 @@ func TestNotePersistsMessageAndConclusion(t *testing.T) {
 func TestNoteRequiresContent(t *testing.T) {
 	_, cli := newHonchoMock(t)
 	store := newTestStore(t, cli)
-	if _, err := store.Note(context.Background(), NoteInput{Content: "  "}); err == nil {
+	if _, err := store.Note(context.Background(), NoteInput{Content: "  ", Cues: []string{"x"}}); err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestNoteRequiresCues(t *testing.T) {
+	_, cli := newHonchoMock(t)
+	store := newTestStore(t, cli)
+	if _, err := store.Note(context.Background(), NoteInput{Content: "a standalone fact"}); err == nil {
+		t.Fatalf("expected error when cues missing")
 	}
 }
 
@@ -388,7 +396,7 @@ func TestForgetRetiresMessage(t *testing.T) {
 	mock, cli := newHonchoMock(t)
 	store := newTestStore(t, cli)
 	ctx := context.Background()
-	res, err := store.Note(ctx, NoteInput{Content: "old fact about widgets"})
+	res, err := store.Note(ctx, NoteInput{Content: "old fact about widgets", Cues: []string{"old widgets"}})
 	if err != nil {
 		t.Fatalf("note: %v", err)
 	}
@@ -453,6 +461,7 @@ func TestFindKeepsSemanticHitWithoutSharedWords(t *testing.T) {
 	ctx := context.Background()
 	noted, err := store.Note(ctx, NoteInput{
 		Content: "暂停后恢复不会重装依赖。",
+		Cues:    []string{"暂停后恢复"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -534,7 +543,7 @@ func TestAskUnknownSkipsChat(t *testing.T) {
 	mock.chatContent = `{"answer":"I invented a pizza fact","unknown":false}`
 	store := newTestStore(t, cli)
 	ctx := context.Background()
-	if _, err := store.Note(ctx, NoteInput{Content: "orb login shell 不 source /etc/bashrc"}); err != nil {
+	if _, err := store.Note(ctx, NoteInput{Content: "orb login shell 不 source /etc/bashrc", Cues: []string{"login shell 没有 nix"}}); err != nil {
 		t.Fatal(err)
 	}
 	mock.mu.Lock()
@@ -565,7 +574,7 @@ func TestListLiveEntriesPagesPast100(t *testing.T) {
 	// 105 notes; cue on the oldest so page 2 must be scanned.
 	var oldest *NoteResult
 	for i := 0; i < 105; i++ {
-		in := NoteInput{Content: "note body " + strconv.Itoa(i)}
+		in := NoteInput{Content: "note body " + strconv.Itoa(i), Cues: []string{"note-body-" + strconv.Itoa(i)}}
 		if i == 0 {
 			in.Cues = []string{"unique-oldest-cue"}
 		}

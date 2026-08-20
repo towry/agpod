@@ -12,7 +12,7 @@ import (
 
 type noteArgs struct {
 	Content string   `json:"content" jsonschema:"standalone present-tense fact that grep cannot recover"`
-	Cues    []string `json:"cues,omitempty" jsonschema:"optional short phrases a later agent will type into find — 2 to 8 words, not categories"`
+	Cues    []string `json:"cues" jsonschema:"required. One or more short phrases a later agent will type into ask_note — 2 to 8 words, like a search query, not categories"`
 }
 
 type findArgs struct {
@@ -40,7 +40,7 @@ func registerWriteTools(server *mcp.Server, store *memo.Store) {
 		Description: "Persist a fact for later sessions. Call as soon as you learn something grep cannot recover " +
 			"(a convention, a pitfall, a choice with a real tradeoff). " +
 			"content must stand alone in the present tense. " +
-			"cues are optional short phrases you would type into ask_note later; skip them when the content already contains the path, command, or env name. " +
+			"cues is required: short phrases you would type into ask_note later (2–8 words). Not categories. " +
 			"Do not note file paths, signatures, or anything rg can answer.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args noteArgs) (*mcp.CallToolResult, *memo.NoteResult, error) {
 		res, err := store.Note(ctx, memo.NoteInput{Content: args.Content, Cues: args.Cues})

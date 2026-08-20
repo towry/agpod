@@ -36,11 +36,10 @@ algorithm as `crates/agpod-case/src/repo_id.rs`. Session id is `memo_<repo_id>`.
 
 Persist a standalone present-tense fact that `rg` cannot recover.
 
-Inputs: `content` (required), `cues[]` (optional short phrases a later
-agent will type into `ask_note`). Output: `{id}`.
+Inputs: `content` (required), `cues[]` (required: one or more short
+phrases a later agent will type into `ask_note`). Output: `{id}`.
 
-Cues are not categories. Skip them when `content` already contains the
-path, command, or env name.
+Cues are not categories. Auto-extracted paths/commands do not count.
 
 Each note writes a Honcho **message** (canonical, with metadata and a
 `find:` keyword appendix) and a Honcho **conclusion** (clean body, for
@@ -64,6 +63,6 @@ Retire a note by `id`. Deletes the conclusion and marks the message
 
 ```text
 Before exploring   ask_note({query: "<short phrase>"})
-Learned a fact grep cannot recover   note({content, cues?})
+Learned a fact grep cannot recover   note({content, cues})
 Fact is wrong or obsolete   forget({id})
 ```
