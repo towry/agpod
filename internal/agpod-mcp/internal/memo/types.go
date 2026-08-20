@@ -22,7 +22,8 @@ type NoteInput struct {
 
 // NoteResult is returned by note.
 type NoteResult struct {
-	ID string `json:"id"`
+	ID      string `json:"id"`
+	Indexed bool   `json:"indexed"` // false if the Honcho conclusion write failed
 }
 
 // FindInput is the payload for find.
@@ -50,10 +51,11 @@ type FindResult struct {
 
 // AskResult is returned by find.ask.
 type AskResult struct {
-	Answer  string   `json:"answer"`
-	Unknown bool     `json:"unknown"`
-	Quotes  []string `json:"quotes,omitempty"`
-	IDs     []string `json:"ids,omitempty"`
+	Answer   string   `json:"answer"`
+	Unknown  bool     `json:"unknown"`
+	Degraded bool     `json:"degraded,omitempty"` // true when peer.chat was empty and search was used
+	Quotes   []string `json:"quotes,omitempty"`
+	IDs      []string `json:"ids,omitempty"`
 }
 
 // ForgetInput is the payload for forget.

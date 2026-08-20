@@ -49,3 +49,40 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+func TestSignificantWord(t *testing.T) {
+	if significantWord("orb") {
+		t.Fatal("orb is too short")
+	}
+	if significantWord("nix") {
+		t.Fatal("nix is too short")
+	}
+	if !significantWord("toolchains") {
+		t.Fatal("toolchains should count")
+	}
+	if !significantWord("重装") {
+		t.Fatal("two CJK chars should count")
+	}
+	if significantWord("的") {
+		t.Fatal("single CJK should not count")
+	}
+}
+
+func TestCueOverlapIgnoresShortLatin(t *testing.T) {
+	got := cueOverlap("does waking the orb reinstall toolchains", []string{"bootstrap-workflow.sh", "dots orb bootstrap"})
+	if got == 2 {
+		t.Fatalf("full cue overlap unexpected")
+	}
+	// "orb" alone must not produce token overlap against the bootstrap cue list
+	// unless a significant token matches. bootstrap-workflow.sh does not appear
+	// in the query, so overlap should be 0.
+	if got != 0 {
+		t.Fatalf("want 0, got %d", got)
+	}
+}
+
+func TestCueCoveredWithFiller(t *testing.T) {
+	if cueOverlap("login shell 为什么没有 nix", []string{"login shell 没有 nix"}) != 2 {
+		t.Fatalf("query with filler words should still cover the cue")
+	}
+}

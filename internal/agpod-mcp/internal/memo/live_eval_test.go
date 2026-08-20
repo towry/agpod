@@ -4,10 +4,13 @@ package memo
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	honcho "github.com/hekmon/go-honcho"
 
 	"github.com/towry/agpod/internal/agpod-mcp/internal/config"
 )
@@ -90,6 +93,14 @@ func TestLiveAgentScenarios(t *testing.T) {
 			Content: "HONCHO_WORKSPACE 是沙箱别名，agpod 读的是 HONCHO_WORKSPACE_ID；setup 会做映射。",
 			Cues:    []string{"HONCHO_WORKSPACE 别名"},
 		},
+		{
+			Content: "暂停后恢复不会重装依赖，resume 只重新挂 PATH。",
+			Cues:    []string{"wake reinstall toolchains", "orb resume 不重装"},
+		},
+		{
+			Content: "case_open 失败时不要重试同一 payload，先查 6142 是否被旧 agpod-case-server 占用。",
+			Cues:    []string{"case_open 失败"},
+		},
 	}
 
 	ids := map[string]string{} // content snippet -> id
@@ -117,6 +128,9 @@ func TestLiveAgentScenarios(t *testing.T) {
 		{name: "empty unknown", query: "user's favorite pizza topping", wantSub: "", mode: "search"},
 		{name: "ask nix", query: "login shell 为什么没有 nix", wantSub: "bashrc", mode: "ask"},
 		{name: "ask unknown", query: "what is the user's favorite pizza topping", wantSub: "", mode: "ask"},
+		{name: "semantic paraphrase", query: "wake reinstall toolchains", wantSub: "不会重装依赖", mode: "search"},
+		{name: "same language paraphrase", query: "暂停后会不会重装依赖", wantSub: "不会重装依赖", mode: "search"},
+		{name: "competing similar", query: "case_open 失败", wantSub: "不要重试同一 payload", mode: "search"},
 	}
 
 	var hit, miss int
@@ -132,7 +146,7 @@ func TestLiveAgentScenarios(t *testing.T) {
 		switch c.mode {
 		case "ask":
 			ar := res.(*AskResult)
-			detail = "unknown=" + boolStr(ar.Unknown) + " answer=" + ar.Answer
+			detail = "unknown=" + boolStr(ar.Unknown) + " degraded=" + boolStr(ar.Degraded) + " answer=" + ar.Answer
 			if c.wantSub == "" {
 				ok = ar.Unknown
 			} else {
@@ -203,4 +217,95 @@ func boolStr(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func TestLiveSemanticProbe(t *testing.T) {
+	apiKey := strings.TrimSpace(os.Getenv("HONCHO_API_KEY"))
+	if apiKey == "" {
+		t.Skip("HONCHO_API_KEY not set")
+	}
+	base := os.Getenv("HONCHO_BASE_URL")
+	if base == "" {
+		base = "https://api.honcho.dev"
+	}
+	workspace := strings.TrimSpace(os.Getenv("HONCHO_WORKSPACE_ID"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cfg := config.Config{HonchoAPIKey: apiKey, HonchoBaseURL: base, HonchoWorkspaceID: workspace, PeerID: "agpod-agent"}
+	cli, err := NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(cli, Options{Workspace: workspace, PeerID: "agpod-agent", RepoID: "probe" + time.Now().UTC().Format("150405"), RepoLabel: "probe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	notes := []NoteInput{
+		{Content: "暂停后恢复不会重装依赖，resume 只重新挂 PATH。", Cues: []string{"wake reinstall toolchains", "orb resume 不重装"}},
+		{Content: "dots orb bootstrap 现在由 towry/dots 的 nix/orb/bootstrap-workflow.sh 负责，不要再内联 8 月 gist。", Cues: []string{"bootstrap-workflow.sh"}},
+		{Content: "orb login shell 不 source /etc/bashrc，Determinate Nix 不在 PATH。", Cues: []string{"login shell 没有 nix"}},
+	}
+	for _, n := range notes {
+		res, err := store.Note(ctx, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("noted indexed=%v %s", res.Indexed, n.Content)
+	}
+	time.Sleep(8 * time.Second)
+	sid := store.SessionID()
+	d55, d70, d80, d90 := 0.55, 0.70, 0.80, 0.90
+	queries := []string{
+		"does waking the sandbox reinstall toolchains",
+		"does waking the orb reinstall toolchains",
+		"user's favorite pizza topping",
+		"暂停后会不会重装依赖",
+	}
+	for _, q := range queries {
+		t.Logf("QUERY %s", q)
+		for _, dist := range []*float64{&d55, &d70, &d80, &d90, nil} {
+			req := honcho.ConclusionQuery{
+				Query:    q,
+				TopK:     5,
+				Distance: dist,
+				Filters: map[string]any{
+					"session_id":  sid,
+					"observer_id": "agpod-agent",
+					"observed_id": "agpod-agent",
+					"level":       "explicit",
+				},
+			}
+			concs, err := cli.QueryConclusions(ctx, workspace, req)
+			label := "no-dist"
+			if dist != nil {
+				label = fmt.Sprintf("d=%.2f", *dist)
+			}
+			if err != nil {
+				t.Logf("  %s err=%v", label, err)
+				continue
+			}
+			if len(concs) == 0 {
+				t.Logf("  %s (none)", label)
+				continue
+			}
+			for i, c := range concs {
+				if c != nil {
+					t.Logf("  %s %d. %s", label, i+1, c.Content)
+				}
+			}
+		}
+		res, err := store.Find(ctx, FindInput{Query: q, Mode: "search", Limit: 8})
+		if err != nil {
+			t.Logf("  find err=%v", err)
+			continue
+		}
+		fr := res.(*FindResult)
+		t.Logf("  find status=%s", fr.Status)
+		for _, h := range fr.Hits {
+			t.Logf("    rank=%d source=%s %s", h.Rank, h.Source, h.Content)
+		}
+	}
 }

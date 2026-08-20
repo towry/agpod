@@ -174,23 +174,24 @@ func (s *Store) Note(ctx context.Context, in NoteInput) (*NoteResult, error) {
 		}},
 	})
 	if err != nil {
-		// Message is already the canonical record; keyword search still works.
-		return &NoteResult{ID: entryID}, nil
+		return &NoteResult{ID: entryID, Indexed: false}, nil
 	}
 	if len(conclusions) == 0 || conclusions[0] == nil || conclusions[0].ID == "" {
-		return &NoteResult{ID: entryID}, nil
+		return &NoteResult{ID: entryID, Indexed: false}, nil
 	}
 	e.ConclusionID = conclusions[0].ID
 	patched, err := entryMetadata(e)
 	if err != nil {
-		return &NoteResult{ID: entryID}, nil
+		return &NoteResult{ID: entryID, Indexed: true}, nil
 	}
 	if e.MessageID != "" {
-		_, _ = s.cli.UpdateMessage(ctx, s.workspaceID, s.SessionID(), e.MessageID, honcho.MessageUpdate{
+		if _, patchErr := s.cli.UpdateMessage(ctx, s.workspaceID, s.SessionID(), e.MessageID, honcho.MessageUpdate{
 			Metadata: patched,
-		})
+		}); patchErr != nil {
+			return &NoteResult{ID: entryID, Indexed: true}, nil
+		}
 	}
-	return &NoteResult{ID: entryID}, nil
+	return &NoteResult{ID: entryID, Indexed: true}, nil
 }
 
 // Find retrieves live memories. mode=search (default) returns ranked hits;
@@ -223,9 +224,13 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 	}
 
 	sid := s.SessionID()
+	// Cosine distance cap: keep near semantic matches, drop "always return
+	// something" far hits. 0.55 is the live-tuned ceiling against agpod-dev.
+	maxDist := 0.55
 	conclusions, concErr := s.cli.QueryConclusions(ctx, s.workspaceID, honcho.ConclusionQuery{
-		Query: query,
-		TopK:  limit,
+		Query:    query,
+		TopK:     limit,
+		Distance: &maxDist,
 		Filters: map[string]any{
 			"session_id":  sid,
 			"observer_id": s.peerID,
@@ -343,9 +348,21 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 		add(e, "message")
 	}
 
+	// Cue recall: Honcho hybrid/semantic can miss a note whose cue the
+	// query actually covers. Scan live entries and inject those hits.
+	for _, e := range live {
+		if cueOverlap(query, e.Cues) < 2 {
+			continue
+		}
+		add(e, "cue")
+	}
+
 	filtered := out[:0]
 	for _, r := range out {
-		if r.overlap == 0 && contentOverlap(query, r.e.Content) == 0 {
+		// Keep Honcho conclusion hits even with no shared words — that is
+		// the semantic path. Drop message-only hybrid noise that shares
+		// neither a cue nor a content token with the query.
+		if r.source == "message" && r.overlap == 0 && contentOverlap(query, r.e.Content) == 0 {
 			continue
 		}
 		filtered = append(filtered, r)
@@ -355,6 +372,11 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].overlap != out[j].overlap {
 			return out[i].overlap > out[j].overlap
+		}
+		// Prefer conclusion-backed hits over hybrid-only when overlap ties.
+		si, sj := sourceRank(out[i].source), sourceRank(out[j].source)
+		if si != sj {
+			return si > sj
 		}
 		return out[i].order < out[j].order
 	})
@@ -398,38 +420,33 @@ func (s *Store) ask(ctx context.Context, query string) (*AskResult, error) {
 		raw = strings.TrimSpace(*resp.Content)
 	}
 	if raw == "" {
-		return &AskResult{Unknown: true}, nil
+		return s.askDegradedOrUnknown(ctx, query)
 	}
 
 	parsed := parseAskJSON(raw)
 	if parsed != nil {
 		s.attachAskIDs(ctx, parsed)
 		if parsed.Unknown {
-			parsed.Answer = ""
-			parsed.Quotes = nil
-			parsed.IDs = nil
-			if fb := s.askFromSearch(ctx, query); fb != nil {
-				return fb, nil
-			}
+			return s.askDegradedOrUnknown(ctx, query)
 		}
 		return parsed, nil
 	}
 
 	if looksUnknown(raw) {
-		if fb := s.askFromSearch(ctx, query); fb != nil {
-			return fb, nil
-		}
-		return &AskResult{Unknown: true}, nil
+		return s.askDegradedOrUnknown(ctx, query)
 	}
 	out := &AskResult{Answer: raw, Unknown: false}
 	s.attachAskIDs(ctx, out)
 	return out, nil
 }
 
-func (s *Store) askFromSearch(ctx context.Context, query string) *AskResult {
+func (s *Store) askDegradedOrUnknown(ctx context.Context, query string) (*AskResult, error) {
 	fr, err := s.search(ctx, query, 3)
-	if err != nil || fr == nil || len(fr.Hits) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if fr == nil || len(fr.Hits) == 0 {
+		return &AskResult{Unknown: true}, nil
 	}
 	top := fr.Hits[0]
 	ids := []string{}
@@ -437,10 +454,22 @@ func (s *Store) askFromSearch(ctx context.Context, query string) *AskResult {
 		ids = []string{top.ID}
 	}
 	return &AskResult{
-		Answer:  top.Content,
-		Unknown: false,
-		Quotes:  []string{top.Content},
-		IDs:     ids,
+		Answer:   top.Content,
+		Unknown:  false,
+		Degraded: true,
+		Quotes:   []string{top.Content},
+		IDs:      ids,
+	}, nil
+}
+
+func sourceRank(source string) int {
+	switch source {
+	case "both", "cue":
+		return 2
+	case "conclusion":
+		return 1
+	default:
+		return 0
 	}
 }
 

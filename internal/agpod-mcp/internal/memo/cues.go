@@ -77,8 +77,8 @@ func normalizeKey(s string) string {
 }
 
 // cueOverlap reports how strongly query matches a cue set.
-// 2 = a full cue is a substring of the query (or vice versa)
-// 1 = an extracted identifier/path/env token overlaps
+// 2 = a full cue is covered by the query (substring, or every cue word appears)
+// 1 = an extracted identifier/path/env token or significant word overlaps
 // 0 = none
 func cueOverlap(query string, cues []string) int {
 	q := normalizeKey(query)
@@ -91,7 +91,7 @@ func cueOverlap(query string, cues []string) int {
 		if ck == "" {
 			continue
 		}
-		if strings.Contains(q, ck) || strings.Contains(ck, q) {
+		if strings.Contains(q, ck) || strings.Contains(ck, q) || cueCovered(query, c) {
 			if best < 2 {
 				best = 2
 			}
@@ -110,13 +110,13 @@ func cueOverlap(query string, cues []string) int {
 		qTokens[w] = struct{}{}
 	}
 	for _, c := range cues {
-		for _, t := range ExtractTokens(c) {
-			if _, ok := qTokens[strings.ToLower(t)]; ok {
+		for _, tok := range ExtractTokens(c) {
+			if _, ok := qTokens[strings.ToLower(tok)]; ok {
 				return 1
 			}
 		}
 		for _, w := range splitWords(c) {
-			if len(w) < 3 {
+			if !significantWord(w) {
 				continue
 			}
 			if _, ok := qTokens[w]; ok {
@@ -125,6 +125,54 @@ func cueOverlap(query string, cues []string) int {
 		}
 	}
 	return 0
+}
+
+func significantWord(w string) bool {
+	rs := []rune(w)
+	if len(rs) == 0 {
+		return false
+	}
+	if n := cjkCount(w); n > 0 {
+		return n >= 2
+	}
+	// Latin tokens shorter than this are magnets ("orb", "nix", "the").
+	return len(rs) >= 6
+}
+
+func cueCovered(query, cue string) bool {
+	cw := splitWords(cue)
+	if len(cw) == 0 {
+		return false
+	}
+	q := normalizeKey(query)
+	qw := map[string]struct{}{}
+	for _, w := range splitWords(query) {
+		qw[w] = struct{}{}
+	}
+	for _, w := range cw {
+		if _, ok := qw[w]; ok {
+			continue
+		}
+		// CJK has no spaces, so "没有" must still match inside "为什么没有".
+		if cjkCount(w) > 0 && strings.Contains(q, w) {
+			continue
+		}
+		return false
+	}
+	if len(cw) >= 2 {
+		return true
+	}
+	return significantWord(cw[0])
+}
+
+func cjkCount(w string) int {
+	n := 0
+	for _, r := range w {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			n++
+		}
+	}
+	return n
 }
 
 func splitWords(s string) []string {

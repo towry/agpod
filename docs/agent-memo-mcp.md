@@ -50,10 +50,14 @@ semantic search and `peer.chat`).
 
 Search stored notes. `query` is required.
 
-- `mode=search` (default): ranked excerpts. Honcho hybrid search +
-  conclusion query, then local cue overlap to push exact matches forward.
+- `mode=search` (default): Honcho conclusion query (cosine distance ≤ 0.55)
+  plus session hybrid search, plus a local **cue recall** scan of live notes.
+  Hybrid hits with no cue/content overlap are dropped (noise). Conclusion
+  hits are kept even without shared words (same-language paraphrase).
 - `mode=ask`: Honcho `peer.chat` scoped to this repo session. Returns
-  `{answer, unknown, quotes, ids}`. `unknown=true` means nothing was stored.
+  `{answer, unknown, degraded, quotes, ids}`. `unknown=true` means nothing
+  was stored. `degraded=true` means chat was empty and the answer is the
+  top search hit, not a synthesis.
 
 ### `forget`
 

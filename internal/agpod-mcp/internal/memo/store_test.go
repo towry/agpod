@@ -255,6 +255,9 @@ func TestNotePersistsMessageAndConclusion(t *testing.T) {
 	if res.ID != "entry-A" {
 		t.Fatalf("id want entry-A, got %s", res.ID)
 	}
+	if !res.Indexed {
+		t.Fatalf("expected indexed=true")
+	}
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -391,8 +394,8 @@ func TestFindRequiresQuery(t *testing.T) {
 	}
 }
 
-func TestFindDropsUnrelatedHits(t *testing.T) {
-	_, cli := newHonchoMock(t)
+func TestFindDropsHybridNoiseWhenConclusionsMiss(t *testing.T) {
+	mock, cli := newHonchoMock(t)
 	store := newTestStore(t, cli)
 	ctx := context.Background()
 	_, err := store.Note(ctx, NoteInput{
@@ -402,6 +405,12 @@ func TestFindDropsUnrelatedHits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Semantic miss + hybrid still returns the only message.
+	mock.mu.Lock()
+	mock.nextQuery = []*honcho.Conclusion{}
+	mock.nextSearch = append([]honcho.Message(nil), mock.messages...)
+	mock.mu.Unlock()
+
 	res, err := store.Find(ctx, FindInput{Query: "user's favorite pizza topping", Mode: "search"})
 	if err != nil {
 		t.Fatal(err)
@@ -409,5 +418,93 @@ func TestFindDropsUnrelatedHits(t *testing.T) {
 	fr := res.(*FindResult)
 	if fr.Status != "empty" {
 		t.Fatalf("want empty, got %+v", fr)
+	}
+}
+
+func TestFindKeepsSemanticHitWithoutSharedWords(t *testing.T) {
+	mock, cli := newHonchoMock(t)
+	store := newTestStore(t, cli)
+	ctx := context.Background()
+	noted, err := store.Note(ctx, NoteInput{
+		Content: "暂停后恢复不会重装依赖。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.mu.Lock()
+	mock.nextQuery = append([]*honcho.Conclusion(nil), mock.conclusions...)
+	mock.nextSearch = []honcho.Message{}
+	mock.mu.Unlock()
+
+	res, err := store.Find(ctx, FindInput{Query: "does wake reinstall toolchains", Mode: "search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := res.(*FindResult)
+	if fr.Status != "ok" || len(fr.Hits) == 0 {
+		t.Fatalf("semantic hit should survive, got %+v", fr)
+	}
+	if fr.Hits[0].ID != noted.ID {
+		t.Fatalf("hit id want %s, got %+v", noted.ID, fr.Hits[0])
+	}
+	if fr.Hits[0].Source != "conclusion" && fr.Hits[0].Source != "both" {
+		t.Fatalf("want conclusion-backed source, got %s", fr.Hits[0].Source)
+	}
+}
+
+func TestAskDegradedWhenChatUnknown(t *testing.T) {
+	mock, cli := newHonchoMock(t)
+	mock.chatContent = `{"answer":"","unknown":true,"quotes":[]}`
+	store := newTestStore(t, cli)
+	ctx := context.Background()
+	_, err := store.Note(ctx, NoteInput{
+		Content: "orb login shell 不 source /etc/bashrc",
+		Cues:    []string{"login shell 没有 nix"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := store.Find(ctx, FindInput{Query: "login shell 没有 nix", Mode: "ask"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ar := res.(*AskResult)
+	if ar.Unknown {
+		t.Fatalf("search fallback should answer")
+	}
+	if !ar.Degraded {
+		t.Fatalf("chat-empty fallback must set degraded")
+	}
+	if !strings.Contains(ar.Answer, "bashrc") {
+		t.Fatalf("answer: %q", ar.Answer)
+	}
+}
+
+func TestFindRecallsByCueWhenHonchoMisses(t *testing.T) {
+	mock, cli := newHonchoMock(t)
+	store := newTestStore(t, cli)
+	ctx := context.Background()
+	noted, err := store.Note(ctx, NoteInput{
+		Content: "暂停后恢复不会重装依赖。",
+		Cues:    []string{"wake reinstall toolchains"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.mu.Lock()
+	mock.nextQuery = []*honcho.Conclusion{}
+	mock.nextSearch = []honcho.Message{}
+	mock.mu.Unlock()
+
+	res, err := store.Find(ctx, FindInput{Query: "wake reinstall toolchains", Mode: "search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := res.(*FindResult)
+	if fr.Status != "ok" || len(fr.Hits) == 0 {
+		t.Fatalf("cue recall should hit, got %+v", fr)
+	}
+	if fr.Hits[0].ID != noted.ID {
+		t.Fatalf("want %s, got %+v", noted.ID, fr.Hits[0])
 	}
 }

@@ -49,7 +49,11 @@ func registerWriteTools(server *mcp.Server, store *memo.Store) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return textResult(fmt.Sprintf("noted %s", res.ID)), res, nil
+		msg := fmt.Sprintf("noted %s", res.ID)
+		if !res.Indexed {
+			msg += " (keyword only; semantic index failed)"
+		}
+		return textResult(msg), res, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -69,7 +73,7 @@ func registerReadTools(server *mcp.Server, store *memo.Store) {
 		Description: "Search stored notes before exploring. " +
 			"query should look like a cue: a short concrete phrase (\"login shell 没有 nix\"), not \"any related memory\". " +
 			"mode=search (default) returns ranked excerpts with ids. " +
-			"mode=ask synthesizes an answer and must return unknown when nothing is stored.",
+			"mode=ask synthesizes an answer from Honcho reasoning. unknown=true means nothing is stored. degraded=true means chat was empty and the answer is the top search hit, not a synthesis.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args findArgs) (*mcp.CallToolResult, any, error) {
 		res, err := store.Find(ctx, memo.FindInput{Query: args.Query, Mode: args.Mode, Limit: args.Limit})
 		if err != nil {
