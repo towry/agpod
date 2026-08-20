@@ -196,7 +196,7 @@ func (s *Store) Note(ctx context.Context, in NoteInput) (*NoteResult, error) {
 }
 
 // Find retrieves live memories. mode=search (default) returns ranked hits;
-// mode=ask asks Honcho to synthesize a scoped answer.
+// mode=ask returns the top hit as a grounded answer, or unknown.
 func (s *Store) Find(ctx context.Context, in FindInput) (any, error) {
 	query := collapseSpace(in.Query)
 	if query == "" {
@@ -422,8 +422,6 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 }
 
 func (s *Store) ask(ctx context.Context, query string) (*AskResult, error) {
-	// Search first: empty means unknown. Skip peer.chat so a cold
-	// representation cannot invent, and so empty asks stay fast.
 	fr, err := s.search(ctx, query, 3)
 	if err != nil {
 		return nil, err
@@ -431,61 +429,25 @@ func (s *Store) ask(ctx context.Context, query string) (*AskResult, error) {
 	if fr == nil || len(fr.Hits) == 0 {
 		return &AskResult{Unknown: true}, nil
 	}
-
-	// Exact cue cover already is the answer; peer.chat adds seconds and
-	// often returns unknown on a cold representation.
-	if fr.Hits[0].Source == "cue" || fr.Hits[0].Source == "both" || len(fr.Hits) == 1 {
-		return degradedFromSearch(fr), nil
-	}
-
-	sid := s.SessionID()
-	prompt := "Answer using only stored memories for this repository. " +
-		"If nothing relevant is stored, set unknown=true and leave answer empty. " +
-		"Do not invent. Quotes must be exact substrings of stored memory content.\n\nQuestion: " + query
-	cctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-	defer cancel()
-	resp, chatErr := s.cli.Chat(cctx, s.workspaceID, s.peerID, honcho.DialecticOptions{
-		Query:          prompt,
-		SessionID:      &sid,
-		ReasoningLevel: honcho.ReasoningLevelMinimal,
-	})
-	if chatErr != nil {
-		return degradedFromSearch(fr), nil
-	}
-	raw := ""
-	if resp != nil && resp.Content != nil {
-		raw = strings.TrimSpace(*resp.Content)
-	}
-	if raw == "" || looksUnknown(raw) {
-		return degradedFromSearch(fr), nil
-	}
-
-	parsed := parseAskJSON(raw)
-	if parsed != nil {
-		if parsed.Unknown {
-			return degradedFromSearch(fr), nil
-		}
-		s.attachAskIDs(ctx, parsed)
-		return parsed, nil
-	}
-
-	out := &AskResult{Answer: raw, Unknown: false}
-	s.attachAskIDs(ctx, out)
-	return out, nil
+	return groundedFromSearch(fr), nil
 }
 
-func degradedFromSearch(fr *FindResult) *AskResult {
-	top := fr.Hits[0]
-	ids := []string{}
-	if top.ID != "" {
-		ids = []string{top.ID}
+func groundedFromSearch(fr *FindResult) *AskResult {
+	quotes := make([]string, 0, len(fr.Hits))
+	ids := make([]string, 0, len(fr.Hits))
+	for _, h := range fr.Hits {
+		if h.Content != "" {
+			quotes = append(quotes, h.Content)
+		}
+		if h.ID != "" {
+			ids = append(ids, h.ID)
+		}
 	}
 	return &AskResult{
-		Answer:   top.Content,
-		Unknown:  false,
-		Degraded: true,
-		Quotes:   []string{top.Content},
-		IDs:      ids,
+		Answer:  fr.Hits[0].Content,
+		Unknown: false,
+		Quotes:  quotes,
+		IDs:     ids,
 	}
 }
 
@@ -529,39 +491,6 @@ func mergeSource(existing, incoming string) string {
 	return "both"
 }
 
-func (s *Store) attachAskIDs(ctx context.Context, out *AskResult) {
-	if len(out.Quotes) == 0 {
-		return
-	}
-	live, err := s.listLiveEntries(ctx)
-	if err != nil {
-		return
-	}
-	seen := map[string]struct{}{}
-	var ids []string
-	for _, q := range out.Quotes {
-		qn := normalizeKey(q)
-		if qn == "" {
-			continue
-		}
-		for _, e := range live {
-			if e.EntryID == "" {
-				continue
-			}
-			cn := normalizeKey(e.Content)
-			if strings.Contains(cn, qn) || strings.Contains(qn, cn) {
-				if _, ok := seen[e.EntryID]; ok {
-					continue
-				}
-				seen[e.EntryID] = struct{}{}
-				ids = append(ids, e.EntryID)
-			}
-		}
-	}
-	out.IDs = ids
-}
-
-// Forget retires a live entry: deletes its conclusion and marks the message retired.
 func (s *Store) Forget(ctx context.Context, in ForgetInput) error {
 	id := strings.TrimSpace(in.ID)
 	if id == "" {
@@ -737,50 +666,4 @@ func stringSliceField(m map[string]any, key string) []string {
 		}
 	}
 	return out
-}
-
-func parseAskJSON(raw string) *AskResult {
-	raw = strings.TrimSpace(raw)
-	if i := strings.Index(raw, "{"); i >= 0 {
-		if j := strings.LastIndex(raw, "}"); j > i {
-			raw = raw[i : j+1]
-		}
-	}
-	var probe struct {
-		Answer  *string  `json:"answer"`
-		Unknown *bool    `json:"unknown"`
-		Quotes  []string `json:"quotes"`
-		IDs     []string `json:"ids"`
-	}
-	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
-		return nil
-	}
-	if probe.Answer == nil && probe.Unknown == nil && len(probe.Quotes) == 0 {
-		return nil
-	}
-	out := &AskResult{
-		Quotes: probe.Quotes,
-		IDs:    probe.IDs,
-	}
-	if probe.Answer != nil {
-		out.Answer = strings.TrimSpace(*probe.Answer)
-	}
-	if probe.Unknown != nil {
-		out.Unknown = *probe.Unknown
-	}
-	return out
-}
-
-func looksUnknown(s string) bool {
-	n := strings.ToLower(s)
-	needles := []string{
-		"no stored", "nothing relevant", "i don't know", "i do not know",
-		"unknown", "no memory", "not recorded", "没有记录", "不知道",
-	}
-	for _, n0 := range needles {
-		if strings.Contains(n, n0) {
-			return true
-		}
-	}
-	return false
 }

@@ -73,7 +73,7 @@ func registerReadTools(server *mcp.Server, store *memo.Store) {
 		Description: "Search stored notes before exploring. " +
 			"query should look like a cue: a short concrete phrase (\"login shell 没有 nix\"), not \"any related memory\". " +
 			"mode=search (default) returns ranked excerpts with ids. " +
-			"mode=ask answers from stored notes. It searches first: unknown=true means nothing matched. If Honcho chat synthesizes, degraded is omitted; degraded=true means the answer is the top search hit because chat was empty.",
+			"mode=ask returns a grounded answer from the same search: the top note as answer, plus quotes/ids. unknown=true means nothing matched. It does not call Honcho chat.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args findArgs) (*mcp.CallToolResult, any, error) {
 		res, err := store.Find(ctx, memo.FindInput{Query: args.Query, Mode: args.Mode, Limit: args.Limit})
 		if err != nil {

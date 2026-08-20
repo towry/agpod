@@ -148,7 +148,7 @@ func TestLiveAgentScenarios(t *testing.T) {
 		switch c.mode {
 		case "ask":
 			ar := res.(*AskResult)
-			detail = "unknown=" + boolStr(ar.Unknown) + " degraded=" + boolStr(ar.Degraded) + " answer=" + ar.Answer
+			detail = "unknown=" + boolStr(ar.Unknown) + " answer=" + ar.Answer
 			if c.wantSub == "" {
 				ok = ar.Unknown
 			} else {

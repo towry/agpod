@@ -481,7 +481,7 @@ func TestFindKeepsSemanticHitWithoutSharedWords(t *testing.T) {
 	}
 }
 
-func TestAskDegradedWhenChatUnknown(t *testing.T) {
+func TestAskGroundedFromSearch(t *testing.T) {
 	mock, cli := newHonchoMock(t)
 	mock.chatContent = `{"answer":"","unknown":true,"quotes":[]}`
 	store := newTestStore(t, cli)
@@ -500,9 +500,6 @@ func TestAskDegradedWhenChatUnknown(t *testing.T) {
 	ar := res.(*AskResult)
 	if ar.Unknown {
 		t.Fatalf("search fallback should answer")
-	}
-	if !ar.Degraded {
-		t.Fatalf("chat-empty fallback must set degraded")
 	}
 	if !strings.Contains(ar.Answer, "bashrc") {
 		t.Fatalf("answer: %q", ar.Answer)

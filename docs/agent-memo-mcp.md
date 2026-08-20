@@ -44,7 +44,7 @@ path, command, or env name.
 
 Each note writes a Honcho **message** (canonical, with metadata and a
 `find:` keyword appendix) and a Honcho **conclusion** (clean body, for
-semantic search and `peer.chat`).
+semantic search).
 
 ### `find`
 
@@ -54,9 +54,8 @@ Search stored notes. `query` is required.
   3s timeout, one retry) plus session hybrid search plus a local scan of
   every live note (paginated). Cue cover and CJK 3-gram overlap inject
   notes Honcho missed. Hybrid-only noise is dropped.
-- `mode=ask`: search first. Empty → `{unknown: true}` with no `peer.chat`.
-  A single/exact hit returns that note as `{degraded: true}` without
-  waiting on chat. Otherwise `peer.chat` runs with a 1.5s cap.
+- `mode=ask`: same retrieval as search, then `{answer, quotes, ids}` from
+  the hits. Empty → `{unknown: true}`. Does not call Honcho `peer.chat`.
 
 ### `forget`
 
