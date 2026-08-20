@@ -18,18 +18,17 @@ import (
 	"github.com/towry/agpod/internal/agpod-mcp/internal/memo"
 )
 
-// minimal honcho mock — mirrors the one in memo/store_test.go but lives here
-// to keep the package boundary clean.
 type honchoMock struct {
-	mu       sync.Mutex
-	messages []honcho.Message
+	mu          sync.Mutex
+	messages    []honcho.Message
+	conclusions []*honcho.Conclusion
 }
 
 func (m *honchoMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	switch {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/peers"):
-		writeJSON(w, map[string]any{"id": "agpod-memo"})
+		writeJSON(w, map[string]any{"id": "agpod-agent"})
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sessions") && !strings.Contains(r.URL.Path, "/sessions/"):
 		writeJSON(w, map[string]any{"id": "memo_repo"})
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
@@ -40,6 +39,14 @@ func (m *honchoMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.search(w)
 	case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/messages/"):
 		m.updateMessage(w, r.URL.Path, body)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/conclusions") && !strings.Contains(r.URL.Path, "/conclusions/"):
+		m.createConclusions(w, body)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/conclusions/query"):
+		m.queryConclusions(w)
+	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/conclusions/"):
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/chat"):
+		writeJSON(w, map[string]any{"content": `{"answer":"","unknown":true,"quotes":[]}`})
 	default:
 		http.Error(w, "unhandled: "+r.URL.Path, http.StatusNotFound)
 	}
@@ -91,6 +98,33 @@ func (m *honchoMock) search(w http.ResponseWriter) {
 	writeJSON(w, out)
 }
 
+func (m *honchoMock) createConclusions(w http.ResponseWriter, body []byte) {
+	var payload honcho.ConclusionBatchCreate
+	_ = json.Unmarshal(body, &payload)
+	out := make([]*honcho.Conclusion, 0, len(payload.Conclusions))
+	m.mu.Lock()
+	for i, c := range payload.Conclusions {
+		conc := &honcho.Conclusion{
+			ID:         "conc-" + string(rune('A'+i+len(m.conclusions))),
+			Content:    c.Content,
+			ObserverID: c.ObserverID,
+			ObservedID: c.ObservedID,
+			CreatedAt:  time.Now().UTC(),
+		}
+		m.conclusions = append(m.conclusions, conc)
+		out = append(out, conc)
+	}
+	m.mu.Unlock()
+	writeJSON(w, out)
+}
+
+func (m *honchoMock) queryConclusions(w http.ResponseWriter) {
+	m.mu.Lock()
+	out := append([]*honcho.Conclusion(nil), m.conclusions...)
+	m.mu.Unlock()
+	writeJSON(w, out)
+}
+
 func (m *honchoMock) updateMessage(w http.ResponseWriter, path string, body []byte) {
 	id := path[strings.LastIndex(path, "/")+1:]
 	var req honcho.MessageUpdate
@@ -122,8 +156,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// newTestStack starts the mock backend, builds a Store with deterministic ids
-// and clock, registers the MCP server, and connects an in-memory client.
 func newTestStack(t *testing.T) (*mcp.ClientSession, context.Context) {
 	return newTestStackWithOpts(t, false)
 }
@@ -143,7 +175,7 @@ func newTestStackWithOpts(t *testing.T, readonly bool) (*mcp.ClientSession, cont
 
 	store, err := memo.NewStore(cli, memo.Options{
 		Workspace: "ws",
-		PeerID:    "agpod-memo",
+		PeerID:    "agpod-agent",
 		RepoID:    "repo",
 		RepoLabel: "github.com/example/repo",
 		ID:        idFn,
@@ -190,57 +222,45 @@ func TestToolsExposed(t *testing.T) {
 		}
 		got[tool.Name] = true
 	}
-	want := []string{
-		"memo_write_finding", "memo_write_decision", "memo_write_handoff",
-		"memo_pickup_handoff", "memo_recall", "memo_why", "memo_set_status",
-	}
-	for _, name := range want {
+	for _, name := range []string{"note", "find", "forget"} {
 		if !got[name] {
 			t.Fatalf("expected tool %s registered, got %v", name, got)
 		}
 	}
+	for _, name := range []string{"memo_write_finding", "remember", "memo_recall"} {
+		if got[name] {
+			t.Fatalf("old tool %s must not be registered", name)
+		}
+	}
 }
 
-func TestWriteFindingThenRecall(t *testing.T) {
+func TestNoteThenFind(t *testing.T) {
 	cs, ctx := newTestStack(t)
-	callTool(t, cs, ctx, "memo_write_finding", map[string]any{
-		"content": "hooks queue is per-case",
-		"scope":   []string{"hooks.rs", "case-hooks"},
+	callTool(t, cs, ctx, "note", map[string]any{
+		"content": "orb login shell 不 source /etc/bashrc",
+		"cues":    []string{"login shell 没有 nix"},
 	})
-	res := callTool(t, cs, ctx, "memo_recall", map[string]any{})
+	res := callTool(t, cs, ctx, "find", map[string]any{"query": "login shell 没有 nix"})
 	out := contentText(res)
-	if !strings.Contains(out, "hooks queue is per-case") {
-		t.Fatalf("recall did not surface finding, got: %s", out)
+	if !strings.Contains(out, "orb login shell") {
+		t.Fatalf("find did not surface note, got: %s", out)
+	}
+	if strings.Contains(out, "find:") {
+		t.Fatalf("find output leaked appendix: %s", out)
 	}
 }
 
-func TestPickupHandoffRoundTrip(t *testing.T) {
-	cs, ctx := newTestStack(t)
-	callTool(t, cs, ctx, "memo_write_handoff", map[string]any{
-		"summary": "wip on store",
-		"content": "tests are green; next: tools_test",
-	})
-	res := callTool(t, cs, ctx, "memo_pickup_handoff", map[string]any{})
-	out := contentText(res)
-	if !strings.Contains(out, "wip on store") {
-		t.Fatalf("pickup missing summary: %s", out)
-	}
-	if !strings.Contains(out, "tools_test") {
-		t.Fatalf("pickup missing content: %s", out)
-	}
-}
-
-func TestWriteDecisionMissingScopeIsError(t *testing.T) {
+func TestNoteMissingContentIsError(t *testing.T) {
 	cs, ctx := newTestStack(t)
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "memo_write_decision",
-		Arguments: map[string]any{"content": "choose X"},
+		Name:      "note",
+		Arguments: map[string]any{"content": ""},
 	})
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	if !res.IsError {
-		t.Fatalf("expected IsError=true when scope missing")
+		t.Fatalf("expected IsError=true when content missing")
 	}
 }
 
@@ -254,22 +274,18 @@ func TestReadonlyOmitsMutatingTools(t *testing.T) {
 		}
 		got[tool.Name] = true
 	}
-	for _, name := range []string{"memo_write_finding", "memo_write_decision", "memo_write_handoff", "memo_set_status"} {
+	for _, name := range []string{"note", "forget"} {
 		if got[name] {
 			t.Fatalf("readonly server must not expose %s", name)
 		}
 	}
-	for _, name := range []string{"memo_pickup_handoff", "memo_recall", "memo_why"} {
-		if !got[name] {
-			t.Fatalf("readonly server must still expose %s", name)
-		}
+	if !got["find"] {
+		t.Fatalf("readonly server must still expose find")
 	}
 
-	// Calling a hidden write tool should return a protocol error, not a
-	// silent success.
 	_, err := cs.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "memo_write_finding",
-		Arguments: map[string]any{"content": "x", "scope": []string{"y"}},
+		Name:      "note",
+		Arguments: map[string]any{"content": "x"},
 	})
 	if err == nil {
 		t.Fatalf("expected protocol error for unknown tool in readonly mode")

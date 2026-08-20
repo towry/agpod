@@ -10,6 +10,7 @@ This directory contains active documentation for `agpod`.
 - [SAVE_OPTION_SUMMARY.md](SAVE_OPTION_SUMMARY.md) - Diff save mode and review chunk output
 - [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) - Current crate layout and responsibilities
 - [agents-md/case-surrealdb.md](agents-md/case-surrealdb.md) - Notes for `agpod-case` storage internals
+- [agent-memo-mcp.md](agent-memo-mcp.md) - agent-memo MCP (`note` / `find` / `forget`)
 
 ## Quick Links
 

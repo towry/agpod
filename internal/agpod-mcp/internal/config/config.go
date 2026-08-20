@@ -16,7 +16,7 @@ const (
 	EnvReadonly          = "AGPOD_MEMO_READONLY"
 
 	DefaultBaseURL = "https://api.honcho.dev"
-	DefaultPeerID  = "agpod-memo"
+	DefaultPeerID  = "agpod-agent"
 )
 
 type Config struct {
@@ -25,8 +25,7 @@ type Config struct {
 	HonchoWorkspaceID string
 	PeerID            string
 	RepoRoot          string
-	// Readonly disables every tool that mutates state (the three write_* tools
-	// plus memo_set_status). Read tools are always exposed.
+	// Readonly disables note and forget. find is always exposed.
 	Readonly bool
 }
 

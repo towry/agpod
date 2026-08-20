@@ -20,7 +20,7 @@ import (
 // combined value satisfies the constraint.
 const SessionPrefix = "memo_"
 
-// Store persists and retrieves memo entries via Honcho v3.
+// Store persists and retrieves memory entries via Honcho v3.
 type Store struct {
 	cli         *honcho.Client
 	workspaceID string
@@ -39,7 +39,6 @@ type Options struct {
 	RepoID    string
 	RepoLabel string
 
-	// Now/ID let tests inject deterministic clocks and UUIDs.
 	Now func() time.Time
 	ID  func() string
 }
@@ -96,7 +95,15 @@ func (s *Store) RepoID() string { return s.repoID }
 
 // Ensure creates the peer and session if missing. Safe to call repeatedly.
 func (s *Store) Ensure(ctx context.Context) error {
-	if _, err := s.cli.GetOrCreatePeer(ctx, s.workspaceID, honcho.PeerCreate{ID: s.peerID}); err != nil {
+	observeMe := true
+	observeOthers := false
+	if _, err := s.cli.GetOrCreatePeer(ctx, s.workspaceID, honcho.PeerCreate{
+		ID: s.peerID,
+		Configuration: honcho.PeerConfig{
+			ObserveMe:     &observeMe,
+			ObserveOthers: &observeOthers,
+		},
+	}); err != nil {
 		return fmt.Errorf("ensure peer: %w", err)
 	}
 	meta, err := json.Marshal(map[string]any{
@@ -106,9 +113,13 @@ func (s *Store) Ensure(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("marshal session metadata: %w", err)
 	}
+	sid := s.SessionID()
 	_, err = s.cli.GetOrCreateSession(ctx, s.workspaceID, honcho.SessionCreate{
-		ID:       s.SessionID(),
+		ID:       sid,
 		Metadata: meta,
+		Peers: map[string]*honcho.SessionPeerConfig{
+			s.peerID: {ObserveMe: &observeMe, ObserveOthers: &observeOthers},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("ensure session: %w", err)
@@ -116,258 +127,391 @@ func (s *Store) Ensure(ctx context.Context) error {
 	return nil
 }
 
-// WriteFinding stores a finding entry. Returns the new entry id.
-func (s *Store) WriteFinding(ctx context.Context, in WriteFindingInput) (string, error) {
-	if strings.TrimSpace(in.Content) == "" {
-		return "", errors.New("content is required")
+// Note stores a standalone fact. Returns the new entry id.
+func (s *Store) Note(ctx context.Context, in NoteInput) (*NoteResult, error) {
+	content := collapseSpace(in.Content)
+	if content == "" {
+		return nil, errors.New("content is required")
 	}
-	if len(in.Scope) == 0 {
-		return "", errors.New("scope must include at least one anchor")
+	cues := mergeCues(in.Cues, ExtractTokens(content))
+	entryID := s.id()
+	created := s.now()
+	e := entry{
+		EntryID:   entryID,
+		RepoID:    s.repoID,
+		Status:    statusLive,
+		Content:   content,
+		Cues:      cues,
+		CreatedAt: created,
 	}
-	entry := s.newEntry(EntryFinding, in.Content)
-	entry.Scope = cleanStrings(in.Scope)
-	entry.EvidenceRefs = cleanStrings(in.EvidenceRefs)
-	if err := s.createMessage(ctx, entry); err != nil {
-		return "", err
-	}
-	return entry.EntryID, nil
-}
-
-// WriteDecision stores a decision entry. If Supersedes is set the old entry is
-// marked superseded (best-effort) before the new entry is persisted.
-func (s *Store) WriteDecision(ctx context.Context, in WriteDecisionInput) (string, error) {
-	if strings.TrimSpace(in.Content) == "" {
-		return "", errors.New("content is required")
-	}
-	if len(in.Scope) == 0 {
-		return "", errors.New("scope must include at least one anchor")
-	}
-	entry := s.newEntry(EntryDecision, in.Content)
-	entry.Scope = cleanStrings(in.Scope)
-	entry.EvidenceRefs = cleanStrings(in.EvidenceRefs)
-	entry.RejectedAlternatives = cleanAlternatives(in.RejectedAlternatives)
-	entry.TriggerEvidences = cleanStrings(in.TriggerEvidences)
-	entry.Constraints = cleanStrings(in.Constraints)
-	entry.Supersedes = strings.TrimSpace(in.Supersedes)
-	entry.SupersedeReason = strings.TrimSpace(in.SupersedeReason)
-	if entry.Supersedes != "" {
-		if err := s.SetStatus(ctx, SetStatusInput{
-			EntryID: entry.Supersedes,
-			Status:  StatusSuperseded,
-			Reason:  entry.SupersedeReason,
-		}); err != nil {
-			return "", fmt.Errorf("mark old decision superseded: %w", err)
-		}
-	}
-	if err := s.createMessage(ctx, entry); err != nil {
-		return "", err
-	}
-	return entry.EntryID, nil
-}
-
-// WriteHandoff stores a handoff entry.
-func (s *Store) WriteHandoff(ctx context.Context, in WriteHandoffInput) (string, error) {
-	if strings.TrimSpace(in.Summary) == "" {
-		return "", errors.New("summary is required")
-	}
-	if strings.TrimSpace(in.Content) == "" {
-		return "", errors.New("content is required")
-	}
-	entry := s.newEntry(EntryHandoff, in.Content)
-	entry.Summary = in.Summary
-	if err := s.createMessage(ctx, entry); err != nil {
-		return "", err
-	}
-	return entry.EntryID, nil
-}
-
-// PickupHandoff returns either a handoff by id or the most recent live handoff.
-func (s *Store) PickupHandoff(ctx context.Context, in PickupHandoffInput) (*PickupHandoffResult, error) {
-	if id := strings.TrimSpace(in.HandoffID); id != "" {
-		msg, err := s.findMessageByEntryID(ctx, id, in.CrossRepo)
-		if err != nil {
-			return nil, err
-		}
-		if msg == nil {
-			return nil, fmt.Errorf("handoff %s not found", id)
-		}
-		entry, err := decodeEntry(msg)
-		if err != nil {
-			return nil, err
-		}
-		if entry.EntryType != EntryHandoff {
-			return nil, fmt.Errorf("entry %s is not a handoff", id)
-		}
-		return handoffResult(entry), nil
-	}
-
-	if in.CrossRepo {
-		return nil, fmt.Errorf("memo_pickup_handoff: %w; pass handoff_id to fetch a specific cross-repo handoff", ErrCrossRepoRequiresQuery)
-	}
-	msgs, err := s.listMessages(ctx, false)
+	meta, err := entryMetadata(e)
 	if err != nil {
 		return nil, err
 	}
-	entries := decodeEntries(msgs)
-	var best *Entry
-	for i := range entries {
-		e := &entries[i]
-		if e.EntryType != EntryHandoff || e.Status != StatusLive {
+	msgs, err := s.cli.CreateMessagesForSession(ctx, s.workspaceID, s.SessionID(), honcho.MessageBatchCreate{
+		Messages: []honcho.MessageCreate{{
+			Content:   messageBody(content, cues),
+			PeerID:    s.peerID,
+			Metadata:  meta,
+			CreatedAt: &created,
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create message: %w", err)
+	}
+	if len(msgs) > 0 {
+		e.MessageID = msgs[0].ID
+		e.SessionID = msgs[0].SessionID
+	}
+
+	sid := s.SessionID()
+	conclusions, err := s.cli.CreateConclusions(ctx, s.workspaceID, honcho.ConclusionBatchCreate{
+		Conclusions: []honcho.ConclusionCreate{{
+			Content:    content,
+			ObserverID: s.peerID,
+			ObservedID: s.peerID,
+			SessionID:  &sid,
+		}},
+	})
+	if err != nil {
+		// Message is already the canonical record; keyword search still works.
+		return &NoteResult{ID: entryID}, nil
+	}
+	if len(conclusions) == 0 || conclusions[0] == nil || conclusions[0].ID == "" {
+		return &NoteResult{ID: entryID}, nil
+	}
+	e.ConclusionID = conclusions[0].ID
+	patched, err := entryMetadata(e)
+	if err != nil {
+		return &NoteResult{ID: entryID}, nil
+	}
+	if e.MessageID != "" {
+		_, _ = s.cli.UpdateMessage(ctx, s.workspaceID, s.SessionID(), e.MessageID, honcho.MessageUpdate{
+			Metadata: patched,
+		})
+	}
+	return &NoteResult{ID: entryID}, nil
+}
+
+// Find retrieves live memories. mode=search (default) returns ranked hits;
+// mode=ask asks Honcho to synthesize a scoped answer.
+func (s *Store) Find(ctx context.Context, in FindInput) (any, error) {
+	query := collapseSpace(in.Query)
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	if mode == "" {
+		mode = "search"
+	}
+	switch mode {
+	case "search":
+		return s.search(ctx, query, in.Limit)
+	case "ask":
+		return s.ask(ctx, query)
+	default:
+		return nil, fmt.Errorf("mode must be search or ask, got %q", in.Mode)
+	}
+}
+
+func (s *Store) search(ctx context.Context, query string, limit int) (*FindResult, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	sid := s.SessionID()
+	conclusions, concErr := s.cli.QueryConclusions(ctx, s.workspaceID, honcho.ConclusionQuery{
+		Query: query,
+		TopK:  limit,
+		Filters: map[string]any{
+			"session_id":  sid,
+			"observer_id": s.peerID,
+			"observed_id": s.peerID,
+			"level":       "explicit",
+		},
+	})
+	if concErr != nil {
+		conclusions = nil
+	}
+
+	searchLimit := limit
+	if searchLimit < 1 {
+		searchLimit = 1
+	}
+	msgs, msgErr := s.cli.SearchSession(ctx, s.workspaceID, sid, honcho.MessageSearchOptions{
+		Query: query,
+		Limit: searchLimit,
+		Filters: map[string]any{
+			"metadata": map[string]any{"status": statusLive},
+		},
+	})
+	if msgErr != nil && concErr != nil {
+		return nil, fmt.Errorf("search session: %w; query conclusions: %v", msgErr, concErr)
+	}
+
+	live, err := s.listLiveEntries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byConclusion := map[string]entry{}
+	byContent := map[string]entry{}
+	byID := map[string]entry{}
+	for _, e := range live {
+		byID[e.EntryID] = e
+		if e.ConclusionID != "" {
+			byConclusion[e.ConclusionID] = e
+		}
+		byContent[normalizeKey(e.Content)] = e
+	}
+
+	type ranked struct {
+		e       entry
+		source  string
+		overlap int
+		order   int
+	}
+	seen := map[string]int{} // entry_id -> index in out
+	var out []ranked
+	add := func(e entry, source string) {
+		if e.EntryID == "" || e.Status != statusLive {
+			return
+		}
+		if i, ok := seen[e.EntryID]; ok {
+			if source == "conclusion" || source == "message" {
+				if out[i].source != source && out[i].source != "both" {
+					out[i].source = "both"
+				}
+			}
+			return
+		}
+		seen[e.EntryID] = len(out)
+		out = append(out, ranked{
+			e:       e,
+			source:  source,
+			overlap: cueOverlap(query, e.Cues),
+			order:   len(out),
+		})
+	}
+
+	for _, c := range conclusions {
+		if c == nil {
 			continue
 		}
-		if best == nil || e.CreatedAt.After(best.CreatedAt) {
-			best = e
+		if e, ok := byConclusion[c.ID]; ok {
+			add(e, "conclusion")
+			continue
 		}
+		if e, ok := byContent[normalizeKey(c.Content)]; ok {
+			add(e, "conclusion")
+			continue
+		}
+		// Conclusion hit without a live message: still surface the clean body.
+		synthetic := entry{
+			Content:   c.Content,
+			CreatedAt: c.CreatedAt,
+			Status:    statusLive,
+			EntryID:   "", // unknown
+		}
+		// Use content as a temporary key so duplicates collapse.
+		key := "content:" + normalizeKey(c.Content)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, ranked{
+			e:       synthetic,
+			source:  "conclusion",
+			overlap: cueOverlap(query, ExtractTokens(c.Content)),
+			order:   len(out),
+		})
 	}
-	if best == nil {
-		return nil, errors.New("no live handoff entries found")
+	for i := range msgs {
+		e, decErr := decodeEntry(&msgs[i])
+		if decErr != nil || e.EntryID == "" {
+			continue
+		}
+		if e.Status != statusLive {
+			continue
+		}
+		if hydrated, ok := byID[e.EntryID]; ok {
+			add(hydrated, "message")
+			continue
+		}
+		add(e, "message")
 	}
-	return handoffResult(*best), nil
+
+	filtered := out[:0]
+	for _, r := range out {
+		if r.overlap == 0 && contentOverlap(query, r.e.Content) == 0 {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	out = filtered
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].overlap != out[j].overlap {
+			return out[i].overlap > out[j].overlap
+		}
+		return out[i].order < out[j].order
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+
+	hits := make([]FindHit, 0, len(out))
+	for i, r := range out {
+		hits = append(hits, FindHit{
+			ID:        r.e.EntryID,
+			Content:   r.e.Content,
+			Cues:      r.e.Cues,
+			Source:    r.source,
+			Rank:      i + 1,
+			CreatedAt: r.e.CreatedAt,
+		})
+	}
+	status := "empty"
+	if len(hits) > 0 {
+		status = "ok"
+	}
+	return &FindResult{Status: status, Hits: hits}, nil
 }
 
-// Recall returns hits matching the query. When query is empty the most recent
-// entries are returned. Honcho's metadata filters are best-effort: results are
-// post-filtered locally for status/scope_prefix to remain robust.
-func (s *Store) Recall(ctx context.Context, in RecallInput) ([]RecallHit, error) {
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	var (
-		hits []RecallHit
-		err  error
-	)
-	query := strings.TrimSpace(in.Query)
-	if query != "" {
-		// Over-fetch to leave headroom for post-filtering; cap at Honcho's max.
-		overFetch := limit * 3
-		if overFetch > 100 {
-			overFetch = 100
-		}
-		hits, err = s.semanticSearch(ctx, query, overFetch, in.CrossRepo)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		msgs, listErr := s.listMessages(ctx, in.CrossRepo)
-		if listErr != nil {
-			return nil, listErr
-		}
-		entries := decodeEntries(msgs)
-		hits = entriesToHits(entries, msgs, 0)
-	}
-
-	filtered := filterHits(hits, in)
-	if len(filtered) > limit {
-		filtered = filtered[:limit]
-	}
-	return filtered, nil
-}
-
-// Why returns the decision graph for a scope anchor.
-func (s *Store) Why(ctx context.Context, in WhyInput) (*WhyResult, error) {
-	scope := strings.TrimSpace(in.Scope)
-	if scope == "" {
-		return nil, errors.New("scope is required")
-	}
-	msgs, err := s.listMessages(ctx, in.CrossRepo)
+func (s *Store) ask(ctx context.Context, query string) (*AskResult, error) {
+	sid := s.SessionID()
+	prompt := "Answer using only stored memories for this repository. " +
+		"If nothing relevant is stored, set unknown=true and leave answer empty. " +
+		"Do not invent. Quotes must be exact substrings of stored memory content.\n\nQuestion: " + query
+	resp, err := s.cli.Chat(ctx, s.workspaceID, s.peerID, honcho.DialecticOptions{
+		Query:          prompt,
+		SessionID:      &sid,
+		ReasoningLevel: honcho.ReasoningLevelLow,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("peer chat: %w", err)
 	}
-	entries := decodeEntries(msgs)
-	return buildWhy(entries, scope), nil
+	raw := ""
+	if resp != nil && resp.Content != nil {
+		raw = strings.TrimSpace(*resp.Content)
+	}
+	if raw == "" {
+		return &AskResult{Unknown: true}, nil
+	}
+
+	parsed := parseAskJSON(raw)
+	if parsed != nil {
+		s.attachAskIDs(ctx, parsed)
+		if parsed.Unknown {
+			parsed.Answer = ""
+			parsed.Quotes = nil
+			parsed.IDs = nil
+			if fb := s.askFromSearch(ctx, query); fb != nil {
+				return fb, nil
+			}
+		}
+		return parsed, nil
+	}
+
+	if looksUnknown(raw) {
+		if fb := s.askFromSearch(ctx, query); fb != nil {
+			return fb, nil
+		}
+		return &AskResult{Unknown: true}, nil
+	}
+	out := &AskResult{Answer: raw, Unknown: false}
+	s.attachAskIDs(ctx, out)
+	return out, nil
 }
 
-// SetStatus updates the status metadata of an existing entry.
-func (s *Store) SetStatus(ctx context.Context, in SetStatusInput) error {
-	id := strings.TrimSpace(in.EntryID)
+func (s *Store) askFromSearch(ctx context.Context, query string) *AskResult {
+	fr, err := s.search(ctx, query, 3)
+	if err != nil || fr == nil || len(fr.Hits) == 0 {
+		return nil
+	}
+	top := fr.Hits[0]
+	ids := []string{}
+	if top.ID != "" {
+		ids = []string{top.ID}
+	}
+	return &AskResult{
+		Answer:  top.Content,
+		Unknown: false,
+		Quotes:  []string{top.Content},
+		IDs:     ids,
+	}
+}
+
+func (s *Store) attachAskIDs(ctx context.Context, out *AskResult) {
+	if len(out.Quotes) == 0 {
+		return
+	}
+	live, err := s.listLiveEntries(ctx)
+	if err != nil {
+		return
+	}
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, q := range out.Quotes {
+		qn := normalizeKey(q)
+		if qn == "" {
+			continue
+		}
+		for _, e := range live {
+			if e.EntryID == "" {
+				continue
+			}
+			cn := normalizeKey(e.Content)
+			if strings.Contains(cn, qn) || strings.Contains(qn, cn) {
+				if _, ok := seen[e.EntryID]; ok {
+					continue
+				}
+				seen[e.EntryID] = struct{}{}
+				ids = append(ids, e.EntryID)
+			}
+		}
+	}
+	out.IDs = ids
+}
+
+// Forget retires a live entry: deletes its conclusion and marks the message retired.
+func (s *Store) Forget(ctx context.Context, in ForgetInput) error {
+	id := strings.TrimSpace(in.ID)
 	if id == "" {
-		return errors.New("entry_id is required")
+		return errors.New("id is required")
 	}
-	if !in.Status.Valid() || in.Status == StatusLive {
-		return fmt.Errorf("status must be superseded or no_longer_applicable, got %q", in.Status)
-	}
-	msg, err := s.findMessageByEntryID(ctx, id, false)
+	msg, err := s.findMessageByEntryID(ctx, id)
 	if err != nil {
 		return err
-	}
-	if msg == nil {
-		// Fall back to a cross-repo search so superseding works for borrowed entries.
-		msg, err = s.findMessageByEntryID(ctx, id, true)
-		if err != nil {
-			return err
-		}
 	}
 	if msg == nil {
 		return fmt.Errorf("entry %s not found", id)
 	}
-	meta := decodeRawMetadata(msg.Metadata)
-	meta["status"] = string(in.Status)
-	if reason := strings.TrimSpace(in.Reason); reason != "" {
-		meta["status_reason"] = reason
-	}
-	meta["status_changed_at"] = s.now().Format(time.RFC3339Nano)
-	encoded, err := json.Marshal(meta)
-	if err != nil {
-		return fmt.Errorf("marshal updated metadata: %w", err)
-	}
-	if _, err := s.cli.UpdateMessage(ctx, s.workspaceID, msg.SessionID, msg.ID, honcho.MessageUpdate{
-		Metadata: encoded,
-	}); err != nil {
-		return fmt.Errorf("update message metadata: %w", err)
-	}
-	return nil
-}
-
-// --- internals ---
-
-func (s *Store) newEntry(t EntryType, content string) Entry {
-	return Entry{
-		EntryID:   s.id(),
-		EntryType: t,
-		RepoID:    s.repoID,
-		Status:    StatusLive,
-		CreatedAt: s.now(),
-		Content:   content,
-	}
-}
-
-func (s *Store) createMessage(ctx context.Context, entry Entry) error {
-	meta, err := entryMetadata(entry)
+	e, err := decodeEntry(msg)
 	if err != nil {
 		return err
 	}
-	created := entry.CreatedAt
-	_, err = s.cli.CreateMessagesForSession(ctx, s.workspaceID, s.SessionID(), honcho.MessageBatchCreate{
-		Messages: []honcho.MessageCreate{
-			{
-				Content:   entry.Content,
-				PeerID:    s.peerID,
-				Metadata:  meta,
-				CreatedAt: &created,
-			},
-		},
-	})
+	if e.ConclusionID != "" {
+		if delErr := s.cli.DeleteConclusion(ctx, s.workspaceID, e.ConclusionID); delErr != nil {
+			return fmt.Errorf("delete conclusion: %w", delErr)
+		}
+	}
+	e.Status = statusRetired
+	meta, err := entryMetadata(e)
 	if err != nil {
-		return fmt.Errorf("create message: %w", err)
+		return err
+	}
+	if _, err := s.cli.UpdateMessage(ctx, s.workspaceID, msg.SessionID, msg.ID, honcho.MessageUpdate{
+		Metadata: meta,
+	}); err != nil {
+		return fmt.Errorf("mark retired: %w", err)
 	}
 	return nil
 }
 
-// ErrCrossRepoRequiresQuery is returned when an operation that needs to look
-// outside the current repo session is invoked without a search query. Honcho
-// has no documented "list every workspace message" endpoint, so we refuse
-// rather than silently misbehave.
-var ErrCrossRepoRequiresQuery = errors.New("cross_repo listing requires a non-empty query")
-
-func (s *Store) listMessages(ctx context.Context, crossRepo bool) ([]honcho.Message, error) {
-	if crossRepo {
-		return nil, ErrCrossRepoRequiresQuery
-	}
+func (s *Store) listLiveEntries(ctx context.Context) ([]entry, error) {
 	page, err := s.cli.GetMessages(ctx, s.workspaceID, s.SessionID(), nil, &honcho.GetMessagesOptions{
 		Size:    100,
 		Reverse: true,
@@ -375,156 +519,77 @@ func (s *Store) listMessages(ctx context.Context, crossRepo bool) ([]honcho.Mess
 	if err != nil {
 		return nil, fmt.Errorf("list session messages: %w", err)
 	}
-	return page.Items, nil
+	out := make([]entry, 0, len(page.Items))
+	for i := range page.Items {
+		e, decErr := decodeEntry(&page.Items[i])
+		if decErr != nil || e.EntryID == "" {
+			continue
+		}
+		if e.Status != statusLive {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
-func (s *Store) semanticSearch(ctx context.Context, query string, limit int, crossRepo bool) ([]RecallHit, error) {
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	opts := honcho.MessageSearchOptions{Query: query, Limit: limit}
-	var msgs []honcho.Message
-	if crossRepo {
-		res, err := s.cli.SearchWorkspace(ctx, s.workspaceID, opts)
-		if err != nil {
-			return nil, fmt.Errorf("workspace search: %w", err)
-		}
-		if res != nil {
-			msgs = *res
-		}
-	} else {
-		res, err := s.cli.SearchSession(ctx, s.workspaceID, s.SessionID(), opts)
-		if err != nil {
-			return nil, fmt.Errorf("session search: %w", err)
-		}
-		msgs = res
-	}
-	entries := decodeEntries(msgs)
-	return entriesToHits(entries, msgs, 1.0), nil
-}
-
-// findMessageByEntryID locates an entry by its UUID. Honcho's metadata-filter
-// support is uneven across versions, so we always do a bounded scan of the
-// session's newest 100 messages — predictable and avoids silently swallowing a
-// failed filter call. Cross-repo lookup uses the workspace search with the
-// entry_id as a literal query token.
-func (s *Store) findMessageByEntryID(ctx context.Context, entryID string, crossRepo bool) (*honcho.Message, error) {
-	if !crossRepo {
-		page, err := s.cli.GetMessages(ctx, s.workspaceID, s.SessionID(), nil, &honcho.GetMessagesOptions{
-			Size: 100, Reverse: true,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list for entry_id %s: %w", entryID, err)
-		}
-		for i := range page.Items {
-			e, decErr := decodeEntry(&page.Items[i])
-			if decErr == nil && e.EntryID == entryID {
-				return &page.Items[i], nil
-			}
-		}
-		return nil, nil
-	}
-	res, err := s.cli.SearchWorkspace(ctx, s.workspaceID, honcho.MessageSearchOptions{
-		Query: entryID,
-		Limit: 50,
+func (s *Store) findMessageByEntryID(ctx context.Context, entryID string) (*honcho.Message, error) {
+	page, err := s.cli.GetMessages(ctx, s.workspaceID, s.SessionID(), nil, &honcho.GetMessagesOptions{
+		Size: 100, Reverse: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("workspace search for entry_id %s: %w", entryID, err)
+		return nil, fmt.Errorf("list for entry_id %s: %w", entryID, err)
 	}
-	if res == nil {
-		return nil, nil
-	}
-	for i := range *res {
-		msg := (*res)[i]
-		e, decErr := decodeEntry(&msg)
+	for i := range page.Items {
+		e, decErr := decodeEntry(&page.Items[i])
 		if decErr == nil && e.EntryID == entryID {
-			return &msg, nil
+			return &page.Items[i], nil
 		}
 	}
 	return nil, nil
 }
 
-// entryMetadata serializes an Entry into a flat metadata object, dropping empty
-// fields to mirror the Rust adapter's null-stripping policy.
-func entryMetadata(e Entry) (json.RawMessage, error) {
+func entryMetadata(e entry) (json.RawMessage, error) {
 	m := map[string]any{
+		"schema":     schemaV1,
 		"entry_id":   e.EntryID,
-		"entry_type": string(e.EntryType),
 		"repo_id":    e.RepoID,
-		"status":     string(e.Status),
+		"status":     e.Status,
 		"created_at": e.CreatedAt.Format(time.RFC3339Nano),
 	}
-	if len(e.Scope) > 0 {
-		m["scope"] = e.Scope
+	if len(e.Cues) > 0 {
+		m["cues"] = e.Cues
 	}
-	if len(e.EvidenceRefs) > 0 {
-		m["evidence_refs"] = e.EvidenceRefs
-	}
-	if len(e.RejectedAlternatives) > 0 {
-		m["rejected_alternatives"] = e.RejectedAlternatives
-	}
-	if len(e.TriggerEvidences) > 0 {
-		m["trigger_evidences"] = e.TriggerEvidences
-	}
-	if len(e.Constraints) > 0 {
-		m["constraints"] = e.Constraints
-	}
-	if e.Supersedes != "" {
-		m["supersedes"] = e.Supersedes
-	}
-	if e.SupersedeReason != "" {
-		m["supersede_reason"] = e.SupersedeReason
-	}
-	if e.Summary != "" {
-		m["summary"] = e.Summary
+	if e.ConclusionID != "" {
+		m["conclusion_id"] = e.ConclusionID
 	}
 	return json.Marshal(m)
 }
 
-// decodeEntry reads an Entry back from a Honcho message. Best-effort: fields
-// not present in metadata are left zero.
-func decodeEntry(msg *honcho.Message) (Entry, error) {
+func decodeEntry(msg *honcho.Message) (entry, error) {
 	meta := decodeRawMetadata(msg.Metadata)
-	entry := Entry{
-		EntryID:   stringField(meta, "entry_id"),
-		EntryType: EntryType(stringField(meta, "entry_type")),
-		RepoID:    stringField(meta, "repo_id"),
-		Status:    Status(stringField(meta, "status")),
-		Content:   msg.Content,
+	e := entry{
+		EntryID:      stringField(meta, "entry_id"),
+		RepoID:       stringField(meta, "repo_id"),
+		Status:       stringField(meta, "status"),
+		Content:      stripAppendix(msg.Content),
+		Cues:         stringSliceField(meta, "cues"),
+		ConclusionID: stringField(meta, "conclusion_id"),
+		MessageID:    msg.ID,
+		SessionID:    msg.SessionID,
 	}
-	if entry.Status == "" {
-		entry.Status = StatusLive
+	if e.Status == "" {
+		e.Status = statusLive
 	}
 	if ts := stringField(meta, "created_at"); ts != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-			entry.CreatedAt = parsed
+			e.CreatedAt = parsed
 		}
 	}
-	if entry.CreatedAt.IsZero() {
-		entry.CreatedAt = msg.CreatedAt
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = msg.CreatedAt
 	}
-	entry.Scope = stringSliceField(meta, "scope")
-	entry.EvidenceRefs = stringSliceField(meta, "evidence_refs")
-	entry.RejectedAlternatives = altSliceField(meta, "rejected_alternatives")
-	entry.TriggerEvidences = stringSliceField(meta, "trigger_evidences")
-	entry.Constraints = stringSliceField(meta, "constraints")
-	entry.Supersedes = stringField(meta, "supersedes")
-	entry.SupersedeReason = stringField(meta, "supersede_reason")
-	entry.Summary = stringField(meta, "summary")
-	return entry, nil
-}
-
-func decodeEntries(msgs []honcho.Message) []Entry {
-	out := make([]Entry, 0, len(msgs))
-	for i := range msgs {
-		if e, err := decodeEntry(&msgs[i]); err == nil && e.EntryID != "" {
-			out = append(out, e)
-		}
-	}
-	return out
+	return e, nil
 }
 
 func decodeRawMetadata(raw json.RawMessage) map[string]any {
@@ -563,117 +628,48 @@ func stringSliceField(m map[string]any, key string) []string {
 	return out
 }
 
-func altSliceField(m map[string]any, key string) []Alternative {
-	raw, ok := m[key]
-	if !ok {
-		return nil
-	}
-	arr, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]Alternative, 0, len(arr))
-	for _, v := range arr {
-		obj, ok := v.(map[string]any)
-		if !ok {
-			continue
+func parseAskJSON(raw string) *AskResult {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "{"); i >= 0 {
+		if j := strings.LastIndex(raw, "}"); j > i {
+			raw = raw[i : j+1]
 		}
-		out = append(out, Alternative{
-			Text:   stringField(obj, "text"),
-			Reason: stringField(obj, "reason"),
-		})
+	}
+	var probe struct {
+		Answer  *string  `json:"answer"`
+		Unknown *bool    `json:"unknown"`
+		Quotes  []string `json:"quotes"`
+		IDs     []string `json:"ids"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return nil
+	}
+	if probe.Answer == nil && probe.Unknown == nil && len(probe.Quotes) == 0 {
+		return nil
+	}
+	out := &AskResult{
+		Quotes: probe.Quotes,
+		IDs:    probe.IDs,
+	}
+	if probe.Answer != nil {
+		out.Answer = strings.TrimSpace(*probe.Answer)
+	}
+	if probe.Unknown != nil {
+		out.Unknown = *probe.Unknown
 	}
 	return out
 }
 
-func entriesToHits(entries []Entry, _ []honcho.Message, baseScore float64) []RecallHit {
-	hits := make([]RecallHit, 0, len(entries))
-	for _, e := range entries {
-		hits = append(hits, RecallHit{
-			EntryID:   e.EntryID,
-			EntryType: e.EntryType,
-			Status:    e.Status,
-			Content:   e.Content,
-			Summary:   e.Summary,
-			Scope:     e.Scope,
-			Score:     baseScore,
-			RepoID:    e.RepoID,
-			CreatedAt: e.CreatedAt,
-		})
+func looksUnknown(s string) bool {
+	n := strings.ToLower(s)
+	needles := []string{
+		"no stored", "nothing relevant", "i don't know", "i do not know",
+		"unknown", "no memory", "not recorded", "没有记录", "不知道",
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		return hits[i].CreatedAt.After(hits[j].CreatedAt)
-	})
-	return hits
-}
-
-func filterHits(hits []RecallHit, in RecallInput) []RecallHit {
-	wantType := strings.TrimSpace(in.EntryType)
-	prefix := strings.TrimSpace(in.ScopePrefix)
-	out := make([]RecallHit, 0, len(hits))
-	for _, h := range hits {
-		if h.Status != "" && h.Status != StatusLive {
-			continue
-		}
-		if wantType != "" {
-			if string(h.EntryType) != wantType {
-				continue
-			}
-		} else if h.EntryType == EntryHandoff && !in.IncludeHandoff {
-			continue
-		}
-		if prefix != "" {
-			matched := false
-			for _, s := range h.Scope {
-				if strings.HasPrefix(s, prefix) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-		out = append(out, h)
-	}
-	return out
-}
-
-func handoffResult(e Entry) *PickupHandoffResult {
-	return &PickupHandoffResult{
-		EntryID:   e.EntryID,
-		Summary:   e.Summary,
-		Content:   e.Content,
-		CreatedAt: e.CreatedAt,
-		RepoID:    e.RepoID,
-	}
-}
-
-func cleanStrings(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
+	for _, n0 := range needles {
+		if strings.Contains(n, n0) {
+			return true
 		}
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func cleanAlternatives(in []Alternative) []Alternative {
-	out := make([]Alternative, 0, len(in))
-	for _, a := range in {
-		a.Text = strings.TrimSpace(a.Text)
-		a.Reason = strings.TrimSpace(a.Reason)
-		if a.Text != "" {
-			out = append(out, a)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return false
 }
