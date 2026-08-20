@@ -86,3 +86,12 @@ func TestCueCoveredWithFiller(t *testing.T) {
 		t.Fatalf("query with filler words should still cover the cue")
 	}
 }
+
+func TestCJKNgramOverlap(t *testing.T) {
+	if contentOverlap("暂停后会不会重装依赖", "暂停后恢复不会重装依赖，resume 只重新挂 PATH。") == 0 {
+		t.Fatal("same-language CJK paraphrase should overlap")
+	}
+	if contentOverlap("user's favorite pizza topping", "暂停后恢复不会重装依赖") != 0 {
+		t.Fatal("unrelated English must not overlap CJK content")
+	}
+}

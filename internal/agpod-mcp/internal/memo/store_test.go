@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -59,7 +60,7 @@ func (m *honchoMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages"):
 		m.handleCreateMessages(w, body)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages/list"):
-		m.handleListMessages(w, r.URL.Query().Get("reverse") == "true")
+		m.handleListMessages(w, r.URL.Query().Get("reverse") == "true", r.URL.Query().Get("page"), r.URL.Query().Get("size"))
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/search"):
 		m.handleSearch(w)
 	case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/messages/"):
@@ -108,7 +109,7 @@ func (m *honchoMock) handleCreateMessages(w http.ResponseWriter, body []byte) {
 	writeJSON(w, out)
 }
 
-func (m *honchoMock) handleListMessages(w http.ResponseWriter, reverse bool) {
+func (m *honchoMock) handleListMessages(w http.ResponseWriter, reverse bool, pageStr, sizeStr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	items := append([]honcho.Message(nil), m.messages...)
@@ -117,7 +118,35 @@ func (m *honchoMock) handleListMessages(w http.ResponseWriter, reverse bool) {
 			items[i], items[j] = items[j], items[i]
 		}
 	}
-	writeJSON(w, honcho.PageMessage{Items: items, Total: len(items), Page: 1, Size: len(items), Pages: 1})
+	size := len(items)
+	if sizeStr != "" {
+		if n, err := strconv.Atoi(sizeStr); err == nil && n > 0 {
+			size = n
+		}
+	}
+	page := 1
+	if pageStr != "" {
+		if n, err := strconv.Atoi(pageStr); err == nil && n > 0 {
+			page = n
+		}
+	}
+	total := len(items)
+	pages := 1
+	if size > 0 {
+		pages = (total + size - 1) / size
+		if pages == 0 {
+			pages = 1
+		}
+	}
+	start := (page - 1) * size
+	if start > total {
+		start = total
+	}
+	end := start + size
+	if end > total {
+		end = total
+	}
+	writeJSON(w, honcho.PageMessage{Items: items[start:end], Total: total, Page: page, Size: size, Pages: pages})
 }
 
 func (m *honchoMock) handleSearch(w http.ResponseWriter) {
@@ -506,5 +535,72 @@ func TestFindRecallsByCueWhenHonchoMisses(t *testing.T) {
 	}
 	if fr.Hits[0].ID != noted.ID {
 		t.Fatalf("want %s, got %+v", noted.ID, fr.Hits[0])
+	}
+}
+
+func TestAskUnknownSkipsChat(t *testing.T) {
+	mock, cli := newHonchoMock(t)
+	mock.chatContent = `{"answer":"I invented a pizza fact","unknown":false}`
+	store := newTestStore(t, cli)
+	ctx := context.Background()
+	if _, err := store.Note(ctx, NoteInput{Content: "orb login shell 不 source /etc/bashrc"}); err != nil {
+		t.Fatal(err)
+	}
+	mock.mu.Lock()
+	mock.nextQuery = []*honcho.Conclusion{}
+	mock.nextSearch = []honcho.Message{}
+	mock.mu.Unlock()
+
+	res, err := store.Find(ctx, FindInput{Query: "user's favorite pizza topping", Mode: "ask"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ar := res.(*AskResult)
+	if !ar.Unknown || ar.Answer != "" {
+		t.Fatalf("want unknown empty, got %+v", ar)
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	for _, r := range mock.requests {
+		if strings.HasSuffix(r.path, "/chat") {
+			t.Fatalf("empty search must not call peer.chat")
+		}
+	}
+}
+
+func TestListLiveEntriesPagesPast100(t *testing.T) {
+	mock, cli := newHonchoMock(t)
+	store := newTestStore(t, cli)
+	ctx := context.Background()
+	// 105 notes; cue on the oldest so page 2 must be scanned.
+	var oldest *NoteResult
+	for i := 0; i < 105; i++ {
+		in := NoteInput{Content: "note body " + strconv.Itoa(i)}
+		if i == 0 {
+			in.Cues = []string{"unique-oldest-cue"}
+		}
+		res, err := store.Note(ctx, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			oldest = res
+		}
+	}
+	mock.mu.Lock()
+	mock.nextQuery = []*honcho.Conclusion{}
+	mock.nextSearch = []honcho.Message{}
+	mock.mu.Unlock()
+
+	res, err := store.Find(ctx, FindInput{Query: "unique-oldest-cue", Mode: "search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fr := res.(*FindResult)
+	if fr.Status != "ok" || len(fr.Hits) == 0 {
+		t.Fatalf("oldest cue should be recalled across pages, got %+v", fr)
+	}
+	if fr.Hits[0].ID != oldest.ID {
+		t.Fatalf("want oldest %s, got %+v", oldest.ID, fr.Hits[0])
 	}
 }

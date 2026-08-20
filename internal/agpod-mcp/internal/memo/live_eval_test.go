@@ -135,7 +135,9 @@ func TestLiveAgentScenarios(t *testing.T) {
 
 	var hit, miss int
 	for _, c := range cases {
+		start := time.Now()
 		res, err := store.Find(ctx, FindInput{Query: c.query, Mode: c.mode, Limit: 8})
+		elapsed := time.Since(start)
 		if err != nil {
 			t.Errorf("%s: find error: %v", c.name, err)
 			miss++
@@ -167,10 +169,10 @@ func TestLiveAgentScenarios(t *testing.T) {
 		}
 		if ok {
 			hit++
-			t.Logf("PASS %s  %s", c.name, detail)
+			t.Logf("PASS %s  %s  %s", c.name, elapsed.Truncate(time.Millisecond), detail)
 		} else {
 			miss++
-			t.Errorf("FAIL %s query=%q wantSub=%q  %s", c.name, c.query, c.wantSub, detail)
+			t.Errorf("FAIL %s query=%q wantSub=%q  %s  %s", c.name, c.query, c.wantSub, elapsed.Truncate(time.Millisecond), detail)
 		}
 	}
 	t.Logf("score %d/%d", hit, hit+miss)

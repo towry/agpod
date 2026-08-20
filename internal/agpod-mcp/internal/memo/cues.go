@@ -214,5 +214,34 @@ func stripAppendix(body string) string {
 }
 
 func contentOverlap(query, content string) int {
-	return cueOverlap(query, append([]string{content}, ExtractTokens(content)...))
+	if o := cueOverlap(query, append([]string{content}, ExtractTokens(content)...)); o > 0 {
+		return o
+	}
+	if cjkNgramOverlap(query, content) {
+		return 1
+	}
+	return 0
+}
+
+// cjkNgramOverlap is true when query and content share a run of 3+ CJK
+// characters. CJK has no spaces, so splitWords treats a whole clause as one
+// token and would miss "暂停后会不会重装依赖" vs "暂停后恢复不会重装依赖".
+func cjkNgramOverlap(query, content string) bool {
+	qr := []rune(normalizeKey(query))
+	cn := normalizeKey(content)
+	if len(qr) < 3 || cn == "" {
+		return false
+	}
+	for n := 4; n >= 3; n-- {
+		for i := 0; i+n <= len(qr); i++ {
+			ng := string(qr[i : i+n])
+			if cjkCount(ng) < n {
+				continue
+			}
+			if strings.Contains(cn, ng) {
+				return true
+			}
+		}
+	}
+	return false
 }

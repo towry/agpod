@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	honcho "github.com/hekmon/go-honcho"
@@ -224,42 +225,57 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 	}
 
 	sid := s.SessionID()
-	// Cosine distance cap: keep near semantic matches, drop "always return
-	// something" far hits. 0.55 is the live-tuned ceiling against agpod-dev.
-	maxDist := 0.55
-	conclusions, concErr := s.cli.QueryConclusions(ctx, s.workspaceID, honcho.ConclusionQuery{
-		Query:    query,
-		TopK:     limit,
-		Distance: &maxDist,
-		Filters: map[string]any{
-			"session_id":  sid,
-			"observer_id": s.peerID,
-			"observed_id": s.peerID,
-			"level":       "explicit",
-		},
-	})
-	if concErr != nil {
-		conclusions = nil
-	}
-
 	searchLimit := limit
 	if searchLimit < 1 {
 		searchLimit = 1
 	}
-	msgs, msgErr := s.cli.SearchSession(ctx, s.workspaceID, sid, honcho.MessageSearchOptions{
-		Query: query,
-		Limit: searchLimit,
-		Filters: map[string]any{
-			"metadata": map[string]any{"status": statusLive},
-		},
-	})
+	maxDist := 0.55
+
+	var (
+		conclusions []*honcho.Conclusion
+		concErr     error
+		msgs        []honcho.Message
+		msgErr      error
+		live        []entry
+		liveErr     error
+		wg          sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		conclusions, concErr = s.queryConclusionsOnce(ctx, query, limit, maxDist, sid)
+		if concErr != nil {
+			conclusions, concErr = s.queryConclusionsOnce(ctx, query, limit, maxDist, sid)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		msgs, msgErr = s.cli.SearchSession(cctx, s.workspaceID, sid, honcho.MessageSearchOptions{
+			Query: query,
+			Limit: searchLimit,
+			Filters: map[string]any{
+				"metadata": map[string]any{"status": statusLive},
+			},
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		live, liveErr = s.listLiveEntries(cctx)
+	}()
+	wg.Wait()
+
+	if liveErr != nil {
+		return nil, liveErr
+	}
 	if msgErr != nil && concErr != nil {
 		return nil, fmt.Errorf("search session: %w; query conclusions: %v", msgErr, concErr)
 	}
-
-	live, err := s.listLiveEntries(ctx)
-	if err != nil {
-		return nil, err
+	if concErr != nil {
+		conclusions = nil
 	}
 	byConclusion := map[string]entry{}
 	byContent := map[string]entry{}
@@ -285,10 +301,9 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 			return
 		}
 		if i, ok := seen[e.EntryID]; ok {
-			if source == "conclusion" || source == "message" {
-				if out[i].source != source && out[i].source != "both" {
-					out[i].source = "both"
-				}
+			out[i].source = mergeSource(out[i].source, source)
+			if source == "cue" && out[i].overlap < 2 {
+				out[i].overlap = 2
 			}
 			return
 		}
@@ -348,13 +363,17 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 		add(e, "message")
 	}
 
-	// Cue recall: Honcho hybrid/semantic can miss a note whose cue the
-	// query actually covers. Scan live entries and inject those hits.
+	// Local recall: inject live notes Honcho missed when the query covers
+	// a cue, or when CJK content shares a 3+ character run (same-language
+	// paraphrase without a cue).
 	for _, e := range live {
-		if cueOverlap(query, e.Cues) < 2 {
+		if cueOverlap(query, e.Cues) >= 2 {
+			add(e, "cue")
 			continue
 		}
-		add(e, "cue")
+		if contentOverlap(query, e.Content) >= 1 {
+			add(e, "content")
+		}
 	}
 
 	filtered := out[:0]
@@ -403,44 +422,8 @@ func (s *Store) search(ctx context.Context, query string, limit int) (*FindResul
 }
 
 func (s *Store) ask(ctx context.Context, query string) (*AskResult, error) {
-	sid := s.SessionID()
-	prompt := "Answer using only stored memories for this repository. " +
-		"If nothing relevant is stored, set unknown=true and leave answer empty. " +
-		"Do not invent. Quotes must be exact substrings of stored memory content.\n\nQuestion: " + query
-	resp, err := s.cli.Chat(ctx, s.workspaceID, s.peerID, honcho.DialecticOptions{
-		Query:          prompt,
-		SessionID:      &sid,
-		ReasoningLevel: honcho.ReasoningLevelLow,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("peer chat: %w", err)
-	}
-	raw := ""
-	if resp != nil && resp.Content != nil {
-		raw = strings.TrimSpace(*resp.Content)
-	}
-	if raw == "" {
-		return s.askDegradedOrUnknown(ctx, query)
-	}
-
-	parsed := parseAskJSON(raw)
-	if parsed != nil {
-		s.attachAskIDs(ctx, parsed)
-		if parsed.Unknown {
-			return s.askDegradedOrUnknown(ctx, query)
-		}
-		return parsed, nil
-	}
-
-	if looksUnknown(raw) {
-		return s.askDegradedOrUnknown(ctx, query)
-	}
-	out := &AskResult{Answer: raw, Unknown: false}
-	s.attachAskIDs(ctx, out)
-	return out, nil
-}
-
-func (s *Store) askDegradedOrUnknown(ctx context.Context, query string) (*AskResult, error) {
+	// Search first: empty means unknown. Skip peer.chat so a cold
+	// representation cannot invent, and so empty asks stay fast.
 	fr, err := s.search(ctx, query, 3)
 	if err != nil {
 		return nil, err
@@ -448,6 +431,50 @@ func (s *Store) askDegradedOrUnknown(ctx context.Context, query string) (*AskRes
 	if fr == nil || len(fr.Hits) == 0 {
 		return &AskResult{Unknown: true}, nil
 	}
+
+	// Exact cue cover already is the answer; peer.chat adds seconds and
+	// often returns unknown on a cold representation.
+	if fr.Hits[0].Source == "cue" || fr.Hits[0].Source == "both" || len(fr.Hits) == 1 {
+		return degradedFromSearch(fr), nil
+	}
+
+	sid := s.SessionID()
+	prompt := "Answer using only stored memories for this repository. " +
+		"If nothing relevant is stored, set unknown=true and leave answer empty. " +
+		"Do not invent. Quotes must be exact substrings of stored memory content.\n\nQuestion: " + query
+	cctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	resp, chatErr := s.cli.Chat(cctx, s.workspaceID, s.peerID, honcho.DialecticOptions{
+		Query:          prompt,
+		SessionID:      &sid,
+		ReasoningLevel: honcho.ReasoningLevelMinimal,
+	})
+	if chatErr != nil {
+		return degradedFromSearch(fr), nil
+	}
+	raw := ""
+	if resp != nil && resp.Content != nil {
+		raw = strings.TrimSpace(*resp.Content)
+	}
+	if raw == "" || looksUnknown(raw) {
+		return degradedFromSearch(fr), nil
+	}
+
+	parsed := parseAskJSON(raw)
+	if parsed != nil {
+		if parsed.Unknown {
+			return degradedFromSearch(fr), nil
+		}
+		s.attachAskIDs(ctx, parsed)
+		return parsed, nil
+	}
+
+	out := &AskResult{Answer: raw, Unknown: false}
+	s.attachAskIDs(ctx, out)
+	return out, nil
+}
+
+func degradedFromSearch(fr *FindResult) *AskResult {
 	top := fr.Hits[0]
 	ids := []string{}
 	if top.ID != "" {
@@ -459,18 +486,47 @@ func (s *Store) askDegradedOrUnknown(ctx context.Context, query string) (*AskRes
 		Degraded: true,
 		Quotes:   []string{top.Content},
 		IDs:      ids,
-	}, nil
+	}
+}
+
+func (s *Store) queryConclusionsOnce(ctx context.Context, query string, limit int, maxDist float64, sid string) ([]*honcho.Conclusion, error) {
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return s.cli.QueryConclusions(cctx, s.workspaceID, honcho.ConclusionQuery{
+		Query:    query,
+		TopK:     limit,
+		Distance: &maxDist,
+		Filters: map[string]any{
+			"session_id":  sid,
+			"observer_id": s.peerID,
+			"observed_id": s.peerID,
+			"level":       "explicit",
+		},
+	})
 }
 
 func sourceRank(source string) int {
 	switch source {
 	case "both", "cue":
 		return 2
-	case "conclusion":
+	case "conclusion", "content":
 		return 1
 	default:
 		return 0
 	}
+}
+
+func mergeSource(existing, incoming string) string {
+	if existing == incoming {
+		return existing
+	}
+	if existing == "cue" || incoming == "cue" {
+		return "cue"
+	}
+	if existing == "both" || incoming == "both" {
+		return "both"
+	}
+	return "both"
 }
 
 func (s *Store) attachAskIDs(ctx context.Context, out *AskResult) {
@@ -541,41 +597,67 @@ func (s *Store) Forget(ctx context.Context, in ForgetInput) error {
 }
 
 func (s *Store) listLiveEntries(ctx context.Context) ([]entry, error) {
-	page, err := s.cli.GetMessages(ctx, s.workspaceID, s.SessionID(), nil, &honcho.GetMessagesOptions{
-		Size:    100,
-		Reverse: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list session messages: %w", err)
-	}
-	out := make([]entry, 0, len(page.Items))
-	for i := range page.Items {
-		e, decErr := decodeEntry(&page.Items[i])
-		if decErr != nil || e.EntryID == "" {
-			continue
-		}
-		if e.Status != statusLive {
-			continue
+	var out []entry
+	err := s.forEachMessage(ctx, func(msg *honcho.Message) bool {
+		e, decErr := decodeEntry(msg)
+		if decErr != nil || e.EntryID == "" || e.Status != statusLive {
+			return true
 		}
 		out = append(out, e)
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
 func (s *Store) findMessageByEntryID(ctx context.Context, entryID string) (*honcho.Message, error) {
-	page, err := s.cli.GetMessages(ctx, s.workspaceID, s.SessionID(), nil, &honcho.GetMessagesOptions{
-		Size: 100, Reverse: true,
+	var found *honcho.Message
+	err := s.forEachMessage(ctx, func(msg *honcho.Message) bool {
+		e, decErr := decodeEntry(msg)
+		if decErr == nil && e.EntryID == entryID {
+			cp := *msg
+			found = &cp
+			return false
+		}
+		return true
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list for entry_id %s: %w", entryID, err)
 	}
-	for i := range page.Items {
-		e, decErr := decodeEntry(&page.Items[i])
-		if decErr == nil && e.EntryID == entryID {
-			return &page.Items[i], nil
+	return found, nil
+}
+
+const messagePageSize = 100
+const messagePageCap = 50
+
+func (s *Store) forEachMessage(ctx context.Context, fn func(*honcho.Message) bool) error {
+	for pageNum := 1; pageNum <= messagePageCap; pageNum++ {
+		page, err := s.cli.GetMessages(ctx, s.workspaceID, s.SessionID(), nil, &honcho.GetMessagesOptions{
+			Size:    messagePageSize,
+			Reverse: true,
+			Page:    pageNum,
+		})
+		if err != nil {
+			return fmt.Errorf("list session messages: %w", err)
+		}
+		if page == nil || len(page.Items) == 0 {
+			return nil
+		}
+		for i := range page.Items {
+			if !fn(&page.Items[i]) {
+				return nil
+			}
+		}
+		if page.Pages > 0 && pageNum >= page.Pages {
+			return nil
+		}
+		if page.Pages == 0 && len(page.Items) < messagePageSize {
+			return nil
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 func entryMetadata(e entry) (json.RawMessage, error) {
